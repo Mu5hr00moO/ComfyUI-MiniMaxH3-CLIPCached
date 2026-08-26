@@ -8,7 +8,7 @@ import torch
 
 from caching.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
 from caching.proxy import CachedClipProxy
-from caching.store import save_conditioning
+from caching.store import load_conditioning, save_conditioning
 
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345
@@ -76,3 +76,59 @@ def test_c_two_misses_in_same_proxy_load_once(tmp_path):
     proxy.encode_from_tokens_scheduled(tokens_2)
 
     assert calls["count"] == 1
+
+
+def test_d_hit_leaves_did_load_real_clip_false(tmp_path):
+    prompt = "a cache hit prompt for did_load flag"
+    kwargs = {"images": []}
+    fingerprint = compute_fingerprint(
+        prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+    )
+    save_conditioning(fingerprint, [[torch.ones(1, 3), {"pooled_output": None}]], tmp_path)
+
+    loader, calls = _make_counting_loader()
+    proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
+
+    tokens = proxy.tokenize(prompt, **kwargs)
+    proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.did_load_real_clip is False
+
+
+def test_e_miss_sets_did_load_real_clip_true(tmp_path):
+    loader, calls = _make_counting_loader()
+    proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
+
+    tokens = proxy.tokenize("a cache miss prompt for did_load flag", images=[])
+    proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.did_load_real_clip is True
+
+
+def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
+    prompt = "a force refresh prompt"
+    kwargs = {"images": []}
+    fingerprint = compute_fingerprint(
+        prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+    )
+    old_value = torch.ones(1, 3)
+    save_conditioning(fingerprint, [[old_value, {"pooled_output": None}]], tmp_path)
+
+    loader, calls = _make_counting_loader()
+    proxy = CachedClipProxy(
+        loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path, force_refresh=True,
+    )
+
+    tokens = proxy.tokenize(prompt, **kwargs)
+    cond = proxy.encode_from_tokens_scheduled(tokens)
+
+    assert calls["count"] == 1
+    assert proxy.did_load_real_clip is True
+    # FakeRealClip.encode_from_tokens_scheduled() returns zeros, distinguishable
+    # from the pre-populated old_value of ones -- proves the returned
+    # conditioning came from the real encode, not the stale cache entry.
+    assert not torch.equal(cond[0][0], old_value)
+
+    reloaded = load_conditioning(fingerprint, tmp_path)
+    assert torch.equal(reloaded[0][0], cond[0][0])
+    assert not torch.equal(reloaded[0][0], old_value)

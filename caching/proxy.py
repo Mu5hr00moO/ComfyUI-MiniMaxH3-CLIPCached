@@ -19,14 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 class CachedClipProxy:
-    def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir):
+    def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir,
+                 force_refresh=False):
         self.clip_loader_fn = clip_loader_fn
         self.clip_name = clip_name
         self.clip_file_size = clip_file_size
         self.clip_mtime_ns = clip_mtime_ns
         self.cache_dir = cache_dir
+        self.force_refresh = force_refresh
         self._pending = None
         self._real_clip = None
+        self.did_load_real_clip = False
 
     def tokenize(self, prompt, **kwargs):
         self._pending = (prompt, kwargs)
@@ -39,14 +42,18 @@ class CachedClipProxy:
             CACHE_SCHEMA_VERSION,
         )
 
-        cond = load_conditioning(fingerprint, self.cache_dir)
-        if cond is not None:
-            logger.info("[CACHE HIT] %s", fingerprint[:12])
-            return cond
+        if not self.force_refresh:
+            cond = load_conditioning(fingerprint, self.cache_dir)
+            if cond is not None:
+                logger.info("[CACHE HIT] %s", fingerprint[:12])
+                return cond
+            logger.info("[CACHE MISS] %s", fingerprint[:12])
+        else:
+            logger.info("[CACHE REFRESH] %s", fingerprint[:12])
 
-        logger.info("[CACHE MISS] %s", fingerprint[:12])
         if self._real_clip is None:
             self._real_clip = self.clip_loader_fn()
+            self.did_load_real_clip = True
         real_tokens = self._real_clip.tokenize(prompt, **kwargs)
         cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
         save_conditioning(fingerprint, cond, self.cache_dir)
