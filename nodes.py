@@ -27,7 +27,10 @@ class MiniMaxH3CachedImageToVideo:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "clip_name": (folder_paths.get_filename_list("text_encoders"),),
+                "clip_name": (folder_paths.get_filename_list("text_encoders"), {
+                    "tooltip": "MiniMax H3 text/vision encoder (Qwen3-VL) checkpoint from "
+                               "models/text_encoders. Loaded lazily -- only on a cache miss.",
+                }),
                 "vae": ("VAE",),
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
@@ -39,14 +42,19 @@ class MiniMaxH3CachedImageToVideo:
             "optional": {
                 "first_frame": ("IMAGE",),
                 "last_frame": ("IMAGE",),
-                "cache_mode": (["auto", "refresh"], {"default": "auto"}),
+                "cache_mode": (["auto", "refresh"], {"default": "auto",
+                    "tooltip": "auto: reuse the cached encode for an identical prompt+first_frame+"
+                               "last_frame+clip_name (checkpoint identity = filename+size+mtime) if "
+                               "one exists, otherwise encode and save it. refresh: ignore any cached "
+                               "encode, always re-encode and overwrite the cache.",
+                }),
             },
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "latent")
     FUNCTION = "execute"
-    CATEGORY = "model/conditioning/minimax"
+    CATEGORY = "model/conditioning/minimax/cached"
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
