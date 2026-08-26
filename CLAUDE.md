@@ -65,6 +65,13 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   przez load_custom_node(), w przeciwieństwie do "nodes"/"comfy"/
   "folder_paths" które są już zaimportowane globalnie przed dotarciem
   do custom_nodes.
+- Idle VRAM baseline (nvidia-smi, zero procesów CUDA) na tej maszynie
+  WSL2 waha się w paśmie ~1100-1650 MiB (obserwowane wartości: 1117,
+  1162, 1243, 1647 MiB w różnych testach). To narzut sterownika/
+  kompozytora hosta Windows przy GPU passthrough do WSL2, nie wyciek
+  ani proces-widmo. Traktować dowolną wartość w tym paśmie przy braku
+  procesów jako czysty stan wyjściowy - nie zatrzymywać się przy każdym
+  drobnym odchyleniu w tym zakresie.
 
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
