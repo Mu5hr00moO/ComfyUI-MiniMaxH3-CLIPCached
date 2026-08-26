@@ -1,0 +1,112 @@
+# ComfyUI-MiniMaxH3-Cached — kontekst projektu
+
+## Cel
+Custom node ComfyUI: "MiniMax H3 Cached Images to Video". Cache'uje wynik
+text/vision-encodingu (Qwen3-VL, przez natywny obiekt CLIP ComfyUI z
+clip_type=MINIMAX) na dysku, żeby przy powtórzonym prompt+first_frame+
+last_frame nie trzeba było w ogóle ładować ~27 GB encodera.
+
+## Zasada nadrzędna
+Nie tworzymy własnej wersji MiniMaxH3ImageToVideo. Tworzymy przezroczysty
+cached-CLIP proxy i pozwalamy stockowemu node'owi (comfy_extras/nodes_minimax_h3.py)
+wykonać całą właściwą mechanikę H3 (resize, VAE encode keyframes, AV latent,
+minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
+
+## Potwierdzone fakty o środowisku (nie zakładać nic ponad to bez ponownej weryfikacji)
+- ComfyUI lokalnie: v0.34.0, w /home/kamil/ComfyUI
+- MiniMaxH3ImageToVideo.execute(clip, vae, prompt, width, height, length,
+  first_frame=None, last_frame=None) w comfy_extras/nodes_minimax_h3.py
+  - na clip wywołuje WYŁĄCZNIE: clip.tokenize(prompt, images=images) i
+    clip.encode_from_tokens_scheduled(tokens)
+  - images przekazywane do tokenize() są JUŻ po resize dopasowanym do
+    width/height (funkcja _resize, dzieje się PRZED tokenize, poza
+    obiektem clip) — więc hashowanie tego, co proxy dostanie w tokenize(),
+    jest równoważne hashowaniu dokładnego wejścia obrazkowego Qwena, bez
+    potrzeby reimplementacji _resize
+  - minimax_keyframes jest doklejane do cond PO encode_from_tokens_scheduled,
+    przez VAE, niezależnie od clip — cache ma obejmować WYŁĄCZNIE surowy
+    output encode_from_tokens_scheduled, nic więcej
+- comfy.model_management.unload_model_and_clones(model, unload_additional_models=True,
+  all_devices=False) — bezpieczne z domyślnymi argumentami: keep_loaded
+  explicite zachowuje wszystko niepowiązane po clone_base_uuid; nie zdejmuje
+  niepowiązanych modeli
+- clip.patcher jest przypisywane bezwarunkowo w __init__ klasy CLIP w
+  comfy/sd.py (self.patcher = ModelPatcher(...)) — dostępne zawsze,
+  niezależnie od clip_type
+- Encoder H3 lokalnie: models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+  (~27,1 GB)
+- Repo tego node'a: własny .git, NIEZALEŻNE od repo głównego ComfyUI
+  (które go ignoruje przez regułę /custom_nodes/)
+
+## Zasady kodowania (obowiązują przez cały projekt)
+- Małe, recenzowalne zmiany: jeden commit = jedna logiczna zmiana. Nie
+  mieszać refaktoru z nową funkcją.
+- Zawsze najpierw: zrozum → zmień jedną rzecz → przetestuj → obejrzyj diff → commit.
+- Kod w języku angielskim (nazwy, komentarze, komunikaty błędów, logi) —
+  nawet jeśli rozmawiamy po polsku.
+- Testuj od najmniejszej jednostki w górę: proxy → zgodność ze stockiem →
+  cache hit/miss → inwalidacja → RAM/VRAM → dopiero potem README.
+- Brak cichych fallbacków: błąd przy cache miss (np. OOM przy ładowaniu
+  encodera) ma jawnie wybuchnąć z czytelnym komunikatem (co zawiodło, czego
+  oczekiwano, co otrzymano) — nigdy nie zwracać pustego/domyślnego
+  conditioningu ani nie użyć cichej starej wartości z cache.
+- Brak pickle w formacie cache — tensory w safetensors, struktura osobno
+  (JSON), zgodnie z tym co robi ComfyUI-H3-Multishot.
+- Zapis cache atomowo: plik tymczasowy + os.replace() na koniec, nigdy
+  bezpośredni zapis do docelowej ścieżki.
+- Nie hashować całych plików modeli — identyfikacja encodera przez
+  (clip_name, file_size, mtime_ns) z os.stat().
+- Logowanie: jasno wypisuj, którą ścieżką poszło wykonanie (HIT/MISS),
+  zajętość RAM/VRAM przed i po unload.
+- Żadnych `git add .` — jawnie staged pliki. Nie commitować: cache/,
+  __pycache__/, plików tymczasowych.
+- Nie zgaduj API ComfyUI z pamięci/GitHuba — sprawdzaj lokalnie w tym repo
+  (/home/kamil/ComfyUI), bo lokalna wersja może się różnić.
+
+## Plan działania (kolejne fazy, nie przeskakiwać)
+1. Osobne repo — GOTOWE
+2. Baza = stockowy MiniMaxH3ImageToVideo, wywoływany bezpośrednio, bez
+   kopiowania logiki
+3. Weryfikacja lokalnego core przed każdą fazą — GOTOWE dla kontraktu clip
+4. SpyClipProxy bez cache'a — deleguje 1:1, zapisuje co dostał — W TRAKCIE
+5. Bramka go/no-go: MiniMaxH3ImageToVideo.execute() z podstawionym proxy
+   musi zadziałać identycznie jak z prawdziwym clip — JEŚLI NIE, ZATRZYMAĆ
+   PROJEKT I ZMIENIĆ ARCHITEKTURĘ
+6. Test zgodności: stock CLIP vs proxy CLIP → identyczny CONDITIONING/LATENT
+7. Proxy: tokenize(self, prompt, **kwargs) (nie sztywne images=None) —
+   przyszłościowo pod minimax_ref_items= dla ref2va
+8. Cache key liczony z danych PRZECHWYCONYCH przez proxy (post-resize), nie
+   z surowych inputów node'a
+9. Canonical request do fingerprintu: CACHE_SCHEMA_VERSION, clip identity,
+   prompt, kwargs przekazane do tokenize(), wszystkie tensory z kwargs
+10. Identyfikacja encodera: clip_name + file_size + mtime_ns
+11. Hashowanie tensorów: tensor.detach().cpu().contiguous(), deterministyczna
+    serializacja struktury (ustalona kolejność kluczy)
+12. Dopiero teraz dokładamy cache do proxy
+13. Cache hit → prawdziwy CLIP/Qwen NIE jest w ogóle ładowany
+14. Cache miss → load real clip → real tokenize/encode → conditioning →
+    zapis cache → targeted unload → return
+15. Cache zawiera WYŁĄCZNIE output encode_from_tokens_scheduled — nic
+    więcej (nie AV latent, nie VAE keyframe latents, nie minimax_keyframes)
+16. Format cache: safetensors + osobna struktura/metadata, bez pickle,
+    zapis atomowy
+17. Targeted unload: unload_model_and_clones(clip.patcher), potem del clip;
+    gc.collect(); soft_empty_cache()
+18. Publiczny node NIE ma wejścia CLIP — ma clip_name (string) + leniwe
+    ładowanie wewnątrz execute(), żeby HIT omijał CLIPLoader w grafie
+19. Reszta inputów/outputów identyczna ze stockiem poza tą jedną zamianą
+20. Tryby v1: auto (hit→load, miss→encode+save), refresh (ignoruje cache,
+    nadpisuje). cache_only później.
+21. Testy inwalidacji: zmiana promptu/first_frame/last_frame/clip_name/
+    podmiana pliku → MISS. Zmiana seed/sampler/steps/scheduler → HIT.
+22. Test zgodności prompt+obraz: dokładny prompt i dokładne obrazy, bez
+    prób semantycznej interpretacji "zgodności"
+23. Test końcowy: stock == cached-MISS == cached-HIT (conditioning +
+    finalne przygotowanie H3), tensory przez torch.allclose, nie exact
+    equality
+24. Test pamięci: RAM przed/podczas/po unload/podczas samplingu —
+    kryterium: Qwen nie zostaje jako balast po przygotowaniu conditioningu
+25. README + example workflow — DOPIERO na końcu, po przejściu wszystkich testów
+
+Po utworzeniu pliku zrób git add CLAUDE.md i commit z opisem
+"Add project context and plan for CC sessions". Nic więcej teraz nie rób.
