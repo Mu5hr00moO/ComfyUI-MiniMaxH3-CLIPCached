@@ -50,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -238,38 +239,57 @@ def main():
         print()
         print("=== (d) Chaining (a) stock and (c) HIT conditioning through the stock MiniMaxH3AddGuide ===")
         print("(AddGuide never touches clip -- safe regardless of encoder residency state)")
-        t0 = time.time()
-        guided_stock = MiniMaxH3AddGuide.execute(
-            positive=cond_a, latent=latent_a, frame_idx=GUIDE_FRAME_IDX, vae=vae,
-            image=guide_image.clone(),
-        )
-        dt_guide_stock = time.time() - t0
-        print("AddGuide(stock) finished in {:.1f}s".format(dt_guide_stock))
+        # (d) is isolated in its own try/except: a/b/c are the actual cache
+        # correctness result (this project's whole point) and must always be
+        # reported in full even if (d) -- an extra downstream-compatibility
+        # check that does a further real vae.encode() on top of three prior
+        # real encode passes -- hits a VRAM ceiling unrelated to cache
+        # correctness (see CLAUDE.md "Otwarte pytania - faza 24"). A crash
+        # here must not swallow the a/b/c PASS lines above it into an
+        # unreadable traceback.
+        d_failed = False
+        dt_guide_stock = dt_guide_hit = None
+        try:
+            t0 = time.time()
+            guided_stock = MiniMaxH3AddGuide.execute(
+                positive=cond_a, latent=latent_a, frame_idx=GUIDE_FRAME_IDX, vae=vae,
+                image=guide_image.clone(),
+            )
+            dt_guide_stock = time.time() - t0
+            print("AddGuide(stock) finished in {:.1f}s".format(dt_guide_stock))
 
-        t0 = time.time()
-        guided_hit = MiniMaxH3AddGuide.execute(
-            positive=cond_c, latent=latent_c, frame_idx=GUIDE_FRAME_IDX, vae=vae,
-            image=guide_image.clone(),
-        )
-        dt_guide_hit = time.time() - t0
-        print("AddGuide(HIT) finished in {:.1f}s".format(dt_guide_hit))
+            t0 = time.time()
+            guided_hit = MiniMaxH3AddGuide.execute(
+                positive=cond_c, latent=latent_c, frame_idx=GUIDE_FRAME_IDX, vae=vae,
+                image=guide_image.clone(),
+            )
+            dt_guide_hit = time.time() - t0
+            print("AddGuide(HIT) finished in {:.1f}s".format(dt_guide_hit))
 
-        (guided_cond_stock,) = guided_stock.args
-        (guided_cond_hit,) = guided_hit.args
-        guided_cond_stock, guided_cond_hit = _to_cpu(guided_cond_stock), _to_cpu(guided_cond_hit)
-        _tensors_equal("AddGuide(stock) vs AddGuide(HIT)", guided_cond_stock, guided_cond_hit)
-        print("AddGuide(stock) == AddGuide(HIT): PASS")
+            (guided_cond_stock,) = guided_stock.args
+            (guided_cond_hit,) = guided_hit.args
+            guided_cond_stock, guided_cond_hit = _to_cpu(guided_cond_stock), _to_cpu(guided_cond_hit)
+            _tensors_equal("AddGuide(stock) vs AddGuide(HIT)", guided_cond_stock, guided_cond_hit)
+            print("AddGuide(stock) == AddGuide(HIT): PASS")
+        except Exception:
+            d_failed = True
+            print()
+            print("=== (d) FAILED -- full traceback below, a/b/c result above stands regardless ===")
+            traceback.print_exc()
 
         print()
         print("=== Timing summary ===")
         print("(a) stock          : {:.1f}s".format(dt_a))
         print("(b) MISS           : {:.1f}s".format(dt_b))
         print("(c) HIT            : {:.1f}s".format(dt_c))
-        print("AddGuide(stock)    : {:.1f}s".format(dt_guide_stock))
-        print("AddGuide(HIT)      : {:.1f}s".format(dt_guide_hit))
+        print("AddGuide(stock)    : {}".format("{:.1f}s".format(dt_guide_stock) if dt_guide_stock is not None else "FAILED/skipped"))
+        print("AddGuide(HIT)      : {}".format("{:.1f}s".format(dt_guide_hit) if dt_guide_hit is not None else "FAILED/skipped"))
 
         print()
-        print("=== RESULT: PASS ===")
+        if d_failed:
+            print("=== RESULT: a/b/c PASS, (d) AddGuide FAILED (see traceback above) ===")
+        else:
+            print("=== RESULT: PASS ===")
 
     finally:
         print()
@@ -280,6 +300,9 @@ def main():
             comfy.model_management.unload_model_and_clones(currently_resident_patcher)
         log_memory("after-finally-unload")
         logger_thread.join(timeout=5)
+
+    if d_failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
