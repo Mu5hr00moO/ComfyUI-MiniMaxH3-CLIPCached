@@ -123,6 +123,11 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   __pycache__/, plików tymczasowych.
 - Nie zgaduj API ComfyUI z pamięci/GitHuba — sprawdzaj lokalnie w tym repo
   (/home/kamil/ComfyUI), bo lokalna wersja może się różnić.
+- Na końcu KAŻDEJ fazy/kroku, przed przejściem do następnego: uruchom
+  `git status --short`. Jeśli jest tam cokolwiek niescommitowane, co
+  zostało już zweryfikowane (testy przeszły, działanie potwierdzone) -
+  scommituj to natychmiast, zanim jakikolwiek kolejny plik zacznie na
+  tym polegać. Nie zostawiaj "wiszących" zmian między sesjami/fazami.
 
 ## Plan działania (kolejne fazy, nie przeskakiwać)
 1. Osobne repo — GOTOWE
