@@ -16,6 +16,8 @@ import sys
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
 
+from caching.proxy import CachedClipProxy
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CLIP_NAME = "fake_clip.safetensors"
@@ -115,7 +117,92 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
 
 
-def test_c_node_class_mappings_has_exactly_one_matching_key():
+def _make_spy_cached_clip_proxy():
+    """A CachedClipProxy subclass that records every constructor call
+    (args, kwargs) before delegating to the real __init__ -- so the rest of
+    execute() (tokenize/encode_from_tokens_scheduled/did_load_real_clip) still
+    behaves exactly like the real proxy, we just also get to inspect what it
+    was built with.
+
+    nodes.py does `from caching.proxy import CachedClipProxy`, which binds a
+    private name inside nodes.py's own module namespace at import time --
+    patching caching.proxy.CachedClipProxy afterwards would not reach that
+    already-bound name. So the test patches node_module.CachedClipProxy
+    directly, the same way _patch_common() already patches
+    resolve_clip_stat/build_clip_loader_fn/CACHE_DIR on node_module.
+    """
+    construction_calls = []
+
+    class SpyCachedClipProxy(CachedClipProxy):
+        def __init__(self, *args, **kwargs):
+            construction_calls.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    return SpyCachedClipProxy, construction_calls
+
+
+def test_d_cache_mode_auto_builds_proxy_with_force_refresh_false(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
+    monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
+
+    node = node_module.MiniMaxH3CachedImageToVideo()
+    cond, latent = node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124, cache_mode="auto",
+    )
+
+    assert len(construction_calls) == 1
+    _, kwargs = construction_calls[0]
+    assert kwargs["force_refresh"] is False
+    # rest of execute() still works exactly as with the real proxy
+    assert real_clip.tokenize_calls == 1
+    assert real_clip.encode_calls == 1
+    assert cond == "real_cond"
+    assert unload_calls["count"] == 1
+
+
+def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
+    monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
+
+    node = node_module.MiniMaxH3CachedImageToVideo()
+    cond, latent = node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124, cache_mode="refresh",
+    )
+
+    assert len(construction_calls) == 1
+    _, kwargs = construction_calls[0]
+    assert kwargs["force_refresh"] is True
+    assert real_clip.tokenize_calls == 1
+    assert real_clip.encode_calls == 1
+    assert cond == "real_cond"
+    assert unload_calls["count"] == 1
+
+
+def test_f_node_class_mappings_has_exactly_one_matching_key():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3cached_package_under_test", os.path.join(REPO_ROOT, "__init__.py"))
     package = importlib.util.module_from_spec(spec)
