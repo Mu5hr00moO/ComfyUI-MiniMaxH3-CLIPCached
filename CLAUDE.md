@@ -37,6 +37,22 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   (~27,1 GB)
 - Repo tego node'a: własny .git, NIEZALEŻNE od repo głównego ComfyUI
   (które go ignoruje przez regułę /custom_nodes/)
+- nodes.CLIPLoader() z clip_type=MINIMAX w trybie auto/lowvram tworzy
+  tylko lekki obiekt/patcher - faktyczny transfer wag na GPU (~27GB)
+  dzieje się leniwie, przy PIERWSZYM realnym wywołaniu tokenize/encode,
+  nie przy samym load_clip(). Potwierdzone empirycznie: pierwszy realny
+  encode ~115s, kolejny realny encode na już-rezydentnym modelu ~1.2s,
+  cache HIT ~0.0s. Ważne dla interpretacji przyszłych benchmarków w README
+  (faza 25) - nie mylić kosztu "zimnego" encode na rozgrzanym modelu z
+  kosztem pełnego cold-startu.
+- Dostępna dwa razy powtarzająca się obserwacja (bramka faza 4-5 i test
+  roundtrip faza 12): RAM "available" nie wraca do stanu sprzed load po
+  unload_model_and_clones - do zbadania jako PIERWSZY punkt fazy 24, nie
+  incydentalnie.
+- tests/conftest.py dodaje /home/kamil/ComfyUI do sys.path, co pozwala
+  importować comfy.nested_tensor (samodzielny moduł, tylko torch) w
+  pytest BEZ uruchamiania ComfyUI czy ładowania modelu - wzorzec do
+  ponownego użycia, jeśli inne moduły comfy.* okażą się podobnie lekkie.
 
 ## Zasady kodowania (obowiązują przez cały projekt)
 - Małe, recenzowalne zmiany: jeden commit = jedna logiczna zmiana. Nie
@@ -82,16 +98,17 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
 10. Identyfikacja encodera: clip_name + file_size + mtime_ns
 11. Hashowanie tensorów: tensor.detach().cpu().contiguous(), deterministyczna
     serializacja struktury (ustalona kolejność kluczy)
-12. Dopiero teraz dokładamy cache do proxy
-13. Cache hit → prawdziwy CLIP/Qwen NIE jest w ogóle ładowany
+12. Dopiero teraz dokładamy cache do proxy — GOTOWE
+13. Cache hit → prawdziwy CLIP/Qwen NIE jest w ogóle ładowany — GOTOWE
 14. Cache miss → load real clip → real tokenize/encode → conditioning →
-    zapis cache → targeted unload → return
+    zapis cache → targeted unload → return — GOTOWE
 15. Cache zawiera WYŁĄCZNIE output encode_from_tokens_scheduled — nic
     więcej (nie AV latent, nie VAE keyframe latents, nie minimax_keyframes)
+    — GOTOWE
 16. Format cache: safetensors + osobna struktura/metadata, bez pickle,
-    zapis atomowy
+    zapis atomowy — GOTOWE
 17. Targeted unload: unload_model_and_clones(clip.patcher), potem del clip;
-    gc.collect(); soft_empty_cache()
+    gc.collect(); soft_empty_cache() — GOTOWE
 18. Publiczny node NIE ma wejścia CLIP — ma clip_name (string) + leniwe
     ładowanie wewnątrz execute(), żeby HIT omijał CLIPLoader w grafie
 19. Reszta inputów/outputów identyczna ze stockiem poza tą jedną zamianą
