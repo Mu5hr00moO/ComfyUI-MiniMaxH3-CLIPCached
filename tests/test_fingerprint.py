@@ -112,6 +112,29 @@ def test_i_different_schema_version_different_hash():
     assert fp1 != fp2
 
 
+def test_j_changing_only_first_frame_slot_different_hash():
+    # images=[first_frame, last_frame], as the stock node builds it when both
+    # are present -- changing only index 0 (first_frame) must change the hash
+    # even though index 1 (last_frame) is untouched.
+    first_frame = torch.rand(1, 64, 64, 3)
+    last_frame = torch.rand(1, 64, 64, 3)
+    other_first_frame = torch.rand(1, 64, 64, 3)
+    fp1 = _fp(tokenize_kwargs={"images": [first_frame, last_frame]})
+    fp2 = _fp(tokenize_kwargs={"images": [other_first_frame, last_frame.clone()]})
+    assert fp1 != fp2
+
+
+def test_k_changing_only_last_frame_slot_different_hash():
+    # Same as above, mirrored: changing only index 1 (last_frame) must change
+    # the hash even though index 0 (first_frame) is untouched.
+    first_frame = torch.rand(1, 64, 64, 3)
+    last_frame = torch.rand(1, 64, 64, 3)
+    other_last_frame = torch.rand(1, 64, 64, 3)
+    fp1 = _fp(tokenize_kwargs={"images": [first_frame, last_frame]})
+    fp2 = _fp(tokenize_kwargs={"images": [first_frame.clone(), other_last_frame]})
+    assert fp1 != fp2
+
+
 def test_hash_is_full_sha256_hex_digest():
     fp = _fp()
     assert isinstance(fp, str)
