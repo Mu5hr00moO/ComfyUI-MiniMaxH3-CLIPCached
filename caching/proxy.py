@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 class CachedClipProxy:
-    def __init__(self, real_clip, clip_name, clip_file_size, clip_mtime_ns, cache_dir):
-        self.real_clip = real_clip
+    def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir):
+        self.clip_loader_fn = clip_loader_fn
         self.clip_name = clip_name
         self.clip_file_size = clip_file_size
         self.clip_mtime_ns = clip_mtime_ns
         self.cache_dir = cache_dir
         self._pending = None
+        self._real_clip = None
 
     def tokenize(self, prompt, **kwargs):
         self._pending = (prompt, kwargs)
@@ -44,7 +45,9 @@ class CachedClipProxy:
             return cond
 
         logger.info("[CACHE MISS] %s", fingerprint[:12])
-        real_tokens = self.real_clip.tokenize(prompt, **kwargs)
-        cond = self.real_clip.encode_from_tokens_scheduled(real_tokens)
+        if self._real_clip is None:
+            self._real_clip = self.clip_loader_fn()
+        real_tokens = self._real_clip.tokenize(prompt, **kwargs)
+        cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
         save_conditioning(fingerprint, cond, self.cache_dir)
         return cond

@@ -85,7 +85,7 @@ def main():
 
     print()
     print("=== (a) execute() with fresh CachedClipProxy, empty cache_dir -> expect MISS ===")
-    proxy_a = CachedClipProxy(counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
+    proxy_a = CachedClipProxy(lambda: counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
     t0 = time.time()
     output_a = MiniMaxH3ImageToVideo.execute(
         clip=proxy_a, vae=vae, prompt=PROMPT, width=WIDTH, height=HEIGHT, length=LENGTH,
@@ -98,7 +98,7 @@ def main():
 
     print()
     print("=== (b) execute() with a NEW CachedClipProxy, same cache_dir/prompt -> expect HIT ===")
-    proxy_b = CachedClipProxy(counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
+    proxy_b = CachedClipProxy(lambda: counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
     t0 = time.time()
     output_b = MiniMaxH3ImageToVideo.execute(
         clip=proxy_b, vae=vae, prompt=PROMPT, width=WIDTH, height=HEIGHT, length=LENGTH,
@@ -115,7 +115,7 @@ def main():
 
     print()
     print("=== (c) execute() with a different prompt, same cache_dir -> expect MISS again ===")
-    proxy_c = CachedClipProxy(counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
+    proxy_c = CachedClipProxy(lambda: counting_clip, CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR)
     t0 = time.time()
     output_c = MiniMaxH3ImageToVideo.execute(
         clip=proxy_c, vae=vae, prompt=PROMPT + " (different)", width=WIDTH, height=HEIGHT, length=LENGTH,
