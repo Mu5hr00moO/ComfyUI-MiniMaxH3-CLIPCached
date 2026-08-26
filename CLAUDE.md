@@ -72,6 +72,18 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   ani proces-widmo. Traktować dowolną wartość w tym paśmie przy braku
   procesów jako czysty stan wyjściowy - nie zatrzymywać się przy każdym
   drobnym odchyleniu w tym zakresie.
+- ComfyUI NIE deduplikuje niezależnych wywołań comfy.sd.load_clip() na
+  ten sam plik - dwa osobne wywołania tworzą dwa osobne, w pełni
+  rezydentne obiekty modelu w VRAM jednocześnie. Nigdy nie trzymać
+  więcej niż jednego dużego (~15GB+ na GPU) modelu tekst-encodera
+  rezydentnego naraz na tej karcie (16GB) - zawsze unload przed
+  kolejnym load, nie tylko na samym końcu skryptu/testu.
+- Potwierdzony, bezpieczniejszy tryb awarii: czyste
+  torch.OutOfMemoryError (proces kończy się, sterownik odzyskuje VRAM
+  sam, brak wpisów OOM w dmesg) jest jakościowo różny od wcześniejszego
+  pełnego crasha hosta - tamten wynikał z RÓWNOLEGŁEJ generacji w
+  ComfyUI + testu, nie z samego przekroczenia VRAM przez jeden
+  kontrolowany proces.
 
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
