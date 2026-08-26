@@ -16,8 +16,27 @@ identically under ComfyUI's real loader and under pytest.
 
 import importlib.util
 import os
+import sys
 
 _here = os.path.dirname(os.path.abspath(__file__))
+
+# nodes.py does `from caching.loader import ...`, an absolute import of our
+# own top-level caching/ package. ComfyUI's real loader never puts this
+# repo's own directory on sys.path (confirmed locally: the only sys.path
+# mutation in ComfyUI's init_external_custom_nodes() adds <ComfyUI_root>/comfy,
+# nothing custom-node-specific), so without this, caching.loader resolves
+# fine under pytest (which puts cwd on sys.path) but fails with
+# ModuleNotFoundError under real ComfyUI. append, NOT insert(0): confirmed
+# locally that ComfyUI's own top-level "nodes" module is already fully
+# loaded into sys.modules by the time load_custom_node() reaches this
+# package (main.py does `import nodes` long before it calls
+# nodes.init_extra_nodes()), so no future `import nodes` anywhere in the
+# process will ever re-search sys.path for it -- but append instead of
+# insert(0) is one more layer of caution regardless, so this repo's
+# directory is never given priority over any existing ComfyUI path entry.
+if _here not in sys.path:
+    sys.path.append(_here)
+
 _spec = importlib.util.spec_from_file_location("minimaxh3cached_nodes", os.path.join(_here, "nodes.py"))
 _nodes_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_nodes_module)
