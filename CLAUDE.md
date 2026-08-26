@@ -85,6 +85,29 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   ComfyUI + testu, nie z samego przekroczenia VRAM przez jeden
   kontrolowany proces.
 
+### Otwarte pytania - faza 24
+- unload_model_and_clones() nie zwraca VRAM do baseline po jednym
+  execute() w tym środowisku, i narasta przy kolejnych wywołaniach w
+  TYM SAMYM procesie: after-a-execute 27.23GiB -> after-a-unload
+  16.42GiB (spadek tylko ~11GB) -> after-b-execute 30.24GiB ->
+  after-b-unload 30.24GiB (zero efektu) -> after-c-execute (HIT,
+  did_load_real_clip=False, CLIP w ogóle nietknięty) 44.34GiB -> przed
+  crashem w (d) 55.61GiB. Krok (c) skacze o ~14GB mimo że nie dotyka
+  CLIP-a wcale - podejrzenie: to vae.encode() (wykonywany w KAŻDYM
+  kroku, nieobjęty cache'em) akumuluje rezydualną pamięć na resztkach
+  po nie w pełni zwolnionym enkoderze, nie sam mechanizm unloadu CLIP.
+  NIE MYLIĆ z poprawnością cache'a - a/b/c dają identyczny wynik
+  (torch.equal), to jest wyłącznie kwestia zwalniania VRAM między
+  kolejnymi wywołaniami w jednym procesie. Do zbadania w fazie 24, przy
+  komputerze:
+  1. czy pojedynczy execute() w prawdziwym ComfyUI (nie w tym
+     diagnostycznym skrypcie robiącym 3-4 pełne cykle z rzędu) też
+     zostawia rezydualne VRAM po jednym generowaniu
+  2. czy problem leży w vae.encode(), nie w CachedClipProxy
+  3. czy brakujące gc.collect()/del po unloadzie w naszym skrypcie
+     testowym trzyma żywe referencje Pythona zapobiegające faktycznemu
+     zwolnieniu pamięci przez alokator
+
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
     conda activate comfyenv
