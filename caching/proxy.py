@@ -31,6 +31,10 @@ class CachedClipProxy:
         self._real_clip = None
         self.did_load_real_clip = False
 
+    @property
+    def real_clip(self):
+        return self._real_clip
+
     def tokenize(self, prompt, **kwargs):
         self._pending = (prompt, kwargs)
         return self._pending
