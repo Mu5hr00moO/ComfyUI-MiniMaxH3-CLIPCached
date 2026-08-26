@@ -65,6 +65,31 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   przez load_custom_node(), w przeciwieństwie do "nodes"/"comfy"/
   "folder_paths" które są już zaimportowane globalnie przed dotarciem
   do custom_nodes.
+
+### Jak uruchamiać ComfyUI lokalnie
+- Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
+    conda activate comfyenv
+    cd ~/ComfyUI
+    python main.py
+  Środowisko conda: "comfyenv". Jeśli jakikolwiek skrypt/test uruchamia
+  serwer ComfyUI w NOWEJ, nieinteraktywnej powłoce (np. bash_tool w tle,
+  bez odziedziczonego stanu terminala) - nie polegać na tym że
+  "conda activate" zadziała automatycznie. Zamiast tego użyć jednego z:
+    conda run -n comfyenv python main.py
+  albo pełnej ścieżki do interpretera z tego środowiska
+  (np. wynik `conda run -n comfyenv which python`).
+- Potwierdzone lokalnie (nie zgadywać): domyślna nieinteraktywna powłoka
+  bash_tool w tej sesji CC ma CONDA_DEFAULT_ENV=base i `python` wskazujący
+  na /home/kamil/miniconda3/bin/python (base env, Python 3.14.6, BEZ
+  torch — `import torch` rzuca ModuleNotFoundError). ~/.bashrc ma tylko
+  standardowy blok `conda init`, bez żadnego `conda activate comfyenv`.
+  Czyli samo "python main.py" bez `conda run -n comfyenv` w bash_tool
+  NIE zadziała. Test end-to-end fazy 18 użył jawnie
+  `conda run -n comfyenv --no-capture-output python main.py` i to
+  zadziałało poprawnie — to jest potwierdzony, działający wariant do
+  używania w przyszłych sesjach CC uruchamiających serwer ComfyUI ze
+  skryptu/bash_tool.
+
 - Dostępna dwa razy powtarzająca się obserwacja (bramka faza 4-5 i test
   roundtrip faza 12): RAM "available" nie wraca do stanu sprzed load po
   unload_model_and_clones - do zbadania jako PIERWSZY punkt fazy 24, nie
