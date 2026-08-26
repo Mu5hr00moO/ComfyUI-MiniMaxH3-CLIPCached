@@ -45,6 +45,26 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   cache HIT ~0.0s. Ważne dla interpretacji przyszłych benchmarków w README
   (faza 25) - nie mylić kosztu "zimnego" encode na rozgrzanym modelu z
   kosztem pełnego cold-startu.
+- Trzeci zaobserwowany wariant czasu encode (po ~115s cold i ~1.2s warm
+  w izolowanych skryptach): pełny serwer ComfyUI, encoder ciepły w OS
+  page cache z wcześniejszych sesji, "dynamic VRAM loading" (streaming
+  wag zamiast blokującego transferu całości) - MISS przez prawdziwe
+  /prompt API zajął 19.6s. Trzy różne liczby dla "MISS" w zależności od
+  stanu page cache i trybu ładowania - nie traktować rozbieżności między
+  benchmarkami jako niespójności w logice cache'a, tylko jako różnicę w
+  warunkach środowiskowych.
+- Faza 18 potwierdzona end-to-end w prawdziwym ComfyUI (nie tylko w
+  testach jednostkowych): node ładuje się bez błędu, prawdziwy MISS przez
+  /prompt API przechodzi (real CLIP proxy -> real Qwen3-VL encode ->
+  conditioning+latent -> targeted unload), VRAM wraca do baseline po
+  zatrzymaniu serwera.
+- __init__.py dodaje katalog repo do sys.path (append, NIE insert(0) -
+  potwierdzone że globalny moduł "nodes" ComfyUI jest już w sys.modules
+  na tym etapie startu, więc nie ma ryzyka przechwycenia), bo nasz
+  własny pakiet "caching" nigdy nie trafia na sys.path automatycznie
+  przez load_custom_node(), w przeciwieństwie do "nodes"/"comfy"/
+  "folder_paths" które są już zaimportowane globalnie przed dotarciem
+  do custom_nodes.
 - Dostępna dwa razy powtarzająca się obserwacja (bramka faza 4-5 i test
   roundtrip faza 12): RAM "available" nie wraca do stanu sprzed load po
   unload_model_and_clones - do zbadania jako PIERWSZY punkt fazy 24, nie
@@ -111,6 +131,8 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
     gc.collect(); soft_empty_cache() — GOTOWE
 18. Publiczny node NIE ma wejścia CLIP — ma clip_name (string) + leniwe
     ładowanie wewnątrz execute(), żeby HIT omijał CLIPLoader w grafie
+    — GOTOWE, potwierdzone end-to-end w prawdziwym ComfyUI (nie tylko
+    unit testami)
 19. Reszta inputów/outputów identyczna ze stockiem poza tą jedną zamianą
 20. Tryby v1: auto (hit→load, miss→encode+save), refresh (ignoruje cache,
     nadpisuje). cache_only później.
