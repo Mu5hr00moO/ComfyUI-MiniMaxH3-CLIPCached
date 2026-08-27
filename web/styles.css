@@ -297,7 +297,7 @@
 .h3cm-prompt-copy {
   position: absolute;
   top: 6px;
-  left: 6px;
+  right: 6px;
   z-index: 1;
   display: grid;
   place-items: center;
