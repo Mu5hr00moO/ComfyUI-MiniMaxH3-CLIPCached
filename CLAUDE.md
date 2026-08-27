@@ -270,3 +270,49 @@ Po utworzeniu pliku zrób git add CLAUDE.md i commit z opisem
 Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
 source of truth, manager jest warstwą indeksującą, fingerprint = ID
 wpisu, prompt jest read-only w managerze.
+
+### Faza 5 - lokalna konwencja PromptServer routes
+
+Zweryfikowane lokalnie (grep w custom_nodes/ tej instalacji ComfyUI,
+`server.py`), nie z pamięci. Dwie niezależne implementacje potwierdzają
+ten sam wzorzec:
+- `MiniMaxH3-Prompt-Writer/backend/routes.py` (+ `tests/test_routes_stability.py`)
+- `ComfyUI-MemoryVisualization/__init__.py`
+
+Ustalenia:
+- **Rejestracja**: na poziomie modułu `routes = PromptServer.instance.routes`
+  (import `from server import PromptServer`), potem dekoratory
+  `@routes.get("/path")` / `@routes.post("/path")` na
+  `async def handler(request: web.Request) -> web.Response`.
+- **`PromptServer.instance` jest dostępny w momencie ładowania custom
+  node'a** - obie referencyjne implementacje sięgają po niego wprost przy
+  imporcie modułu, bez czekania. ComfyUI ustawia `PromptServer.instance = self`
+  w `server.py` (`PromptServer.__init__`), zanim w ogóle dojdzie do
+  ładowania custom nodes.
+- **Trigger rejestracji**: `__init__.py` importuje moduł z routes (w
+  Prompt-Writer: `from .backend import routes as _routes  # noqa`). Sam
+  import = rejestracja endpointów.
+- **Kształt odpowiedzi**: `web.json_response(payload, status=...)`; błędy
+  jako `web.json_response({"error": ...}, status=4xx)`. Bajty obrazu:
+  `web.Response(body=<bytes>, content_type="image/jpeg")` (wzorzec z
+  `server.py` `/view`, linia ~576).
+- **Testy bez ComfyUI**: stub `sys.modules["server"]` z atrapą
+  `PromptServer.instance.routes`, której `.get`/`.post` to pass-through
+  dekoratory (`lambda fn: fn`) - handlery zostają zwykłymi funkcjami
+  modułu i woła się je wprost z podrobionym `request` (`.query` dict,
+  `async def json()`). Ten stub jest w `tests/conftest.py` (§23.4 planu).
+  Wzorzec skopiowany z `MiniMaxH3-Prompt-Writer/tests/test_routes_stability.py`.
+- Nasz `__init__.py` NIE używa importów relatywnych (patrz jego docstring),
+  więc routes importujemy jako `import minimaxh3_clipcache.routes` w
+  `try/except` - rejestracja opcjonalnego UI nie może wywalić ładowania
+  node'a, więc błąd = tylko `logger.warning`, nie wyjątek (to nie jest
+  "cichy fallback" ze ścieżki poprawności cache'a - to opcjonalny UI).
+
+Co ZOSTAJE do ręcznej weryfikacji w Fazie 7 przy żywym ComfyUI (nie da
+się tego sensownie sprawdzić unit testem):
+- że `PromptServer.instance.routes` faktycznie przyjmuje nasze dekoratory
+  na tym realnym serwerze (stub tego nie dowodzi),
+- że endpointy odpowiadają pod `http://127.0.0.1:8188/h3_cache_manager/*`
+  z poprawnym routingiem aiohttp (path matching, query parsing),
+- realny `Content-Type`/transfer bajtów miniaturki przez HTTP,
+- brak kolizji z żadnym innym custom node rejestrującym podobny prefix.
