@@ -221,9 +221,10 @@
   opacity: 1;
 }
 
-/* Reference thumbnails inside the "Load" result: bigger, aspect-preserved,
-   and clickable, so the user can tell first_frame from last_frame by eye. */
-.h3cm-load-result .h3cm-thumbs {
+/* Reference thumbnails inside the "Copy prompt" result: bigger,
+   aspect-preserved, and clickable, so the user can tell first_frame from
+   last_frame by eye. */
+.h3cm-copy-result .h3cm-thumbs {
   gap: 10px;
   margin-top: 8px;
 }
@@ -237,7 +238,7 @@
   display: block;
   line-height: 0;
 }
-.h3cm-load-result .h3cm-thumb {
+.h3cm-copy-result .h3cm-thumb {
   width: 88px;
   height: 88px;
   object-fit: contain;
@@ -350,27 +351,7 @@
   font-size: 11px;
 }
 
-.h3cm-load-picker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-.h3cm-load-picker[hidden] {
-  display: none;
-}
-.h3cm-load-picker select {
-  padding: 5px 8px;
-  border: 1px solid #3a3f4b;
-  border-radius: 6px;
-  background: #1c1f26;
-  color: #eceef1;
-  font: inherit;
-  font-size: 12px;
-}
-
-.h3cm-load-result {
+.h3cm-copy-result {
   margin-top: 10px;
   padding: 9px 11px;
   border: 1px solid #2b2f38;
@@ -380,7 +361,7 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.h3cm-load-result[hidden] {
+.h3cm-copy-result[hidden] {
   display: none;
 }
 .h3cm-ref-list {
@@ -388,7 +369,7 @@
   padding-left: 4px;
   list-style: none;
 }
-.h3cm-load-note {
+.h3cm-copy-note {
   margin-top: 6px;
   color: #9aa1ad;
 }
