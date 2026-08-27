@@ -34,6 +34,12 @@ class CachedClipProxy:
         self._pending = None
         self._real_clip = None
         self.did_load_real_clip = False
+        # Set by encode_from_tokens_scheduled() so nodes.py can, after the
+        # stock execute() returns, tell what this run did and drive the
+        # Cache Manager's verbose-metadata write/backfill (plan phase 2).
+        self.last_fingerprint = None
+        self.last_hit = None                 # True/False, None until anything is computed
+        self.last_core_cache_written = None  # True/False/None (None = write not attempted)
 
     @property
     def real_clip(self):
@@ -49,16 +55,21 @@ class CachedClipProxy:
             prompt, kwargs, self.clip_name, self.clip_file_size, self.clip_mtime_ns,
             CACHE_SCHEMA_VERSION,
         )
+        self.last_fingerprint = fingerprint
 
         if not self.force_refresh:
             cond = load_conditioning(fingerprint, self.cache_dir)
             if cond is not None:
                 logger.info("[CACHE HIT] %s", fingerprint[:12])
                 self._validate_output_hidden_dim(cond, fingerprint)
+                self.last_hit = True
                 return cond
             logger.info("[CACHE MISS] %s", fingerprint[:12])
         else:
             logger.info("[CACHE REFRESH] %s", fingerprint[:12])
+
+        # Past the early HIT return: this run is a MISS or a REFRESH.
+        self.last_hit = False
 
         if self._real_clip is None:
             self._real_clip = self.clip_loader_fn()
@@ -78,7 +89,9 @@ class CachedClipProxy:
         # cost yet and should learn their environment is broken.)
         try:
             save_conditioning(fingerprint, cond, self.cache_dir)
+            self.last_core_cache_written = True
         except Exception as e:
+            self.last_core_cache_written = False
             logger.warning(
                 "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
                 "- continuing without caching this result", fingerprint[:12], e,

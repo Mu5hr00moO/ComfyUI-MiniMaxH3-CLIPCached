@@ -12,6 +12,7 @@ import logging
 import torch
 
 import minimaxh3_clipcache.proxy
+from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
 from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 CLIP_NAME = "fake_clip.safetensors"
@@ -37,7 +38,8 @@ def test_save_failure_still_returns_cond_and_warns(tmp_path, monkeypatch, caplog
         lambda: FakeRealClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path,
     )
 
-    tokens = proxy.tokenize("a cache miss prompt", images=[])
+    prompt, kwargs = "a cache miss prompt", {"images": []}
+    tokens = proxy.tokenize(prompt, **kwargs)
     with caplog.at_level(logging.WARNING):
         cond = proxy.encode_from_tokens_scheduled(tokens)
 
@@ -45,3 +47,11 @@ def test_save_failure_still_returns_cond_and_warns(tmp_path, monkeypatch, caplog
     assert proxy.did_load_real_clip is True
     assert any(r.levelno == logging.WARNING and "CACHE WRITE FAILED" in r.getMessage()
                for r in caplog.records)
+
+    # State fields still reflect the run even though the write failed: a
+    # MISS whose core cache did NOT land on disk.
+    assert proxy.last_fingerprint == compute_fingerprint(
+        prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+    )
+    assert proxy.last_hit is False
+    assert proxy.last_core_cache_written is False

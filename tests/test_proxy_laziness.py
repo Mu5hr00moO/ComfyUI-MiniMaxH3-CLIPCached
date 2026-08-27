@@ -113,6 +113,48 @@ def test_e_miss_sets_did_load_real_clip_true(tmp_path):
     assert proxy.did_load_real_clip is True
 
 
+def test_g_state_fields_reflect_a_fresh_miss(tmp_path):
+    prompt = "a miss prompt for state fields"
+    kwargs = {"images": []}
+    expected_fp = compute_fingerprint(
+        prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+    )
+
+    loader, calls = _make_counting_loader()
+    proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
+
+    tokens = proxy.tokenize(prompt, **kwargs)
+    proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.last_fingerprint == expected_fp
+    assert proxy.last_hit is False
+    assert proxy.last_core_cache_written is True  # real save_conditioning() ran
+
+
+def test_h_state_fields_reflect_a_hit(tmp_path):
+    prompt = "a hit prompt for state fields"
+    kwargs = {"images": []}
+    fingerprint = compute_fingerprint(
+        prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+    )
+    save_conditioning(
+        fingerprint,
+        [[torch.ones(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]],
+        tmp_path,
+    )
+
+    loader, calls = _make_counting_loader()
+    proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
+
+    tokens = proxy.tokenize(prompt, **kwargs)
+    proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.last_fingerprint == fingerprint
+    assert proxy.last_hit is True
+    # The save path is never reached on a HIT, so this stays untouched.
+    assert proxy.last_core_cache_written is None
+
+
 def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
     prompt = "a force refresh prompt"
     kwargs = {"images": []}
