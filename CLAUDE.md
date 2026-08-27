@@ -107,6 +107,15 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   3. czy brakujące gc.collect()/del po unloadzie w naszym skrypcie
      testowym trzyma żywe referencje Pythona zapobiegające faktycznemu
      zwolnieniu pamięci przez alokator
+- comfy_aimdo.host_buffer.HostBuffer.__init__() rzuca AttributeError
+  ('NoneType' object has no attribute 'hostbuf_allocate') gdy aimdo jest
+  inicjalizowane RĘCZNIE w izolowanym skrypcie (poza main.py) - lib
+  (natywna biblioteka C) zostaje None mimo że control.init()/init_devices()
+  zwracają sukces. To bug/ograniczenie w comfy_aimdo (cudzym kodzie),
+  zależne prawdopodobnie od dokładnej sekwencji startowej main.py -
+  ŚWIADOMIE NIE ŚCIGAMY tego dalej, poza zakresem tego projektu. Testy
+  wymagające prawdziwej ścieżki aimdo=True muszą iść przez realny
+  `python main.py`, nie przez ręczną replikację jego initu.
 
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
