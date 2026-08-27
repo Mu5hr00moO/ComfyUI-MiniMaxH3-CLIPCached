@@ -47,6 +47,20 @@ def test_d_nested_tensors_differing_in_audio_are_not_equal():
         _tensors_equal("samples", a, b)
 
 
+def test_f_list_vs_tuple_same_contents_are_not_equal():
+    a = [torch.zeros(2, 3), torch.ones(4)]
+    b = (torch.zeros(2, 3), torch.ones(4))
+    with pytest.raises(AssertionError, match="sequence type mismatch"):
+        _tensors_equal("top", a, b)
+
+
+def test_f_nested_list_vs_tuple_same_contents_are_not_equal():
+    a = [torch.zeros(1), {"minimax_keyframes": [torch.ones(3)]}]
+    b = [torch.zeros(1), {"minimax_keyframes": (torch.ones(3),)}]
+    with pytest.raises(AssertionError, match="sequence type mismatch"):
+        _tensors_equal("output", a, b)
+
+
 def test_e_nested_tensor_alongside_plain_tensor_in_a_list():
     # Mirrors the shape of a real execute() output: [tensor, {"samples": NestedTensor(...)}]
     video, audio = _av_pair()

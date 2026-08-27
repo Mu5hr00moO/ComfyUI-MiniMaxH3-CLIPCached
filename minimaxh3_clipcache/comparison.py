@@ -40,6 +40,13 @@ def _tensors_equal(path, a, b):
             _tensors_equal("{}[{!r}]".format(path, k), a[k], b[k])
         return
     if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+        # list vs tuple is a real difference here: serialize.py round-trips
+        # tuple-ness (via __type__: "tuple"), and the stock node returns
+        # tuples in specific spots (e.g. minimax_keyframes), so a cached
+        # replay that came back as a list where the stock path has a tuple
+        # is a serialization bug, not an equal value.
+        assert type(a) is type(b), \
+            "{}: sequence type mismatch {} vs {}".format(path, type(a).__name__, type(b).__name__)
         assert len(a) == len(b), "{}: length mismatch {} vs {}".format(path, len(a), len(b))
         for i, (ea, eb) in enumerate(zip(a, b)):
             _tensors_equal("{}[{}]".format(path, i), ea, eb)
