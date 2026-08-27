@@ -261,3 +261,9 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
 
 Po utworzeniu pliku zrób git add CLAUDE.md i commit z opisem
 "Add project context and plan for CC sessions". Nic więcej teraz nie rób.
+
+## Cache Manager (drugi wątek)
+
+Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
+source of truth, manager jest warstwą indeksującą, fingerprint = ID
+wpisu, prompt jest read-only w managerze.
