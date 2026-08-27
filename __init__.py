@@ -60,4 +60,9 @@ except Exception as _routes_err:  # pragma: no cover
 NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": MiniMaxH3CLIPCachedImageToVideo}
 NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": "MiniMax H3 CLIP-Cached Images to Video"}
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# ComfyUI serves this directory's files under /extensions/<repo>/ and loads
+# every .js in it as a frontend extension. web/main.js registers the Cache
+# Manager panel (Phase 6). Same declaration style as MiniMaxH3-Prompt-Writer.
+WEB_DIRECTORY = "./web"
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

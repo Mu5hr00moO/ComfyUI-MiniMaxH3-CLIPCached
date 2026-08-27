@@ -316,9 +316,48 @@ Ustalenia:
 
 Co ZOSTAJE do ręcznej weryfikacji w Fazie 7 przy żywym ComfyUI (nie da
 się tego sensownie sprawdzić unit testem):
-- że `PromptServer.instance.routes` faktycznie przyjmuje nasze dekoratory
-  na tym realnym serwerze (stub tego nie dowodzi),
-- że endpointy odpowiadają pod `http://127.0.0.1:8188/h3_cache_manager/*`
-  z poprawnym routingiem aiohttp (path matching, query parsing),
-- realny `Content-Type`/transfer bajtów miniaturki przez HTTP,
+- realny `Content-Type`/transfer bajtów miniaturki przez HTTP (endpoint
+  `thumbnail` nie był jeszcze wywołany z istniejącym plikiem na żywo),
 - brak kolizji z żadnym innym custom node rejestrującym podobny prefix.
+
+### Faza 5/6 - co zweryfikowano na żywym serwerze (headless, curl)
+
+Uruchomiony `python main.py --port 8199 --cpu` (osobny port, żeby nie
+kolidować z sesją użytkownika; baza dała warning o locku, ale serwer
+wstał). Sprawdzone `curl`-em, BEZ przeglądarki:
+- nasz node ładuje się bez błędu, ZERO warningu
+  "Cache Manager REST routes not registered" -> rejestracja dekoratorów
+  `@routes.get/@routes.post` na `PromptServer.instance.routes` DZIAŁA na
+  realnym serwerze (nie tylko na stubie),
+- `GET /h3_cache_manager/check` -> HTTP 200, kształt JSON dokładnie
+  `{entries:[{fingerprint,classification,verbose}], total_count,
+  total_size_bytes}` (scanner znalazł 12 realnych wpisów legacy z
+  wcześniejszych faz - `.safetensors`+`.json` bez `.verbose.json`,
+  poprawnie sklasyfikowane jako "legacy"),
+- `GET /h3_cache_manager/get?fingerprint=nope` -> 400,
+  `?fingerprint=<realny 64-hex bez verbose>` -> 404,
+- `POST /h3_cache_manager/update` z nieistniejącym fingerprintem -> 404,
+- `GET /h3_cache_manager/thumbnail?...&index=notint` -> 400,
+- `GET /extensions/ComfyUI-MiniMaxH3-CLIPCached/main.js` -> 200
+  `text/javascript`, `.../styles.css` -> 200 `text/css`
+  (`WEB_DIRECTORY="./web"` serwuje pliki poprawnie).
+
+### Faza 6 część 1 - czego NIE sprawdzono (do oceny użytkownika w przeglądarce)
+
+`web/main.js` + `web/styles.css` napisane (szkielet: floating launcher
+"H3 Cache", modal z `role="dialog"`/`aria-modal`, toolbar z "Check" +
+status, surowa lista wierszy `fingerprint[:12]…` + badge
+normal/legacy, Escape zamyka, `app.registerExtension` z
+commands/menuCommands/setup). Zweryfikowana tylko składnia JS
+(`node --check` jako ES module - OK) i że pliki są serwowane po HTTP.
+NIE uruchomiono w przeglądarce, więc NIE potwierdzone:
+- czy `import { app } from "/scripts/app.js"` / `"/scripts/api.js"`
+  faktycznie się rozwiązują w tej wersji frontendu ComfyUI,
+- czy `app.registerExtension({commands, menuCommands, setup})` w tej
+  wersji ma dokładnie takie API (skopiowane z Prompt-Writer, ale wersje
+  frontendu mogą się różnić),
+- czy panel się renderuje, czy launcher jest widoczny nad canvasem,
+- czy klik "Check" w realnym UI odpala `api.fetchApi` i wyświetla wynik,
+- cokolwiek dotyczące wyglądu/UX/z-index/kolizji stylów z ComfyUI.
+To jest jawnie zostawione użytkownikowi do obejrzenia na żywo (Faza 6
+z założenia wymaga człowieka przy przeglądarce).
