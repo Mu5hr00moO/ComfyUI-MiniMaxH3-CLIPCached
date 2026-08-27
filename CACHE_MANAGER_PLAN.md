@@ -668,8 +668,23 @@ Nie dodajemy cache statusu per preset / wpis.
 
 `Load`:
 
-1. kopiuje dokładny prompt wybranego wpisu do widgetu `prompt` głównego
-   `MiniMaxH3CLIPCachedImageToVideo`,
+1. kopiuje dokładny prompt wybranego wpisu **do schowka systemowego**
+   (`navigator.clipboard.writeText`), **nie** do widgetu w grafie.
+
+   Powód (odkryty przy realnej implementacji, faza 6 część 3): próba
+   automatycznego odnalezienia i zapisania do widgetu `prompt` na nodzie
+   w grafie okazała się niepewna w dwóch normalnych, częstych
+   konfiguracjach, nie edge case'ach:
+   - **subgrafy** — `app.graph.findNodesByType()` nie schodzi rekurencyjnie
+     do subgrafów, więc node `MiniMaxH3CLIPCachedImageToVideo` wewnątrz
+     subgrafu jest dla niej niewidoczny;
+   - **prompt przekonwertowany z widgetu na input** i podłączony z
+     osobnego noda tekstowego — `node.widgets` nie zawiera wtedy takiego
+     widgetu do ustawienia.
+
+   Kopiowanie do schowka działa bezwarunkowo, niezależnie od struktury
+   grafu, i jest bliżej ducha tej sekcji niż automatyczny zapis do
+   widgetu ("Nie próbujemy automatycznie ... rekonstruować grafu" niżej).
 2. nie próbuje automatycznie odtwarzać pełnych obrazów referencyjnych,
 3. jeśli wpis został utworzony z referencjami, **musi wyświetlić użytkownikowi
    wyraźną informację o ich obecności**.
