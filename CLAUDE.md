@@ -85,37 +85,58 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   ComfyUI + testu, nie z samego przekroczenia VRAM przez jeden
   kontrolowany proces.
 
-### Otwarte pytania - faza 24
-- unload_model_and_clones() nie zwraca VRAM do baseline po jednym
-  execute() w tym środowisku, i narasta przy kolejnych wywołaniach w
-  TYM SAMYM procesie: after-a-execute 27.23GiB -> after-a-unload
-  16.42GiB (spadek tylko ~11GB) -> after-b-execute 30.24GiB ->
-  after-b-unload 30.24GiB (zero efektu) -> after-c-execute (HIT,
-  did_load_real_clip=False, CLIP w ogóle nietknięty) 44.34GiB -> przed
-  crashem w (d) 55.61GiB. Krok (c) skacze o ~14GB mimo że nie dotyka
-  CLIP-a wcale - podejrzenie: to vae.encode() (wykonywany w KAŻDYM
-  kroku, nieobjęty cache'em) akumuluje rezydualną pamięć na resztkach
-  po nie w pełni zwolnionym enkoderze, nie sam mechanizm unloadu CLIP.
-  NIE MYLIĆ z poprawnością cache'a - a/b/c dają identyczny wynik
-  (torch.equal), to jest wyłącznie kwestia zwalniania VRAM między
-  kolejnymi wywołaniami w jednym procesie. Do zbadania w fazie 24, przy
-  komputerze:
-  1. czy pojedynczy execute() w prawdziwym ComfyUI (nie w tym
-     diagnostycznym skrypcie robiącym 3-4 pełne cykle z rzędu) też
-     zostawia rezydualne VRAM po jednym generowaniu
-  2. czy problem leży w vae.encode(), nie w CachedClipProxy
-  3. czy brakujące gc.collect()/del po unloadzie w naszym skrypcie
-     testowym trzyma żywe referencje Pythona zapobiegające faktycznemu
-     zwolnieniu pamięci przez alokator
-- comfy_aimdo.host_buffer.HostBuffer.__init__() rzuca AttributeError
-  ('NoneType' object has no attribute 'hostbuf_allocate') gdy aimdo jest
-  inicjalizowane RĘCZNIE w izolowanym skrypcie (poza main.py) - lib
-  (natywna biblioteka C) zostaje None mimo że control.init()/init_devices()
-  zwracają sukces. To bug/ograniczenie w comfy_aimdo (cudzym kodzie),
-  zależne prawdopodobnie od dokładnej sekwencji startowej main.py -
-  ŚWIADOMIE NIE ŚCIGAMY tego dalej, poza zakresem tego projektu. Testy
-  wymagające prawdziwej ścieżki aimdo=True muszą iść przez realny
-  `python main.py`, nie przez ręczną replikację jego initu.
+### Faza 24: dochodzenie w sprawie narastającego RAM/VRAM - ROZWIĄZANE
+
+Początkowa obserwacja (faza 23): powtarzane load/unload CLIP w jednym
+procesie skryptu testowego pokazywało narastające, nieodzyskiwane VRAM
+(16GB -> 30GB -> 44GB -> 55GB) prowadzące do torch.OutOfMemoryError,
+a osobny izolowany test pokazał ~13GB rezydualnego RSS (RAM procesu)
+po JEDNYM cyklu load/unload/del/gc.collect() - ekstrapolacja tego tempa
+(kilka cykli z rzędu) doprowadziła do realnego przepełnienia RAM systemu
+i wymusiła ręczny SIGKILL.
+
+Przyczyna źródłowa: OBA niebezpieczne testy ładowały CLIP przez ręczne
+`import nodes; nodes.CLIPLoader()...` z pominięciem main.py, co oznacza
+że comfy.memory_management.aimdo_enabled pozostawało False (flaga ta
+jest ustawiana WYŁĄCZNIE w main.py:300, nigdy automatycznie). Bez aimdo
+(DynamicVRAM), ComfyUI ładuje cały 27GB state_dict w pełni do RAM/VRAM
+procesu przez klasyczną ścieżkę safetensors.safe_open() - i coś w tej
+ścieżce (nie ustalone dokładnie które ogniwo - potencjalnie mmap Arc
+w bibliotece safetensors trzymany żywy dłużej niż oczekiwano, nie
+potwierdzone ostatecznie) zostawia rezydualne RSS między cyklami.
+
+Próba odtworzenia aimdo=True ręcznie w izolowanym skrypcie (poza main.py)
+NIE POWIODŁA SIĘ - comfy_aimdo.host_buffer.HostBuffer rzuca AttributeError
+('NoneType' object has no attribute 'hostbuf_allocate'), bo natywna
+biblioteka C (lib) zostaje None gdy aimdo jest inicjalizowane poza
+dokładną sekwencją main.py. To ograniczenie/bug w comfy_aimdo (cudzym
+kodzie) - świadomie nieścigane dalej, poza zakresem tego projektu.
+
+Rozstrzygający test (krok 3c): trzy różne prompty wysłane sekwencyjnie
+przez prawdziwe /prompt API do żywego `python main.py` (gdzie aimdo
+faktycznie się poprawnie inicjalizuje) dały PRAKTYCZNIE PŁASKI trend RSS
+serwera (2.51GiB -> 2.55GiB -> 2.57GiB, przyrosty rzędu dziesiątek MB,
+nie gigabajtów) mimo trzech niezależnych, realnych cache MISS (potwierdzone
+trzema różnymi fingerprintami i trzema różnymi czasami wykonania w logu
+serwera: 20.03s/18.85s/18.62s).
+
+WNIOSEK: w prawdziwym środowisku produkcyjnym (serwer uruchomiony
+normalnie przez `python main.py`, z działającym DynamicVRAM/aimdo) nasz
+node NIE POWODUJE narastającego wycieku RAM/VRAM przy wielu kolejnych,
+różnych promptach w jednej sesji serwera. Oba niebezpieczne incydenty
+z tej fazy diagnozowały wyłącznie SZTUCZNĄ, nieprodukcyjną ścieżkę
+(ręczne ładowanie CLIP z pominięciem main.py/aimdo), którą nasze wczesne
+skrypty testowe (fazy 4-5, 12, 23) siłą rzeczy używały, bo omijają
+main.py z założenia (to jest OK dla testowania POPRAWNOŚCI logiki
+cache'a - torch.equal itd. - ale NIE nadaje się do wnioskowania o
+zużyciu pamięci w realnych warunkach).
+
+Nie testowano: bardzo długich sesji serwera (setki/tysiące promptów) ani
+zachowania przy cache_mode="refresh" w pętli - jeśli w przyszłości pojawią
+się realne zgłoszenia narastającej pamięci w produkcji, zacząć od
+sprawdzenia czy aimdo faktycznie jest aktywne na danym sprzęcie
+użytkownika (nie każdy sprzęt je wspiera - main.py robi auto-detekcję),
+zanim szuka się dalej.
 
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
