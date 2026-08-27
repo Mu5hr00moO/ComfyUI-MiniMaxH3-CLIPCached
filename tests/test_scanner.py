@@ -1,0 +1,144 @@
+"""Unit tests for minimaxh3_clipcache.scanner.scan_cache.
+
+Pure filesystem -- fake cache files via write_bytes() with known sizes, no
+torch, no safetensors, no real encode cache.
+"""
+
+import json
+
+from minimaxh3_clipcache.scanner import scan_cache
+
+FP1 = "1" * 64
+FP2 = "2" * 64
+FP3 = "3" * 64
+FP4 = "4" * 64
+
+
+def _write(path, nbytes):
+    path.write_bytes(b"x" * nbytes)
+
+
+def _core(tmp_path, fp, json_bytes=10, st_bytes=100):
+    _write(tmp_path / "{}.json".format(fp), json_bytes)
+    _write(tmp_path / "{}.safetensors".format(fp), st_bytes)
+
+
+def _verbose(tmp_path, fp, obj=None, raw=None):
+    path = tmp_path / "{}.verbose.json".format(fp)
+    if raw is not None:
+        path.write_bytes(raw)
+    else:
+        payload = obj if obj is not None else {"fingerprint": fp, "system": {}, "user": {}}
+        path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+
+def _recursive_size(tmp_path):
+    return sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file())
+
+
+def test_a_empty_cache_dir_returns_zeros(tmp_path):
+    assert scan_cache(tmp_path) == {"entries": [], "total_count": 0, "total_size_bytes": 0}
+
+
+def test_a_missing_cache_dir_returns_zeros(tmp_path):
+    assert scan_cache(tmp_path / "does-not-exist") == {
+        "entries": [], "total_count": 0, "total_size_bytes": 0}
+
+
+def test_b_normal_entry_reports_verbose_content(tmp_path):
+    _core(tmp_path, FP1)
+    verbose_obj = {
+        "fingerprint": FP1,
+        "system": {"prompt": "a prompt", "references": []},
+        "user": {"name": "keeper", "notes": "", "tags": ["night"], "favorite": True},
+    }
+    _verbose(tmp_path, FP1, obj=verbose_obj)
+
+    result = scan_cache(tmp_path)
+
+    assert result["total_count"] == 1
+    (entry,) = result["entries"]
+    assert entry["fingerprint"] == FP1
+    assert entry["classification"] == "normal"
+    assert entry["verbose"] == verbose_obj
+
+
+def test_c_legacy_entry_has_no_verbose(tmp_path):
+    _core(tmp_path, FP1)
+
+    (entry,) = scan_cache(tmp_path)["entries"]
+
+    assert entry["classification"] == "legacy"
+    assert entry["verbose"] is None
+
+
+def test_d_orphan_safetensors_not_an_entry_but_counted_in_size(tmp_path):
+    _write(tmp_path / "{}.safetensors".format(FP1), 500)
+
+    result = scan_cache(tmp_path)
+
+    assert result["entries"] == []
+    assert result["total_count"] == 0
+    assert result["total_size_bytes"] == 500
+
+
+def test_e_orphan_verbose_not_an_entry_but_counted_in_size(tmp_path):
+    _verbose(tmp_path, FP1)
+    size = (tmp_path / "{}.verbose.json".format(FP1)).stat().st_size
+
+    result = scan_cache(tmp_path)
+
+    assert result["entries"] == []
+    assert result["total_size_bytes"] == size
+
+
+def test_e_lone_core_json_without_safetensors_is_not_an_entry(tmp_path):
+    _write(tmp_path / "{}.json".format(FP1), 42)
+
+    result = scan_cache(tmp_path)
+
+    assert result["entries"] == []
+    assert result["total_size_bytes"] == 42
+
+
+def test_f_thumbnail_bytes_counted_in_size(tmp_path):
+    _core(tmp_path, FP1, json_bytes=10, st_bytes=100)
+    _verbose(tmp_path, FP1)
+    thumbs = tmp_path / "thumbnails"
+    thumbs.mkdir()
+    _write(thumbs / "{}_0.jpg".format(FP1), 321)
+
+    result = scan_cache(tmp_path)
+
+    assert result["total_count"] == 1
+    assert result["total_size_bytes"] == _recursive_size(tmp_path)
+    assert result["total_size_bytes"] >= 10 + 100 + 321
+
+
+def test_g_normal_with_corrupt_verbose_stays_normal_but_verbose_none(tmp_path):
+    _core(tmp_path, FP1)
+    _verbose(tmp_path, FP1, raw=b"\xff\xfe not json at all \x00")
+
+    (entry,) = scan_cache(tmp_path)["entries"]
+
+    assert entry["classification"] == "normal"  # the file exists
+    assert entry["verbose"] is None             # ...but it does not parse
+
+
+def test_h_mixed_directory_classifies_and_sizes_correctly(tmp_path):
+    _core(tmp_path, FP1)
+    _verbose(tmp_path, FP1)              # FP1 normal
+    _core(tmp_path, FP2)                 # FP2 legacy
+    _write(tmp_path / "{}.safetensors".format(FP3), 700)  # FP3 orphan tensor
+    _verbose(tmp_path, FP4)              # FP4 orphan verbose
+    thumbs = tmp_path / "thumbnails"
+    thumbs.mkdir()
+    _write(thumbs / "{}_0.jpg".format(FP1), 55)
+    _write(tmp_path / "some-unrelated-file.txt", 9)
+
+    result = scan_cache(tmp_path)
+
+    by_fp = {e["fingerprint"]: e["classification"] for e in result["entries"]}
+    assert by_fp == {FP1: "normal", FP2: "legacy"}
+    assert result["total_count"] == 2
+    assert result["total_size_bytes"] == _recursive_size(tmp_path)
