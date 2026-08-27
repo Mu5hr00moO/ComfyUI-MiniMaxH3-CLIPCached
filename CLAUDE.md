@@ -212,6 +212,9 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
   tym polegać. Nie zostawiaj "wiszących" zmian między sesjami/fazami.
 
 ## Plan działania (kolejne fazy, nie przeskakiwać)
+**STATUS: wszystkie fazy 1-25 zakończone. Ta sekcja to zapis
+historyczny procesu, nie lista otwartych zadań.**
+
 1. Osobne repo — GOTOWE
 2. Baza = stockowy MiniMaxH3ImageToVideo, wywoływany bezpośrednio, bez
    kopiowania logiki
