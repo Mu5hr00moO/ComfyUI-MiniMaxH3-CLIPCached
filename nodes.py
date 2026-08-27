@@ -20,6 +20,7 @@ import folder_paths
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.thumbnails import save_thumbnail
 from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -62,6 +63,36 @@ class MiniMaxH3CLIPCachedImageToVideo:
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
+    def _build_references(self, fingerprint, first_frame, last_frame):
+        """Build the positional reference descriptors for the verbose sidecar,
+        each with a best-effort JPEG thumbnail.
+
+        Indices are positional over what was actually supplied, not a fixed
+        first_frame=0 / last_frame=1: if only last_frame is given it is
+        index 0. Phase 3's thumbnail filenames use the same index, so this
+        has to stay consistent.
+
+        The thumbnail write for one reference must not lose the other
+        reference or abort the verbose write, so the try/except is inside the
+        loop: on failure that entry is simply listed without a "thumbnail"
+        key.
+        """
+        references = []
+        for label, image in (("first_frame", first_frame), ("last_frame", last_frame)):
+            if image is None:
+                continue
+            index = len(references)
+            entry = {"index": index, "label": label}
+            try:
+                entry["thumbnail"] = save_thumbnail(image, fingerprint, index, CACHE_DIR)
+            except Exception as e:
+                logger.warning(
+                    "[THUMBNAIL WRITE FAILED] %s (%s, index %d): %s - reference "
+                    "will be listed without a thumbnail", fingerprint[:12], label, index, e,
+                )
+            references.append(entry)
+        return references
+
     def _sync_verbose_metadata(self, proxy, prompt, clip_name, clip_file_size,
                                clip_mtime_ns, first_frame, last_frame):
         """Write or backfill this run's ``<fingerprint>.verbose.json`` for the
@@ -85,15 +116,7 @@ class MiniMaxH3CLIPCachedImageToVideo:
         if not (fresh_miss_written or hit_needs_backfill):
             return
 
-        # Reference indices are positional over what was actually supplied,
-        # not a fixed first_frame=0 / last_frame=1: if only last_frame is
-        # given it is index 0. Phase 3 reuses this same convention for
-        # thumbnail filenames, so it has to stay consistent.
-        references = []
-        if first_frame is not None:
-            references.append({"index": len(references), "label": "first_frame"})
-        if last_frame is not None:
-            references.append({"index": len(references), "label": "last_frame"})
+        references = self._build_references(fingerprint, first_frame, last_frame)
 
         system = {
             "prompt": prompt,

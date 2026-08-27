@@ -269,19 +269,32 @@ def _patch_verbose(monkeypatch, node_module, load_return):
     return save_calls
 
 
-@pytest.mark.parametrize("first_frame, last_frame, expected_refs", [
-    (torch.zeros(1, 2, 2, 3), torch.zeros(1, 2, 2, 3),
-     [{"index": 0, "label": "first_frame"}, {"index": 1, "label": "last_frame"}]),
-    (torch.zeros(1, 2, 2, 3), None, [{"index": 0, "label": "first_frame"}]),
-    (None, torch.zeros(1, 2, 2, 3), [{"index": 0, "label": "last_frame"}]),
+def _patch_thumbnails(monkeypatch, node_module):
+    """Patch save_thumbnail on the node module so tests never touch Pillow
+    or the disk, and record the (fingerprint, index) it was asked for."""
+    thumb_calls = []
+
+    def fake_save_thumbnail(image, fingerprint, index, cache_dir, max_size=256):
+        thumb_calls.append({"fingerprint": fingerprint, "index": index, "cache_dir": cache_dir})
+        return "thumbnails/{}_{}.jpg".format(fingerprint, index)
+
+    monkeypatch.setattr(node_module, "save_thumbnail", fake_save_thumbnail)
+    return thumb_calls
+
+
+@pytest.mark.parametrize("first_frame, last_frame, expected_labels", [
+    (torch.zeros(1, 2, 2, 3), torch.zeros(1, 2, 2, 3), ["first_frame", "last_frame"]),
+    (torch.zeros(1, 2, 2, 3), None, ["first_frame"]),
+    (None, torch.zeros(1, 2, 2, 3), ["last_frame"]),
     (None, None, []),
 ])
-def test_g_fresh_miss_writes_verbose_with_positional_reference_indices(
-        monkeypatch, tmp_path, first_frame, last_frame, expected_refs):
+def test_g_fresh_miss_writes_verbose_with_positional_references_and_thumbnails(
+        monkeypatch, tmp_path, first_frame, last_frame, expected_labels):
     node_module = _load_node_module()
     fake_execute = _fake_execute_setting_proxy_state(last_hit=False, last_core_cache_written=True)
     _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
     save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)
+    thumb_calls = _patch_thumbnails(monkeypatch, node_module)
 
     node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     result = node.execute(
@@ -300,7 +313,44 @@ def test_g_fresh_miss_writes_verbose_with_positional_reference_indices(
     assert system["clip_file_size"] == FAKE_FILE_SIZE
     assert system["clip_mtime_ns"] == FAKE_MTIME_NS
     assert system["cache_schema_version"] == 1
-    assert system["references"] == expected_refs
+
+    refs = system["references"]
+    assert [r["label"] for r in refs] == expected_labels
+    assert [r["index"] for r in refs] == list(range(len(expected_labels)))  # positional
+    for r in refs:
+        assert r["thumbnail"] == "thumbnails/{}_{}.jpg".format(FAKE_FINGERPRINT, r["index"])
+    # save_thumbnail called exactly once per supplied reference, same index
+    assert [c["index"] for c in thumb_calls] == [r["index"] for r in refs]
+    assert all(c["fingerprint"] == FAKE_FINGERPRINT for c in thumb_calls)
+
+
+def test_g_thumbnail_failure_still_lists_reference_without_thumbnail(monkeypatch, tmp_path, caplog):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=False, last_core_cache_written=True)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+    save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)
+
+    def boom_on_last_frame(image, fingerprint, index, cache_dir, max_size=256):
+        if index == 1:
+            raise OSError("thumbnail disk full")
+        return "thumbnails/{}_{}.jpg".format(fingerprint, index)
+
+    monkeypatch.setattr(node_module, "save_thumbnail", boom_on_last_frame)
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    with caplog.at_level(logging.WARNING):
+        node.execute(
+            clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+            width=1344, height=768, length=124,
+            first_frame=torch.zeros(1, 2, 2, 3), last_frame=torch.zeros(1, 2, 2, 3),
+        )
+
+    refs = save_calls[0]["system"]["references"]
+    assert [r["label"] for r in refs] == ["first_frame", "last_frame"]  # neither reference lost
+    assert refs[0]["thumbnail"] == "thumbnails/{}_0.jpg".format(FAKE_FINGERPRINT)
+    assert "thumbnail" not in refs[1]  # the one that failed is listed without it
+    assert any(r.levelno == logging.WARNING and "THUMBNAIL WRITE FAILED" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_h_hit_with_no_verbose_sidecar_backfills(monkeypatch, tmp_path):
@@ -308,6 +358,7 @@ def test_h_hit_with_no_verbose_sidecar_backfills(monkeypatch, tmp_path):
     fake_execute = _fake_execute_setting_proxy_state(last_hit=True, last_core_cache_written=None)
     _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
     save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)  # legacy entry
+    _patch_thumbnails(monkeypatch, node_module)
 
     node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     node.execute(
@@ -316,7 +367,11 @@ def test_h_hit_with_no_verbose_sidecar_backfills(monkeypatch, tmp_path):
     )
 
     assert len(save_calls) == 1
-    assert save_calls[0]["system"]["references"] == [{"index": 0, "label": "first_frame"}]
+    refs = save_calls[0]["system"]["references"]
+    assert len(refs) == 1
+    assert refs[0]["label"] == "first_frame"
+    assert refs[0]["index"] == 0
+    assert refs[0]["thumbnail"] == "thumbnails/{}_0.jpg".format(FAKE_FINGERPRINT)
 
 
 def test_i_hit_with_existing_verbose_sidecar_does_not_rewrite(monkeypatch, tmp_path):
