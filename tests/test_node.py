@@ -14,11 +14,12 @@ import os
 import sys
 
 import pytest
+import torch
 
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
 
-from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,7 +49,7 @@ class FakeRealClip:
 
     def encode_from_tokens_scheduled(self, tokens):
         self.encode_calls += 1
-        return "real_cond"
+        return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
 
 
 def _make_unload_counter():
@@ -114,7 +115,7 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
 
     assert real_clip.tokenize_calls == 1
     assert real_clip.encode_calls == 1
-    assert cond == "real_cond"
+    assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
 
@@ -197,7 +198,7 @@ def test_d_cache_mode_auto_builds_proxy_with_force_refresh_false(monkeypatch, tm
     # rest of execute() still works exactly as with the real proxy
     assert real_clip.tokenize_calls == 1
     assert real_clip.encode_calls == 1
-    assert cond == "real_cond"
+    assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
 
 
@@ -227,7 +228,7 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
     assert kwargs["force_refresh"] is True
     assert real_clip.tokenize_calls == 1
     assert real_clip.encode_calls == 1
-    assert cond == "real_cond"
+    assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
 
 

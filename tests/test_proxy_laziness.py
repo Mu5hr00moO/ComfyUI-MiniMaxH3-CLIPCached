@@ -7,7 +7,7 @@ across multiple MISSes. No GPU, no ComfyUI, no real clip.
 import torch
 
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
-from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 CLIP_NAME = "fake_clip.safetensors"
@@ -23,7 +23,7 @@ class FakeRealClip:
         return ("real_tokens", prompt, kwargs)
 
     def encode_from_tokens_scheduled(self, tokens):
-        return [[torch.zeros(1, 3), {"pooled_output": None}]]
+        return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
 
 
 def _make_counting_loader():
@@ -43,7 +43,11 @@ def test_a_hit_never_calls_loader(tmp_path):
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
     )
-    save_conditioning(fingerprint, [[torch.ones(1, 3), {"pooled_output": None}]], tmp_path)
+    save_conditioning(
+        fingerprint,
+        [[torch.ones(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]],
+        tmp_path,
+    )
 
     loader, calls = _make_counting_loader()
     proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
@@ -52,7 +56,7 @@ def test_a_hit_never_calls_loader(tmp_path):
     cond = proxy.encode_from_tokens_scheduled(tokens)
 
     assert calls["count"] == 0
-    assert torch.equal(cond[0][0], torch.ones(1, 3))
+    assert torch.equal(cond[0][0], torch.ones(1, MINIMAX_H3_HIDDEN_DIM))
 
 
 def test_b_miss_calls_loader_once(tmp_path):
@@ -84,7 +88,11 @@ def test_d_hit_leaves_did_load_real_clip_false(tmp_path):
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
     )
-    save_conditioning(fingerprint, [[torch.ones(1, 3), {"pooled_output": None}]], tmp_path)
+    save_conditioning(
+        fingerprint,
+        [[torch.ones(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]],
+        tmp_path,
+    )
 
     loader, calls = _make_counting_loader()
     proxy = CachedClipProxy(loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
@@ -111,7 +119,7 @@ def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
     )
-    old_value = torch.ones(1, 3)
+    old_value = torch.ones(1, MINIMAX_H3_HIDDEN_DIM)
     save_conditioning(fingerprint, [[old_value, {"pooled_output": None}]], tmp_path)
 
     loader, calls = _make_counting_loader()

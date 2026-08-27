@@ -11,7 +11,7 @@ pattern as test_proxy_laziness.py.
 
 import torch
 
-from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345
@@ -26,7 +26,7 @@ class FakeRealClip:
         return ("real_tokens", prompt, kwargs)
 
     def encode_from_tokens_scheduled(self, tokens):
-        return [[torch.zeros(1, 3), {"pooled_output": None}]]
+        return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
 
 
 def _make_counting_loader():

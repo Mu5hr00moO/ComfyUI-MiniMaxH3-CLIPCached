@@ -17,6 +17,10 @@ from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 logger = logging.getLogger(__name__)
 
+MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
+# encoder output. A mismatch here almost always means clip_name points
+# at a checkpoint that isn't the MiniMax H3 text/vision encoder.
+
 
 class CachedClipProxy:
     def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir,
@@ -50,6 +54,7 @@ class CachedClipProxy:
             cond = load_conditioning(fingerprint, self.cache_dir)
             if cond is not None:
                 logger.info("[CACHE HIT] %s", fingerprint[:12])
+                self._validate_output_hidden_dim(cond, fingerprint)
                 return cond
             logger.info("[CACHE MISS] %s", fingerprint[:12])
         else:
@@ -60,6 +65,10 @@ class CachedClipProxy:
             self.did_load_real_clip = True
         real_tokens = self._real_clip.tokenize(prompt, **kwargs)
         cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
+        # Validate the shape BEFORE persisting: a wrong-checkpoint encode
+        # must never be written to the cache, and the error must surface
+        # here rather than as a cryptic matmul failure later in the sampler.
+        self._validate_output_hidden_dim(cond, fingerprint)
         # The encode result already exists and was expensive to compute;
         # persisting it to disk is pure optimisation, not a source of truth.
         # This is the one place in the project where a broad `except` is
@@ -75,3 +84,27 @@ class CachedClipProxy:
                 "- continuing without caching this result", fingerprint[:12], e,
             )
         return cond
+
+    def _validate_output_hidden_dim(self, cond, fingerprint):
+        """Fail loudly if the conditioning's hidden dim isn't the MiniMax H3
+        encoder's. Runs on both the HIT and the MISS/REFRESH path, and on a
+        MISS strictly before save_conditioning() so a wrong-checkpoint encode
+        is never written to disk. Per CLAUDE.md's "no silent fallbacks" rule
+        this exception must propagate out of the stock node's execute() and
+        abort the graph -- it is not caught anywhere upstream.
+
+        cond is [[main_tensor, {"pooled_output": ..., ...}]] (see
+        minimaxh3_clipcache.serialize and the on-disk skeletons), so the main
+        encoded tensor is cond[0][0].
+        """
+        main_tensor = cond[0][0]
+        hidden_dim = main_tensor.shape[-1]
+        if hidden_dim != MINIMAX_H3_HIDDEN_DIM:
+            raise RuntimeError(
+                "MiniMax H3 CLIP-Cached: encoded conditioning has hidden dim "
+                "{}, expected {}. clip_name='{}' is very likely NOT the MiniMax "
+                "H3 text/vision encoder (Qwen3-VL) - check the clip_name "
+                "dropdown on this node. (fingerprint={})".format(
+                    hidden_dim, MINIMAX_H3_HIDDEN_DIM, self.clip_name, fingerprint[:12],
+                )
+            )
