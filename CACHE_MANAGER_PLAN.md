@@ -261,9 +261,17 @@ fingerprintu:
 - część `user` musi zostać zachowana,
 - zapis ma być atomowy (`tmp` + `os.replace`).
 
-To dokładnie ten sam wzorzec zapisu, co istniejący `store.py`
-(`_atomic_write_bytes` / `_tmp_name` z PID + `uuid4` w nazwie tymczasowej) —
-Faza 1 powinna go naśladować, nie wymyślać nowego (patrz §23.3).
+Wzorzec nazwy pliku tymczasowego bierzemy z istniejącego `store.py`
+(`_tmp_name()` z PID + `uuid4().hex` w nazwie tymczasowej). Sam zapis jest
+jednak prostszy niż w core cache: Faza 1 pisze własny, minimalny atomowy
+zapis `tmp write` + `os.replace()` dla POJEDYNCZEGO pliku (`.verbose.json`).
+W przeciwieństwie do core cache nie ma tu dwóch sprzężonych artefaktów
+(`.safetensors` + `.json`) do skoordynowanego posprzątania przy błędzie —
+`os.replace()` na jednym pliku jest atomowy sam w sobie, więc logika
+rollbacku z `save_conditioning()` (śledzenie utworzonych plików i kasowanie
+ich w `except`) jest tu zbędna. (Historycznie `store.py` miał osobny helper
+`_atomic_write_bytes`; został wchłonięty inline do `save_conditioning()`,
+gdy doszedł tam wieloplikowy cleanup — `_tmp_name()` pozostał.) Patrz §23.3.
 
 Kto woła zapis/backfill i skąd wie, że core cache faktycznie powstał —
 patrz **§23.1**.
