@@ -220,6 +220,33 @@
 .h3cm-thumb.is-loaded {
   opacity: 1;
 }
+
+/* Reference thumbnails inside the "Load" result: bigger, aspect-preserved,
+   and clickable, so the user can tell first_frame from last_frame by eye. */
+.h3cm-load-result .h3cm-thumbs {
+  gap: 10px;
+  margin-top: 8px;
+}
+.h3cm-thumb-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.h3cm-thumb-cell a {
+  display: block;
+  line-height: 0;
+}
+.h3cm-load-result .h3cm-thumb {
+  width: 88px;
+  height: 88px;
+  object-fit: contain;
+}
+.h3cm-thumb-dims {
+  color: #7d848f;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
 .h3cm-badge {
   padding: 2px 7px;
   border-radius: 999px;

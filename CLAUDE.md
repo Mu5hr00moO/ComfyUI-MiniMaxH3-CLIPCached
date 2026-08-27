@@ -480,3 +480,19 @@ NIE sprawdzone (wymaga przeglądarki, do oceny użytkownika):
 - `window.confirm` dla Delete, odświeżenie listy po Delete,
 - miniatury referencji w komunikacie po Load, brak błędów JS w konsoli,
 - wygląd/UX.
+
+### Faza 6 część 4 - drobna poprawka Load result
+
+W komunikacie po Load każda miniatura referencji jest teraz: klikalna
+(`<a target="_blank" rel="noopener">`, `href` = ten sam blob object URL co
+`img.src`, ustawiany dopiero po pobraniu - klik otwiera dokładnie ten plik
+≤256px, bez udawania większej rozdzielczości), z podpisem wymiarów w px
+(`${img.naturalWidth}×${img.naturalHeight}px`, uzupełniane w `img.onload`,
+"—" dopóki się nie załaduje), większa (88px, `object-fit: contain` żeby
+proporcje były widoczne). Pod listą referencji dodane zdanie: "This is the
+only visual reference this cache entry has — the original image file is
+never stored." Świadomie ZERO filename/ścieżki (plan 10.2/14). Zmiana
+czysto klientowa (DOM), nic po stronie serwera. Zweryfikowane: `node
+--check`, harness 32/32 (nowy check: `renderLoadResult` z niepustymi
+`references` nie rzuca pod atrapą DOM). Reszta - do obejrzenia w
+przeglądarce (jak wyżej).

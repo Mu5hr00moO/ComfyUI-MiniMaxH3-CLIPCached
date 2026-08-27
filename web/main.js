@@ -551,7 +551,12 @@ function showLoadResultText(text) {
   resultEl.hidden = false;
 }
 
-async function loadLoadResultThumbnail(imgEl, fingerprint, index) {
+async function loadLoadResultThumbnail(imgEl, linkEl, dimsEl, fingerprint, index) {
+  imgEl.onload = () => {
+    if (imgEl.naturalWidth) {
+      dimsEl.textContent = `${imgEl.naturalWidth}×${imgEl.naturalHeight}px`;
+    }
+  };
   try {
     const response = await api.fetchApi(
       `${API_PREFIX}/thumbnail?fingerprint=${encodeURIComponent(fingerprint)}&index=${encodeURIComponent(index)}`,
@@ -561,9 +566,13 @@ async function loadLoadResultThumbnail(imgEl, fingerprint, index) {
     const url = URL.createObjectURL(blob);
     loadResultObjectUrls.push(url);
     imgEl.src = url;
+    // The link opens this exact blob -- the cached thumbnail, capped at
+    // 256px on its longer side. That is the highest resolution available;
+    // the original image file is never stored (plan section 10.2 / 14).
+    if (linkEl) linkEl.href = url;
     imgEl.classList.add("is-loaded");
   } catch (_) {
-    /* leave the placeholder */
+    /* leave the placeholder and the "—" dimensions */
   }
 }
 
@@ -594,14 +603,35 @@ function renderLoadResult(fingerprint, verbose) {
   }
   resultEl.appendChild(list);
 
+  const limitNote = document.createElement("div");
+  limitNote.className = "h3cm-load-note";
+  limitNote.textContent =
+    "This is the only visual reference this cache entry has — the original image file is never stored.";
+  resultEl.appendChild(limitNote);
+
   const thumbs = document.createElement("div");
   thumbs.className = "h3cm-thumbs";
   for (const ref of references) {
+    const cell = document.createElement("div");
+    cell.className = "h3cm-thumb-cell";
+
+    const link = document.createElement("a");
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "Open this reference thumbnail (max 256px) in a new tab";
+
     const img = document.createElement("img");
     img.className = "h3cm-thumb";
     img.alt = ref.label || `reference ${ref.index}`;
-    thumbs.appendChild(img);
-    loadLoadResultThumbnail(img, fingerprint, ref.index);
+
+    const dims = document.createElement("span");
+    dims.className = "h3cm-thumb-dims";
+    dims.textContent = "—";
+
+    link.appendChild(img);
+    cell.append(link, dims);
+    thumbs.appendChild(cell);
+    loadLoadResultThumbnail(img, link, dims, fingerprint, ref.index);
   }
   resultEl.appendChild(thumbs);
 
