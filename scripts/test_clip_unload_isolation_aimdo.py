@@ -1,0 +1,371 @@
+# STATUS: BROKEN, DO NOT RUN AS-IS.
+# Manually replicating main.py's aimdo initialization sequence outside
+# of main.py itself hits a bug in the third-party comfy_aimdo package:
+# comfy_aimdo.host_buffer.HostBuffer.__init__() raises
+# AttributeError('NoneType' object has no attribute 'hostbuf_allocate')
+# because the native C library (lib) stays None when aimdo is
+# initialized outside main.py's exact startup sequence. This is a
+# comfy_aimdo limitation, not a bug in our code - see CLAUDE.md,
+# "Phase 24: dochodzenie..." for the full investigation. Kept here for
+# reference only; do not re-run without first checking if upstream
+# comfy_aimdo has fixed this.
+
+"""Phase 24 step 3b: identical to test_clip_unload_isolation.py (Variant A,
+1 iteration only), except comfy_aimdo/DynamicVRAM is explicitly initialized
+before any model load, exactly the way main.py does it -- not a bare
+`comfy.memory_management.aimdo_enabled = True` flag flip.
+
+Why this matters: all our diagnostic scripts call `import nodes; ...`
+directly and never execute main.py, so aimdo_enabled stays at its
+comfy/memory_management.py module default of False. Read main.py directly
+(not guessed) to confirm this hardware/config would actually take the
+DynamicVRAM path in a real server run:
+  - main.py:263 dynamic_vram_supported() returns True for any NVIDIA GPU
+    (comfy.model_management.is_nvidia()) -- true on this RTX 5080.
+  - comfy/cli_args.py:312 enables_dynamic_vram() returns True unless
+    --disable-dynamic-vram/--highvram/--gpu-only/--novram/--cpu is passed --
+    none of those are set by default.
+  - So `args.enable_dynamic_vram or (enables_dynamic_vram() and
+    dynamic_vram_supported())` (main.py:272) is True by default on this
+    machine -- a normally-launched server DOES take this path, it's not a
+    hypothetical.
+  - main.py then does TWO real initialization calls before setting the
+    flag: `comfy_aimdo.control.init(...)` (main.py:73, module level) and
+    `comfy_aimdo.control.init_devices(...)` (main.py:277, inside the `if`).
+    Only if init_devices() returns truthy does main.py swap
+    `comfy.model_patcher.CoreModelPatcher = ModelPatcherDynamic` and set
+    `comfy.memory_management.aimdo_enabled = True`. Confirmed in
+    comfy/sd.py:266 that CLIP's own patcher construction reads
+    `comfy.model_patcher.CoreModelPatcher` dynamically at load time (unless
+    disable_dynamic/disable_offload is set), so this swap is what actually
+    makes a later `nodes.CLIPLoader().load_clip(...)` produce a
+    ModelPatcherDynamic-backed CLIP instead of the legacy ModelPatcher.
+
+This script reproduces that exact sequence (init() then init_devices(),
+using the same args.reserve_vram / args.disable_nvml_pressure /
+args.vram_headroom defaults main.py reads) instead of skipping straight to
+setting the flag, so the result is what a real server on this exact machine
+would actually do -- not a guess.
+
+--- original test_clip_unload_isolation.py docstring below ---
+
+Phase 24 step 2: isolate whether the VRAM that fails to come back after
+CachedClipProxy's cache MISS path is (1) unload_model_and_clones() itself
+not coping with a clip loaded through a closure (clip_loader_fn) the way it
+copes with a directly-loaded clip, or (2) an ordinary live Python reference
+-- through the proxy object itself -- keeping the model reachable and
+blocking the allocator's reclaim, fixable with plain del+gc.collect().
+
+Two variants, 3 iterations each, real Qwen3-VL MiniMax H3 encoder, no VAE
+involved at all (kept out on purpose to isolate CLIP-only behaviour):
+
+  A) direct clip, exactly like step (a) in scripts/test_stock_vs_cache.py:
+     nodes.CLIPLoader() -> one real tokenize()+encode_from_tokens_scheduled()
+     to force actual GPU weight transfer -> unload_model_and_clones() ->
+     log VRAM -> del real_clip; gc.collect(); torch.cuda.empty_cache() ->
+     log VRAM again.
+
+  B) through CachedClipProxy, exactly like step (b), with force_refresh=True
+     so every iteration is a real MISS (load+encode), never served from a
+     prior iteration's cache entry: CachedClipProxy(build_clip_loader_fn(...))
+     -> proxy.tokenize()+proxy.encode_from_tokens_scheduled() -> if
+     proxy.did_load_real_clip: unload_model_and_clones(proxy.real_clip.patcher)
+     -> log VRAM (TEST A: right after unload, BEFORE any del) -> del proxy;
+     gc.collect(); torch.cuda.empty_cache() -> log VRAM again.
+
+Both variants log VRAM at the same two checkpoints (after-unload-before-del,
+after-del-and-gc), so the two checkpoint columns are directly comparable
+between A and B in the final table.
+
+Phase 24 step 2 RETRY (previous attempt was manually SIGKILLed by the user
+via nvitop after host RAM crossed 100% and started swapping -- fully
+explained, not a mystery; see CLAUDE.md). Hardening added for this retry:
+  - A background watchdog thread (daemon, started before ANY model load)
+    polls RAM and VRAM every 2s. RAM >=75% logs a warning; RAM >=85% or
+    VRAM reserved >=90% of device total calls os._exit(1) immediately --
+    unconditional, uncatchable by any try/except, so a runaway can't out-run
+    it the way the manual SIGKILL had to.
+  - _log_step() now also logs system MemAvailable and this process's own
+    VmRSS (both from /proc), not just VRAM -- the previous version had no
+    RAM visibility at all, which is exactly why the RAM blowup that led to
+    the manual kill left no trace in this script's own log.
+  - This run is intentionally scoped down to ONLY 1 iteration of Variant A;
+    Variant B is not called. See RUN_VARIANT_B below -- flip it back to
+    re-enable the full run once a single load/unload/del/gc cycle has been
+    observed to be safe.
+  - Must be launched with PYTHONUNBUFFERED=1 (or `python -u`) so the log
+    file actually contains output even if the process is killed hard again.
+
+Run with the comfyenv conda environment from anywhere, under a hard timeout:
+    timeout 300 conda run -n comfyenv --no-capture-output python -u scripts/test_clip_unload_isolation.py
+"""
+
+import gc
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from test_proxy_gate import CLIP_NAME, CLIP_TYPE, PROMPT, log_memory  # noqa: E402
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# append, NOT insert(0): REPO_ROOT contains our own nodes.py -- see
+# scripts/test_stock_vs_cache.py's docstring / CLAUDE.md for why insert(0)
+# here would shadow ComfyUI's own nodes.py on a later `import nodes`.
+sys.path.append(REPO_ROOT)  # for `caching.proxy` / `caching.loader`
+
+CACHE_DIR = Path(REPO_ROOT) / "cache" / "test_clip_unload_isolation"
+VARIANT_A_ITERATIONS = 1  # deliberately reduced for this retry, see module docstring
+VARIANT_B_ITERATIONS = 3  # unused this run -- RUN_VARIANT_B is False
+RUN_VARIANT_B = False  # flip to True once one A cycle is confirmed safe
+
+RAM_WARN_PCT = 75.0
+RAM_HARD_STOP_PCT = 85.0
+VRAM_HARD_STOP_FRACTION = 0.90
+WATCHDOG_INTERVAL_S = 2
+
+
+def _read_proc_field_kb(path, field):
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1])  # value in kB
+    except Exception:
+        pass
+    return None
+
+
+def _ram_percent():
+    try:
+        import psutil
+        return psutil.virtual_memory().percent
+    except ImportError:
+        total = _read_proc_field_kb("/proc/meminfo", "MemTotal")
+        avail = _read_proc_field_kb("/proc/meminfo", "MemAvailable")
+        if total and avail:
+            return (1.0 - avail / total) * 100.0
+        return 0.0
+
+
+def _vram_reserved_fraction():
+    import torch
+    if not torch.cuda.is_available():
+        return 0.0
+    reserved = torch.cuda.memory_reserved()
+    total = torch.cuda.get_device_properties(0).total_memory
+    return reserved / total if total else 0.0
+
+
+def watchdog_loop(stop_event):
+    """Runs in its own daemon thread for the whole process lifetime, started
+    before any model load. Deliberately uses os._exit(1), not sys.exit() or
+    a raised exception: this must be a hard, unconditional stop that no
+    try/except anywhere in the main thread's code can intercept or delay."""
+    warned = False
+    while not stop_event.is_set():
+        ram_pct = _ram_percent()
+        if ram_pct >= RAM_HARD_STOP_PCT:
+            print("!!! WATCHDOG: RAM {:.1f}% >= {:.0f}% -- HARD STOP via os._exit(1) !!!".format(
+                ram_pct, RAM_HARD_STOP_PCT), flush=True)
+            os._exit(1)
+        elif ram_pct >= RAM_WARN_PCT and not warned:
+            print("--- WATCHDOG WARNING: RAM at {:.1f}% (>= {:.0f}%) ---".format(ram_pct, RAM_WARN_PCT), flush=True)
+            warned = True
+        elif ram_pct < RAM_WARN_PCT:
+            warned = False
+
+        vram_frac = _vram_reserved_fraction()
+        if vram_frac >= VRAM_HARD_STOP_FRACTION:
+            print("!!! WATCHDOG: VRAM reserved {:.1f}% >= {:.0f}% of device total -- HARD STOP via os._exit(1) !!!".format(
+                vram_frac * 100.0, VRAM_HARD_STOP_FRACTION * 100.0), flush=True)
+            os._exit(1)
+
+        stop_event.wait(WATCHDOG_INTERVAL_S)
+
+
+def _nvidia_smi_used_total():
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        used_str, total_str = [s.strip() for s in out.split(",")]
+        return int(used_str), int(total_str)
+    except Exception as e:
+        return None, "error: {}".format(e)
+
+
+def _log_step(rows, variant, iteration, checkpoint):
+    import torch
+
+    allocated = torch.cuda.memory_allocated() / (1024 ** 3)
+    reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+    used_mib, total_mib = _nvidia_smi_used_total()
+    mem_available_kb = _read_proc_field_kb("/proc/meminfo", "MemAvailable")
+    own_rss_kb = _read_proc_field_kb("/proc/self/status", "VmRSS")
+    label = "{}/iter{}/{}".format(variant, iteration, checkpoint)
+    print(
+        "[{}] pytorch allocated={:.2f}GiB reserved={:.2f}GiB | nvidia-smi used={}MiB total={}MiB | "
+        "MemAvailable={}kB own_RSS={}kB".format(
+            label, allocated, reserved, used_mib, total_mib, mem_available_kb, own_rss_kb),
+        flush=True,
+    )
+    rows.append({
+        "variant": variant, "iteration": iteration, "checkpoint": checkpoint,
+        "pytorch_allocated_gib": allocated, "pytorch_reserved_gib": reserved,
+        "nvidia_smi_used_mib": used_mib, "nvidia_smi_total_mib": total_mib,
+        "mem_available_kb": mem_available_kb, "own_rss_kb": own_rss_kb,
+    })
+    return rows
+
+
+def run_variant_a(rows):
+    import torch
+    import nodes
+    import comfy.model_management
+
+    print()
+    print("=== VARIANT A: direct clip, {} iteration(s) ===".format(VARIANT_A_ITERATIONS))
+    for i in range(1, VARIANT_A_ITERATIONS + 1):
+        print("--- A iteration {} ---".format(i))
+        t0 = time.time()
+        clip_loader = nodes.CLIPLoader()
+        (real_clip,) = clip_loader.load_clip(CLIP_NAME, type=CLIP_TYPE)
+        tokens = real_clip.tokenize(PROMPT, images=[])
+        cond = real_clip.encode_from_tokens_scheduled(tokens)
+        print("A/iter{}: load+tokenize+encode finished in {:.1f}s".format(i, time.time() - t0))
+        del cond, tokens
+
+        comfy.model_management.unload_model_and_clones(real_clip.patcher)
+        rows = _log_step(rows, "A", i, "after-unload-before-del")
+
+        del real_clip
+        gc.collect()
+        torch.cuda.empty_cache()
+        rows = _log_step(rows, "A", i, "after-del-and-gc")
+
+    return rows
+
+
+def run_variant_b(rows):
+    import torch
+    import comfy.model_management
+    from caching.proxy import CachedClipProxy
+    from caching.loader import build_clip_loader_fn, resolve_clip_stat
+
+    if CACHE_DIR.exists():
+        shutil.rmtree(CACHE_DIR)
+    CACHE_DIR.mkdir(parents=True)
+
+    clip_file_size, clip_mtime_ns = resolve_clip_stat(CLIP_NAME)
+
+    print()
+    print("=== VARIANT B: CachedClipProxy, force_refresh=True (real MISS every time), {} iterations ===".format(
+        VARIANT_B_ITERATIONS))
+    for i in range(1, VARIANT_B_ITERATIONS + 1):
+        print("--- B iteration {} ---".format(i))
+        t0 = time.time()
+        proxy = CachedClipProxy(
+            build_clip_loader_fn(CLIP_NAME), CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR,
+            force_refresh=True,
+        )
+        tokens = proxy.tokenize(PROMPT, images=[])
+        cond = proxy.encode_from_tokens_scheduled(tokens)
+        print("B/iter{}: tokenize+encode finished in {:.1f}s -- did_load_real_clip={}".format(
+            i, time.time() - t0, proxy.did_load_real_clip))
+        assert proxy.did_load_real_clip is True, "force_refresh=True must always be a real MISS"
+        del cond, tokens
+
+        comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+        rows = _log_step(rows, "B", i, "after-unload-before-del")
+
+        del proxy
+        gc.collect()
+        torch.cuda.empty_cache()
+        rows = _log_step(rows, "B", i, "after-del-and-gc")
+
+    return rows
+
+
+def main():
+    # Watchdog first, before anything else -- must be alive before any model load.
+    stop_event = threading.Event()
+    watchdog_thread = threading.Thread(target=watchdog_loop, args=(stop_event,), daemon=True)
+    watchdog_thread.start()
+    print("=== Watchdog started: RAM warn>={:.0f}% hard-stop>={:.0f}%, VRAM hard-stop>={:.0f}% of device total, "
+          "polling every {}s ===".format(RAM_WARN_PCT, RAM_HARD_STOP_PCT, VRAM_HARD_STOP_FRACTION * 100.0,
+                                          WATCHDOG_INTERVAL_S), flush=True)
+
+    # Replicate main.py's DynamicVRAM (aimdo) auto-enable sequence exactly
+    # (main.py:65-77 and :272-300), before any model load -- see module
+    # docstring for why this hardware/config takes this path by default.
+    import comfy_aimdo.control
+    import comfy.memory_management
+    import comfy.model_patcher
+    import comfy.model_management
+    from comfy.cli_args import args as cli_args
+
+    simple_vram_headroom = None if cli_args.reserve_vram is None else int(cli_args.reserve_vram * 1024 ** 3)
+    try:
+        comfy_aimdo.control.init(simple_vram_headroom=simple_vram_headroom, nvml_pressure=not cli_args.disable_nvml_pressure)
+    except TypeError:
+        try:
+            comfy_aimdo.control.init(simple_vram_headroom=simple_vram_headroom)
+        except TypeError:
+            comfy_aimdo.control.init()
+    print("=== comfy_aimdo.control.init() done ===", flush=True)
+
+    try:
+        aimdo_initialized = comfy_aimdo.control.init_devices(
+            (d.index, int(cli_args.vram_headroom * 1024 ** 3)) for d in comfy.model_management.get_all_torch_devices())
+    except TypeError:
+        aimdo_initialized = comfy_aimdo.control.init_devices(
+            d.index for d in comfy.model_management.get_all_torch_devices())
+    print("=== comfy_aimdo.control.init_devices() -> aimdo_initialized={} ===".format(aimdo_initialized), flush=True)
+
+    if aimdo_initialized:
+        comfy.model_patcher.CoreModelPatcher = comfy.model_patcher.ModelPatcherDynamic
+        comfy.memory_management.aimdo_enabled = True
+        print("=== DynamicVRAM (aimdo) ENABLED -- matches what a real server does on this hardware ===", flush=True)
+    else:
+        print("=== init_devices() returned falsy -- aimdo_enabled stays False, this run will NOT differ "
+              "from the non-aimdo test. Not faking success. ===", flush=True)
+
+    log_memory("before-anything")
+
+    rows = []
+    rows = run_variant_a(rows)
+    if RUN_VARIANT_B:
+        rows = run_variant_b(rows)
+    else:
+        print()
+        print("=== RUN_VARIANT_B is False -- stopping after Variant A as instructed for this retry ===")
+
+    print()
+    print("=== Summary table ===")
+    header = "{:<28} {:>18} {:>18} {:>14} {:>14} {:>16} {:>12}".format(
+        "step", "pytorch_alloc_GiB", "pytorch_reserv_GiB", "nvsmi_used_MiB", "nvsmi_total_MiB",
+        "MemAvailable_kB", "own_RSS_kB")
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        label = "{}/iter{}/{}".format(r["variant"], r["iteration"], r["checkpoint"])
+        print("{:<28} {:>18.2f} {:>18.2f} {:>14} {:>14} {:>16} {:>12}".format(
+            label, r["pytorch_allocated_gib"], r["pytorch_reserved_gib"],
+            r["nvidia_smi_used_mib"], r["nvidia_smi_total_mib"],
+            r["mem_available_kb"], r["own_rss_kb"]))
+
+    print()
+    print("=== RESULT: data collected, see summary table above (no pass/fail -- this is a measurement) ===")
+
+    stop_event.set()
+
+
+if __name__ == "__main__":
+    main()
