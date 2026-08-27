@@ -138,6 +138,16 @@ sprawdzenia czy aimdo faktycznie jest aktywne na danym sprzęcie
 użytkownika (nie każdy sprzęt je wspiera - main.py robi auto-detekcję),
 zanim szuka się dalej.
 
+Zewnętrzny przegląd (Grok) trafnie wskazał rozjazd między planem fazy 17
+(unload + del + gc.collect() + soft_empty_cache()) a faktycznym kodem
+w nodes.py (miał tylko unload). Domknięte: dodano brakujące del/gc/
+soft_empty_cache, zweryfikowano na 10 sekwencyjnych, realnych cache MISS
+przez żywy serwer - RSS +110MB łącznie (~11MB/iteracja, spójne z narzutem
+/history serwera, nie z encoderem), MemAvailable płaskie (~52.8GB przez
+całość), czasy MISS identyczne co do 0.1s (21.0s) bez degradacji. Zmiana
+była zgodnościowa (dopasowanie kodu do planu), nie krytyczną naprawą -
+test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
+
 ### Jak uruchamiać ComfyUI lokalnie
 - Standardowy sposób odpalania ComfyUI w tym środowisku (WSL Ubuntu):
     conda activate comfyenv
