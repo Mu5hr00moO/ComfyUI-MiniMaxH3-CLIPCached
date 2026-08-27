@@ -9,6 +9,7 @@ minimax_keyframes) stay in the stock node -- this file never reimplements
 them, it only substitutes what the stock node sees as "clip".
 """
 
+import gc
 import os
 
 import nodes
@@ -74,5 +75,8 @@ class MiniMaxH3CachedImageToVideo:
 
         if proxy.did_load_real_clip:
             comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+            del proxy
+            gc.collect()
+            comfy.model_management.soft_empty_cache()
 
         return (cond, latent)
