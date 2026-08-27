@@ -411,12 +411,21 @@ poprawnie pokazuje ten wpis jako "normal".
 
 ### Faza 6 część 3 - lokalna konwencja graph/widget API + weryfikacja
 
+**STATUS: zapis do widgetu w grafie ZOSTAŁ WYCOFANY.** "Load" (teraz
+"Copy prompt") kopiuje prompt do schowka, nie do noda - patrz
+CACHE_MANAGER_PLAN.md sekcja 14 i "Faza 6 część 5" niżej. Powody
+strukturalne: `app.graph.findNodesByType()` nie schodzi do subgrafów
+(node w subgrafie niewidoczny), a prompt przekonwertowany z widgetu na
+input nie ma widgetu w `node.widgets` do ustawienia. Poniższe ustalenia
+o graph/widget API zostają jako zapis dochodzenia (i uzasadnienie
+wycofania), ale `applyLoad()`/`loadIntoNode()`/`nodeOptionLabel()`/picker
+NIE ISTNIEJĄ już w kodzie.
+
 **Uwaga metodologiczna:** NIE mam tu dostępu do żywej konsoli DevTools w
 przeglądarce. To co niżej jest zweryfikowane wobec ŹRÓDŁA frontendu
 ComfyUI (pakiet pip `comfyui-frontend-package`, `static/assets/*.js` +
 `*.js.map` z `sourcesContent`) oraz działającego przykładu tego samego
-autora, NIE w interaktywnej konsoli. Empiryczne "czy textarea faktycznie
-się odświeża na canvasie" zostaje do sprawdzenia przez użytkownika.
+autora, NIE w interaktywnej konsoli.
 
 Ustalenia (źródło w nawiasach):
 - **`app`** = `window.comfyAPI.app.app`, **`api`** = `window.comfyAPI.api.api`
@@ -448,38 +457,20 @@ Ustalenia (źródło w nawiasach):
   tego samego autora - ustawia `w.value` combo-widgetów, potem
   `node.graph?.setDirtyCanvas(true, true)`).
 
-Nasze `applyLoad()` robi: `widget.value = prompt` -> `if (widget.element &&
-"value" in widget.element) widget.element.value = prompt` (belt-and-suspenders
-pod starsze wersje / legacy customtext) -> `node.graph.setDirtyCanvas(true,
-true)`. Design z zadania (picker przy >1 node zamiast zgadywania
-`selected_nodes`) NIE wymaga badania `app.canvas.selected_nodes` - i nie
-badam go.
-
-Zweryfikowane samodzielnie:
-- **Node harness** (scratchpad, niecommitowany): moduł importuje się bez
-  wyjątku, `registerExtension` OK, `setup()` nie rzuca. **30/30 asercji**
-  (24 z części 1/2 + 6 nowych): `nodeOptionLabel` (`"Node #5 — My Node"` /
-  `"...— untitled"`), `applyLoad` ustawia `widget.value` + `element.value`
-  + woła `setDirtyCanvas(true,true)`, `loadIntoNode` dla 0 dopasowań nie
-  dotyka node'a, dla 1 stosuje, dla >1 pokazuje picker i nie dotyka
-  żadnego node'a.
+Zweryfikowane samodzielnie (dot. wersji z zapisem do widgetu - historyczne):
 - **Żywy serwer** (`main.py --port 8199 --cpu`, `curl`): pełny cykl
   Delete - utworzono syntetyczny wpis (`deadbeef00...`, zmyślony fp,
   `.json` + `.safetensors` + `.verbose.json` + `thumbnails/<fp>_0.jpg`),
   `POST /h3_cache_manager/delete {fingerprint}` -> `200 {"deleted": ...}`,
   **wszystkie 4 pliki usunięte**, `/get` potem 404. Realny cache
   użytkownika nietknięty (zmyślony fp nigdy nie był realnym wpisem).
-  `/delete` ze złym fp -> 400, `/check` dalej działa.
+  `/delete` ze złym fp -> 400, `/check` dalej działa. **To dalej aktualne**
+  (endpoint Delete się nie zmienił).
 
 NIE sprawdzone (wymaga przeglądarki, do oceny użytkownika):
-- czy `app.graph.findNodesByType("MiniMaxH3CLIPCachedImageToVideo")` w
-  żywej sesji zwraca dodane do grafu node'y (harness używa atrapy grafu),
-- czy po `widget.value = prompt` + `setDirtyCanvas` textarea na canvasie
-  FAKTYCZNIE pokazuje nową wartość (to jest #1 rzecz do sprawdzenia),
-- ścieżka pickera przy >1 nodzie w realnym UI (select + przycisk),
 - `window.confirm` dla Delete, odświeżenie listy po Delete,
-- miniatury referencji w komunikacie po Load, brak błędów JS w konsoli,
-- wygląd/UX.
+- miniatury referencji w komunikacie po Copy prompt, brak błędów JS w
+  konsoli, wygląd/UX.
 
 ### Faza 6 część 4 - drobna poprawka Load result
 
@@ -496,3 +487,37 @@ czysto klientowa (DOM), nic po stronie serwera. Zweryfikowane: `node
 --check`, harness 32/32 (nowy check: `renderLoadResult` z niepustymi
 `references` nie rzuca pod atrapą DOM). Reszta - do obejrzenia w
 przeglądarce (jak wyżej).
+
+### Faza 6 część 5 - Load -> Copy prompt (schowek) + ikonka copy
+
+Zapis do widgetu w grafie wycofany (powody w części 3 wyżej i w
+CACHE_MANAGER_PLAN.md sekcji 14). USUNIĘTE z `web/main.js`:
+`loadIntoNode()`, `applyLoad()`, `nodeOptionLabel()`, `NODE_TYPE`,
+`onLoadClick()`, `showLoadResultText()`, cała logika pickera węzłów
+(`data-h3cm-target-node` / `data-h3cm-load-into-selected`) i `<div
+data-h3cm-load-picker>` z szablonu; z `web/styles.css` reguły
+`.h3cm-load-picker*`. Renaming `data-h3cm-load-*` -> `data-h3cm-copy-*`,
+`.h3cm-load-result` -> `.h3cm-copy-result`, `renderLoadResult` ->
+`renderCopyResult` (headline jako parametr), `loadResultObjectUrls` ->
+`copyResultObjectUrls` itd.
+
+Nowe: `copyPrompt()` - `navigator.clipboard.writeText(prompt)`, na sukces
+`renderCopyResult(..., "Copied to clipboard.")`, na wyjątek (np.
+niesecure context) `renderCopyResult(..., "Couldn't copy automatically -
+select the prompt above and copy it manually.")`. Info o referencjach +
+miniatury + zdanie "Load these images manually..." zostają bez zmian
+(nadal prawdziwe - prompt w schowku, obrazy nie).
+
+Ikonka copy w lewym-górnym rogu `<pre>` z promptem (`data-h3cm-prompt-copy`,
+`.h3cm-prompt-copy`, wrap `.h3cm-prompt-wrap`): `copyPromptText(button)` -
+kopiuje SAM tekst promptu, feedback przez klasę `.is-copied` (kolor
+`#7edeb3` - istniejąca "pozytywna" zieleń z `.h3cm-badge-normal`, nie
+nowa) + `title` "Copied!" na 1.5s, na błąd `title` "Copy failed - select
+the text manually". `.h3cm-prompt` dostał `padding-top: 32px` żeby ikonka
+nie nachodziła na pierwszą linię.
+
+Zweryfikowane: `node --check`, harness 22/22 (moduł ładuje się czysto,
+usunięte symbole `loadIntoNode`/`applyLoad`/`nodeOptionLabel` faktycznie
+`undefined`, czyste funkcje + filtry dalej OK, `setup()` nie rzuca). Do
+obejrzenia w przeglądarce: faktyczne kopiowanie do schowka (i fallback
+gdy `navigator.clipboard` niedostępne), feedback ikonki, wygląd.
