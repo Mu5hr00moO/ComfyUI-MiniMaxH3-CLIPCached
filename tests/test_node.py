@@ -10,6 +10,7 @@ ComfyUI repo) loads a custom node package in production -- never as a bare
 """
 
 import importlib.util
+import logging
 import os
 import sys
 
@@ -230,6 +231,148 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
     assert real_clip.encode_calls == 1
     assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
+
+
+# --- Phase 2: verbose-metadata sync after a successful execute() ---
+
+FAKE_FINGERPRINT = "abcdef01" * 8  # 64 hex chars, like a real fingerprint
+
+
+def _fake_execute_setting_proxy_state(last_hit, last_core_cache_written,
+                                      fingerprint=FAKE_FINGERPRINT):
+    """A stock-execute() stand-in that just stamps the proxy with the state
+    a real encode_from_tokens_scheduled() would have left, so the test can
+    drive _sync_verbose_metadata() through each HIT/MISS combination without
+    touching a real encoder or the disk cache."""
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        clip.last_fingerprint = fingerprint
+        clip.last_hit = last_hit
+        clip.last_core_cache_written = last_core_cache_written
+        return ("cond_fake", "latent_fake")
+
+    return fake_execute
+
+
+def _patch_verbose(monkeypatch, node_module, load_return):
+    """Patch load_verbose/save_verbose on the node module (nodes.py binds
+    them by name at import, same reasoning as _make_spy_cached_clip_proxy)
+    and record every save_verbose call."""
+    save_calls = []
+
+    def fake_save_verbose(fingerprint, system, cache_dir):
+        save_calls.append({"fingerprint": fingerprint, "system": system, "cache_dir": cache_dir})
+
+    monkeypatch.setattr(node_module, "save_verbose", fake_save_verbose)
+    monkeypatch.setattr(node_module, "load_verbose", lambda fingerprint, cache_dir: load_return)
+    return save_calls
+
+
+@pytest.mark.parametrize("first_frame, last_frame, expected_refs", [
+    (torch.zeros(1, 2, 2, 3), torch.zeros(1, 2, 2, 3),
+     [{"index": 0, "label": "first_frame"}, {"index": 1, "label": "last_frame"}]),
+    (torch.zeros(1, 2, 2, 3), None, [{"index": 0, "label": "first_frame"}]),
+    (None, torch.zeros(1, 2, 2, 3), [{"index": 0, "label": "last_frame"}]),
+    (None, None, []),
+])
+def test_g_fresh_miss_writes_verbose_with_positional_reference_indices(
+        monkeypatch, tmp_path, first_frame, last_frame, expected_refs):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=False, last_core_cache_written=True)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+    save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    result = node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a described prompt",
+        width=1344, height=768, length=124,
+        first_frame=first_frame, last_frame=last_frame,
+    )
+
+    assert result == ("cond_fake", "latent_fake")
+    assert len(save_calls) == 1
+    assert save_calls[0]["fingerprint"] == FAKE_FINGERPRINT
+    assert save_calls[0]["cache_dir"] == tmp_path
+    system = save_calls[0]["system"]
+    assert system["prompt"] == "a described prompt"
+    assert system["clip_name"] == CLIP_NAME
+    assert system["clip_file_size"] == FAKE_FILE_SIZE
+    assert system["clip_mtime_ns"] == FAKE_MTIME_NS
+    assert system["cache_schema_version"] == 1
+    assert system["references"] == expected_refs
+
+
+def test_h_hit_with_no_verbose_sidecar_backfills(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=True, last_core_cache_written=None)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+    save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)  # legacy entry
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124, first_frame=torch.zeros(1, 2, 2, 3),
+    )
+
+    assert len(save_calls) == 1
+    assert save_calls[0]["system"]["references"] == [{"index": 0, "label": "first_frame"}]
+
+
+def test_i_hit_with_existing_verbose_sidecar_does_not_rewrite(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=True, last_core_cache_written=None)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+    save_calls = _patch_verbose(
+        monkeypatch, node_module,
+        load_return={"fingerprint": FAKE_FINGERPRINT, "system": {}, "user": {}},
+    )
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+    )
+
+    assert save_calls == []
+
+
+def test_j_miss_with_failed_core_cache_write_does_not_write_verbose(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=False, last_core_cache_written=False)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+    save_calls = _patch_verbose(monkeypatch, node_module, load_return=None)
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+    )
+
+    assert save_calls == []
+
+
+def test_k_verbose_write_failure_is_swallowed_and_warned(monkeypatch, tmp_path, caplog):
+    node_module = _load_node_module()
+    fake_execute = _fake_execute_setting_proxy_state(last_hit=False, last_core_cache_written=True)
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, FakeRealClip())
+
+    def boom(fingerprint, system, cache_dir):
+        raise OSError("verbose sidecar disk full")
+
+    monkeypatch.setattr(node_module, "save_verbose", boom)
+    monkeypatch.setattr(node_module, "load_verbose", lambda fingerprint, cache_dir: None)
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    with caplog.at_level(logging.WARNING):
+        result = node.execute(
+            clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+            width=1344, height=768, length=124,
+        )
+
+    assert result == ("cond_fake", "latent_fake")
+    assert any(r.levelno == logging.WARNING and "VERBOSE WRITE FAILED" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_f_node_class_mappings_has_exactly_one_matching_key():

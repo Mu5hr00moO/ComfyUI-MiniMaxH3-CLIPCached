@@ -10,17 +10,22 @@ them, it only substitutes what the stock node sees as "clip".
 """
 
 import gc
+import logging
 import os
 
 import nodes
 import comfy.model_management
 import folder_paths
 
+from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
+
+logger = logging.getLogger(__name__)
 
 
 class MiniMaxH3CLIPCachedImageToVideo:
@@ -57,6 +62,55 @@ class MiniMaxH3CLIPCachedImageToVideo:
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
+    def _sync_verbose_metadata(self, proxy, prompt, clip_name, clip_file_size,
+                               clip_mtime_ns, first_frame, last_frame):
+        """Write or backfill this run's ``<fingerprint>.verbose.json`` for the
+        Cache Manager (plan sections 7 and 8).
+
+        Two cases warrant a write: a fresh MISS whose core cache actually
+        landed on disk, and a HIT of an entry that has no verbose sidecar yet
+        (a legacy entry -- backfill it from the data this HIT already knows).
+        Everything else is a no-op.
+
+        Never raises. The verbose layer is not the source of truth, so a
+        failure here must not disturb the already-valid conditioning / core
+        cache result.
+        """
+        fingerprint = proxy.last_fingerprint
+        if fingerprint is None:
+            return  # defensive; should not happen after a successful execute()
+
+        fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
+        hit_needs_backfill = proxy.last_hit is True and load_verbose(fingerprint, CACHE_DIR) is None
+        if not (fresh_miss_written or hit_needs_backfill):
+            return
+
+        # Reference indices are positional over what was actually supplied,
+        # not a fixed first_frame=0 / last_frame=1: if only last_frame is
+        # given it is index 0. Phase 3 reuses this same convention for
+        # thumbnail filenames, so it has to stay consistent.
+        references = []
+        if first_frame is not None:
+            references.append({"index": len(references), "label": "first_frame"})
+        if last_frame is not None:
+            references.append({"index": len(references), "label": "last_frame"})
+
+        system = {
+            "prompt": prompt,
+            "clip_name": clip_name,
+            "clip_file_size": clip_file_size,
+            "clip_mtime_ns": clip_mtime_ns,
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            "references": references,
+        }
+        try:
+            save_verbose(fingerprint, system, CACHE_DIR)
+        except Exception as e:
+            logger.warning(
+                "[VERBOSE WRITE FAILED] %s: could not persist Cache Manager "
+                "metadata (%s) - core cache remains valid", fingerprint[:12], e,
+            )
+
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
         file_size, mtime_ns = resolve_clip_stat(clip_name)
@@ -73,6 +127,11 @@ class MiniMaxH3CLIPCachedImageToVideo:
                 clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
                 length=length, first_frame=first_frame, last_frame=last_frame,
             )
+            # Inside the try (not the finally): only describe a run that
+            # actually produced a conditioning. If the stock execute() raised,
+            # there is no successful operation to record.
+            self._sync_verbose_metadata(proxy, prompt, clip_name, file_size,
+                                        mtime_ns, first_frame, last_frame)
         finally:
             # Guarantee the ~27 GB encoder is released even if the stock node
             # raises after our proxy already loaded it (a real failure mode
