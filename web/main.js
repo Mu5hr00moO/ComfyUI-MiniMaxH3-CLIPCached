@@ -348,6 +348,7 @@ function buildNormalRow(entry, generation) {
 
   const row = document.createElement("div");
   row.className = "h3cm-row is-normal";
+  row.dataset.fingerprint = entry.fingerprint; // so attachDetailAfterRow() can find this row
 
   const star = document.createElement("button");
   star.type = "button";
@@ -426,10 +427,17 @@ async function runCheck() {
 
     // Keep the detail panel on the same entry across a refresh (e.g. after
     // a Save or a favorite toggle); close it if that entry is gone.
+    // renderList() above rebuilt every row from scratch, so the detail node
+    // has to be re-attached under the (new) row for its fingerprint --
+    // otherwise it drifts back to the end of the list on each refresh.
     if (openDetailFingerprint) {
       const still = findNormalEntry(openDetailFingerprint);
-      if (still) populateDetail(still);
-      else closeDetail();
+      if (still) {
+        populateDetail(still);
+        attachDetailAfterRow(openDetailFingerprint);
+      } else {
+        closeDetail();
+      }
     }
   } catch (err) {
     lastCheckResult = null;
@@ -473,12 +481,23 @@ function populateDetail(entry) {
   detailEl.hidden = false;
 }
 
+// Move the single detail node so it sits right after the row it describes.
+// .after() detaches it from wherever it currently is first, so there is
+// never a duplicate -- it is always the same one node from the template.
+function attachDetailAfterRow(fingerprint) {
+  const rowEl = panel.listEl.querySelector(
+    `[data-fingerprint="${CSS.escape(fingerprint)}"]`,
+  );
+  if (rowEl) rowEl.after(panel.detailEl);
+}
+
 function openDetail(fingerprint) {
   const entry = findNormalEntry(fingerprint);
   if (!entry) return; // legacy / missing -- nothing to show
   openDetailFingerprint = fingerprint;
   resetLoadUI(); // fresh entry -> drop any leftover picker / load result
   populateDetail(entry);
+  attachDetailAfterRow(fingerprint);
   panel.detailEl.scrollIntoView({ block: "nearest" });
 }
 
