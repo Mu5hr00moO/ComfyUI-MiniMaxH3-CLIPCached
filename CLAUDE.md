@@ -361,3 +361,50 @@ NIE uruchomiono w przeglądarce, więc NIE potwierdzone:
 - cokolwiek dotyczące wyglądu/UX/z-index/kolizji stylów z ComfyUI.
 To jest jawnie zostawione użytkownikowi do obejrzenia na żywo (Faza 6
 z założenia wymaga człowieka przy przeglądarce).
+
+### Faza 6 część 2 - co zweryfikowano (bez przeglądarki) i czego nie
+
+`web/main.js` rozbudowany o: klientowy filtr (search / tag select /
+favorites-only), miniatury referencji przez `api.fetchApi().blob()` +
+`URL.createObjectURL` (z rewokacją przy każdym re-renderze i licznikiem
+generacji przeciw wyścigom), inline panel szczegółów pod listą (pełny
+prompt w `<pre>`, edycja name/notes/tags/favorite, Save -> POST /update
+-> runCheck -> ponowne otwarcie tego samego wpisu). Load/Delete dalej
+poza zakresem. Czyste funkcje (`filterEntries`, `formatBytes`,
+`parseTags`, `entryLabel`, `allNormalTags`, `shortPrompt`) dostały
+`export` żeby dało się je testować z Node bez DOM.
+
+Zweryfikowane samodzielnie:
+- **Node harness** (scratchpad, stub loaderem podmieniający
+  `/scripts/app.js` i `/scripts/api.js`, minimalny `document`): moduł
+  importuje się bez wyjątku, `app.registerExtension` dostaje poprawny
+  kształt (name/commands/menuCommands), `setup()` nie rzuca. 24/24
+  asercje na czystych funkcjach przechodzą - w tym reguła "legacy widoczny
+  tylko przy zerowych filtrach" i wszystkie kombinacje search/tag/favorite.
+  Harness NIE jest commitowany (to nie jest test JS w suite, tylko
+  jednorazowa weryfikacja).
+- **Żywy serwer** (`main.py --port 8199 --cpu`), `curl`, dokładnie te
+  endpointy których używa nowy JS:
+  - `GET /check` -> 200, poprawny kształt,
+  - `POST /update` częściowy `{fingerprint, favorite:true}` -> 200,
+    zmienia tylko `favorite`, `system` i pozostałe pola `user` nietknięte
+    (to jest ścieżka gwiazdki w wierszu),
+  - `POST /update` pełny `{fingerprint, name, notes, tags, favorite}` ->
+    200 (ścieżka przycisku Save),
+  - `GET /get?fingerprint=` potwierdza trwałość zapisu,
+  - `main.js` / `styles.css` serwowane 200 z poprawnym Content-Type.
+  Test na tymczasowym `.verbose.json` dla istniejącego fingerprintu,
+  usuniętym po teście - realny cache użytkownika nietknięty.
+
+NIE sprawdzone (wymaga przeglądarki, do oceny użytkownika): faktyczne
+renderowanie listy/wierszy/chipów, ładowanie i wyświetlanie miniatur
+jako `<img>`, otwieranie panelu szczegółów po kliknięciu wiersza,
+edycja + Save + odświeżenie w realnym DOM, brak błędów JS w konsoli przy
+tych akcjach, wygląd/UX/kolizje stylów.
+
+Uboczne potwierdzenie: w trakcie tej sesji użytkownik w SWOJEJ instancji
+ComfyUI zrobił realną generację cached-node'em -> powstał nowy wpis
+cache `ad219594...` z `.json` + `.safetensors` + `.verbose.json`
+(prawdziwy multi-shot prompt). Czyli `_sync_verbose_metadata` z Fazy 2
+zadziałał end-to-end w produkcji, nie tylko w unit testach. `/check`
+poprawnie pokazuje ten wpis jako "normal".
