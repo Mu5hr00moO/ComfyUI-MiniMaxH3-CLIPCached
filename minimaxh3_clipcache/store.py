@@ -19,6 +19,7 @@ visible once fully written.
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 
 from safetensors import SafetensorError
@@ -29,8 +30,15 @@ from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 logger = logging.getLogger(__name__)
 
 
+def _tmp_name(path: Path) -> Path:
+    # PID keeps concurrent processes apart; uuid4 additionally keeps two
+    # concurrent writers of the same fingerprint *within one process*
+    # (e.g. two threads) from sharing a temp path and clobbering each other.
+    return path.with_name("{}.tmp-{}-{}".format(path.name, os.getpid(), uuid.uuid4().hex))
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    tmp_path = path.with_name("{}.tmp-{}".format(path.name, os.getpid()))
+    tmp_path = _tmp_name(path)
     tmp_path.write_bytes(data)
     os.replace(tmp_path, path)
 
@@ -42,7 +50,7 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     skeleton, tensors = flatten_tensors(cond)
 
     safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
-    tmp_safetensors_path = safetensors_path.with_name("{}.tmp-{}".format(safetensors_path.name, os.getpid()))
+    tmp_safetensors_path = _tmp_name(safetensors_path)
     save_file({k: v.detach().cpu().contiguous() for k, v in tensors.items()}, str(tmp_safetensors_path))
     os.replace(tmp_safetensors_path, safetensors_path)
 
