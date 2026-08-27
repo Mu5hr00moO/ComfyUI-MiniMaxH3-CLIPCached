@@ -174,7 +174,16 @@ function createPanel() {
           <span class="h3cm-detail-title" data-h3cm-detail-title></span>
           <button type="button" class="h3cm-button" data-h3cm-detail-close>Close details</button>
         </div>
-        <pre class="h3cm-prompt" data-h3cm-detail-prompt></pre>
+        <div class="h3cm-prompt-wrap">
+          <button type="button" class="h3cm-prompt-copy" data-h3cm-prompt-copy
+            title="Copy prompt" aria-label="Copy prompt">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <rect x="4" y="4" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+              <path d="M2.5 9.5V2.5A1 1 0 0 1 3.5 1.5H10.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+            </svg>
+          </button>
+          <pre class="h3cm-prompt" data-h3cm-detail-prompt></pre>
+        </div>
         <label class="h3cm-field">Name
           <input type="text" data-h3cm-edit-name>
         </label>
@@ -218,6 +227,9 @@ function createPanel() {
   root.querySelector("[data-h3cm-save]").addEventListener("click", saveDetail);
   root.querySelector("[data-h3cm-copy-prompt]").addEventListener("click", copyPrompt);
   root.querySelector("[data-h3cm-delete]").addEventListener("click", onDetailDeleteClick);
+  root
+    .querySelector("[data-h3cm-prompt-copy]")
+    .addEventListener("click", (event) => copyPromptText(event.currentTarget));
 
   return panel;
 }
@@ -637,6 +649,24 @@ function renderCopyResult(fingerprint, verbose, headline) {
   note.textContent =
     "Load these images manually into the matching first_frame/last_frame inputs on the node.";
   resultEl.appendChild(note);
+}
+
+// The small icon on the prompt box: a quick, self-contained shortcut that
+// copies just the prompt text (no references panel), so the user does not
+// have to select it by hand. Independent of the "Copy prompt" button.
+async function copyPromptText(button) {
+  const text = panel.detailEl.querySelector("[data-h3cm-detail-prompt]").textContent || "";
+  try {
+    await navigator.clipboard.writeText(text);
+    button.classList.add("is-copied");
+    button.title = "Copied!";
+    setTimeout(() => {
+      button.classList.remove("is-copied");
+      button.title = "Copy prompt";
+    }, 1500);
+  } catch (err) {
+    button.title = "Copy failed - select the text manually";
+  }
 }
 
 async function copyPrompt() {
