@@ -1,9 +1,12 @@
 // MiniMax H3 Cache Manager frontend.
 //
 // Phase 6 part 1: floating launcher, modal shell, "Check", raw entry list.
-// Phase 6 part 2 (this file): client-side search / tag / favorite filtering,
-// reference thumbnails, and an inline detail+edit panel (name / notes /
-// tags / favorite). Load and Delete are still out of scope (part 3).
+// Phase 6 part 2: client-side search / tag / favorite filtering, reference
+// thumbnails, inline detail+edit panel (name / notes / tags / favorite).
+// Phase 6 part 3 (this file): "Load" copies a cached entry's prompt into a
+// MiniMaxH3CLIPCachedImageToVideo node in the current graph (with a picker
+// when there is more than one), and "Delete" removes a whole cache entry
+// after a window.confirm().
 //
 // Structure follows the local convention in
 // custom_nodes/MiniMaxH3-Prompt-Writer/web/main.js: a singleton panel built
@@ -22,8 +25,10 @@ const ALL_TAGS = ""; // sentinel select value meaning "no tag filter"
 let panel = null; // built once -- see createPanel()
 let lastCheckResult = null; // last /check response, for client-side filtering
 let openDetailFingerprint = null; // fingerprint whose detail panel is shown
-let objectUrls = []; // thumbnail blob URLs to revoke on the next list render
+let objectUrls = []; // list-row thumbnail blob URLs to revoke on the next list render
 let renderGeneration = 0; // bumped each render so stale async thumbnails bail
+let loadResultObjectUrls = []; // thumbnail blob URLs shown in the "Load" result box
+const NODE_TYPE = "MiniMaxH3CLIPCachedImageToVideo"; // == NODE_CLASS_MAPPINGS key / node.type
 
 // --- styles -----------------------------------------------------------------
 
@@ -183,8 +188,19 @@ function createPanel() {
         </label>
         <div class="h3cm-detail-actions">
           <button type="button" class="h3cm-button" data-h3cm-save>Save</button>
+          <button type="button" class="h3cm-button" data-h3cm-load>Load</button>
+          <button type="button" class="h3cm-button h3cm-danger" data-h3cm-delete>Delete</button>
           <span class="h3cm-detail-status" data-h3cm-detail-status></span>
         </div>
+        <div class="h3cm-load-picker" data-h3cm-load-picker hidden>
+          <select data-h3cm-target-node aria-label="Target node">
+            <option value="">Choose a node…</option>
+          </select>
+          <button type="button" class="h3cm-button" data-h3cm-load-into-selected disabled>
+            Load into selected node
+          </button>
+        </div>
+        <div class="h3cm-load-result" data-h3cm-load-result hidden></div>
       </section>
     </section>
   `;
@@ -207,6 +223,8 @@ function createPanel() {
   panel.favoritesOnlyEl.addEventListener("change", renderList);
   root.querySelector("[data-h3cm-detail-close]").addEventListener("click", closeDetail);
   root.querySelector("[data-h3cm-save]").addEventListener("click", saveDetail);
+  root.querySelector("[data-h3cm-load]").addEventListener("click", onLoadClick);
+  root.querySelector("[data-h3cm-delete]").addEventListener("click", onDetailDeleteClick);
 
   return panel;
 }
@@ -306,7 +324,19 @@ function buildLegacyRow(entry) {
   hint.className = "h3cm-legacy-hint";
   hint.textContent = "Use this entry once to populate details";
 
-  row.append(fp, badge, hint);
+  // Legacy entries have no detail panel, but they still correspond to real
+  // .json/.safetensors files the user may want to remove (plan section 15
+  // makes no exception for legacy).
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "h3cm-button h3cm-danger h3cm-row-delete";
+  del.textContent = "Delete";
+  del.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteEntry(entry.fingerprint, null);
+  });
+
+  row.append(fp, badge, hint, del);
   return row;
 }
 
@@ -447,13 +477,34 @@ function openDetail(fingerprint) {
   const entry = findNormalEntry(fingerprint);
   if (!entry) return; // legacy / missing -- nothing to show
   openDetailFingerprint = fingerprint;
+  resetLoadUI(); // fresh entry -> drop any leftover picker / load result
   populateDetail(entry);
   panel.detailEl.scrollIntoView({ block: "nearest" });
 }
 
 function closeDetail() {
   openDetailFingerprint = null;
-  if (panel) panel.detailEl.hidden = true;
+  if (!panel) return;
+  resetLoadUI();
+  panel.detailEl.hidden = true;
+}
+
+function revokeLoadResultUrls() {
+  for (const url of loadResultObjectUrls) URL.revokeObjectURL(url);
+  loadResultObjectUrls = [];
+}
+
+// Hide the target-node picker and clear the "Load" result box. Called when
+// the detail panel switches entries or closes -- NOT on a plain runCheck()
+// refresh, so a load result stays visible until the user acts (plan
+// section 14: the panel does not auto-close after Load).
+function resetLoadUI() {
+  const pickerEl = panel.detailEl.querySelector("[data-h3cm-load-picker]");
+  const resultEl = panel.detailEl.querySelector("[data-h3cm-load-result]");
+  pickerEl.hidden = true;
+  revokeLoadResultUrls();
+  resultEl.innerHTML = "";
+  resultEl.hidden = true;
 }
 
 async function saveDetail() {
@@ -477,6 +528,185 @@ async function saveDetail() {
   } catch (err) {
     statusEl.textContent = `Save failed (${err && err.message ? err.message : err})`;
   }
+}
+
+// --- Load: copy the prompt into a node in the current graph -------------
+//
+// Graph/widget API verified against the ComfyUI frontend package source
+// (litegraph findNodesByType, useStringWidget.ts) and the same-author
+// example ComfyUI-MMH3Tools/web/js/mmh3_dimension_calculator.js -- see
+// CLAUDE.md "Faza 6 część 3". Only classification="normal" reaches here
+// (legacy has no detail panel and no Load button).
+
+export function nodeOptionLabel(node) {
+  const title = node.title && String(node.title).trim() ? String(node.title).trim() : "untitled";
+  return `Node #${node.id} — ${title}`;
+}
+
+function showLoadResultText(text) {
+  const resultEl = panel.detailEl.querySelector("[data-h3cm-load-result]");
+  revokeLoadResultUrls();
+  resultEl.innerHTML = "";
+  resultEl.textContent = text;
+  resultEl.hidden = false;
+}
+
+async function loadLoadResultThumbnail(imgEl, fingerprint, index) {
+  try {
+    const response = await api.fetchApi(
+      `${API_PREFIX}/thumbnail?fingerprint=${encodeURIComponent(fingerprint)}&index=${encodeURIComponent(index)}`,
+    );
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    loadResultObjectUrls.push(url);
+    imgEl.src = url;
+    imgEl.classList.add("is-loaded");
+  } catch (_) {
+    /* leave the placeholder */
+  }
+}
+
+function renderLoadResult(fingerprint, verbose) {
+  const resultEl = panel.detailEl.querySelector("[data-h3cm-load-result]");
+  const references =
+    (verbose.system && Array.isArray(verbose.system.references) && verbose.system.references) || [];
+
+  revokeLoadResultUrls();
+  resultEl.innerHTML = "";
+  resultEl.hidden = false;
+
+  if (references.length === 0) {
+    resultEl.textContent = "Prompt loaded.";
+    return;
+  }
+
+  const heading = document.createElement("div");
+  heading.textContent = "Prompt loaded. This cache entry was created with image references:";
+  resultEl.appendChild(heading);
+
+  const list = document.createElement("ul");
+  list.className = "h3cm-ref-list";
+  for (const ref of references) {
+    const item = document.createElement("li");
+    item.textContent = `- ${ref.label}`;
+    list.appendChild(item);
+  }
+  resultEl.appendChild(list);
+
+  const thumbs = document.createElement("div");
+  thumbs.className = "h3cm-thumbs";
+  for (const ref of references) {
+    const img = document.createElement("img");
+    img.className = "h3cm-thumb";
+    img.alt = ref.label || `reference ${ref.index}`;
+    thumbs.appendChild(img);
+    loadLoadResultThumbnail(img, fingerprint, ref.index);
+  }
+  resultEl.appendChild(thumbs);
+
+  const note = document.createElement("div");
+  note.className = "h3cm-load-note";
+  note.textContent =
+    "Load these images manually into the matching first_frame/last_frame inputs on the node.";
+  resultEl.appendChild(note);
+}
+
+export function applyLoad(node, fingerprint, verbose) {
+  panel.detailEl.querySelector("[data-h3cm-load-picker]").hidden = true;
+
+  const widget = node.widgets && node.widgets.find((w) => w.name === "prompt");
+  if (!widget) {
+    showLoadResultText(`Node #${node.id} has no "prompt" widget — cannot load.`);
+    return;
+  }
+
+  const prompt = (verbose.system && verbose.system.prompt) || "";
+  widget.value = prompt; // DOM (customtext) widget setter also updates its textarea
+  if (widget.element && "value" in widget.element) widget.element.value = prompt; // legacy-safe
+  if (node.graph && typeof node.graph.setDirtyCanvas === "function") {
+    node.graph.setDirtyCanvas(true, true);
+  }
+
+  renderLoadResult(fingerprint, verbose);
+}
+
+export function loadIntoNode(fingerprint, verbose) {
+  const pickerEl = panel.detailEl.querySelector("[data-h3cm-load-picker]");
+  const graph = app && app.graph;
+  const matches =
+    graph && typeof graph.findNodesByType === "function" ? graph.findNodesByType(NODE_TYPE) : [];
+
+  if (!matches || matches.length === 0) {
+    pickerEl.hidden = true;
+    showLoadResultText(
+      "No MiniMax H3 Cache Manager node found in the current graph. Add one first.",
+    );
+    return;
+  }
+
+  if (matches.length === 1) {
+    applyLoad(matches[0], fingerprint, verbose);
+    return;
+  }
+
+  // More than one -- never guess. Let the user pick.
+  const select = pickerEl.querySelector("[data-h3cm-target-node]");
+  const loadButton = pickerEl.querySelector("[data-h3cm-load-into-selected]");
+
+  select.innerHTML = '<option value="">Choose a node…</option>';
+  for (const node of matches) {
+    const option = document.createElement("option");
+    option.value = String(node.id);
+    option.textContent = nodeOptionLabel(node);
+    select.appendChild(option);
+  }
+  loadButton.disabled = true;
+  select.onchange = () => {
+    loadButton.disabled = !select.value;
+  };
+  loadButton.onclick = () => {
+    const chosen = matches.find((n) => String(n.id) === select.value);
+    if (chosen) applyLoad(chosen, fingerprint, verbose);
+  };
+
+  panel.detailEl.querySelector("[data-h3cm-load-result]").hidden = true;
+  pickerEl.hidden = false;
+}
+
+function onLoadClick() {
+  if (!openDetailFingerprint) return;
+  const entry = findNormalEntry(openDetailFingerprint);
+  if (!entry) return;
+  loadIntoNode(entry.fingerprint, entry.verbose);
+}
+
+// --- Delete: remove a whole cache entry --------------------------------
+
+async function deleteEntry(fingerprint, statusEl) {
+  const confirmed = window.confirm(
+    "Delete this cache entry? This removes the cached result permanently and cannot be undone.",
+  );
+  if (!confirmed) return;
+
+  try {
+    await fetchJson(`${API_PREFIX}/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fingerprint }),
+    });
+    if (openDetailFingerprint === fingerprint) closeDetail();
+    await runCheck(); // entry disappears from the list
+  } catch (err) {
+    const message = `Delete failed (${err && err.message ? err.message : err})`;
+    if (statusEl) statusEl.textContent = message;
+    else panel.statusEl.textContent = message;
+  }
+}
+
+function onDetailDeleteClick() {
+  if (!openDetailFingerprint) return;
+  deleteEntry(openDetailFingerprint, panel.detailEl.querySelector("[data-h3cm-detail-status]"));
 }
 
 // --- launcher + wiring -------------------------------------------------

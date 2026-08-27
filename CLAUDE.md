@@ -408,3 +408,75 @@ cache `ad219594...` z `.json` + `.safetensors` + `.verbose.json`
 (prawdziwy multi-shot prompt). Czyli `_sync_verbose_metadata` z Fazy 2
 zadziałał end-to-end w produkcji, nie tylko w unit testach. `/check`
 poprawnie pokazuje ten wpis jako "normal".
+
+### Faza 6 część 3 - lokalna konwencja graph/widget API + weryfikacja
+
+**Uwaga metodologiczna:** NIE mam tu dostępu do żywej konsoli DevTools w
+przeglądarce. To co niżej jest zweryfikowane wobec ŹRÓDŁA frontendu
+ComfyUI (pakiet pip `comfyui-frontend-package`, `static/assets/*.js` +
+`*.js.map` z `sourcesContent`) oraz działającego przykładu tego samego
+autora, NIE w interaktywnej konsoli. Empiryczne "czy textarea faktycznie
+się odświeża na canvasie" zostaje do sprawdzenia przez użytkownika.
+
+Ustalenia (źródło w nawiasach):
+- **`app`** = `window.comfyAPI.app.app`, **`api`** = `window.comfyAPI.api.api`
+  (`static/scripts/app.js`, `api.js` - to tylko cienkie shimy re-eksportujące).
+- **`app.graph.findNodesByType(type)`** zwraca **tablicę** node'ów, których
+  `node.type` (case-insensitive) == `type`; iteruje po `graph._nodes`
+  (litegraph, `settingStore-CwkLtSKP.js`: `findNodesByType(e,t){let
+  n=e.toLowerCase();...for(let e of r)e.type?.toLowerCase()==n&&t.push(e)...}`).
+- **`node.type` naszego node'a** = `"MiniMaxH3CLIPCachedImageToVideo"`
+  (klucz `NODE_CLASS_MAPPINGS`; potwierdzone przez `GET
+  /object_info/MiniMaxH3CLIPCachedImageToVideo` -> `"name":
+  "MiniMaxH3CLIPCachedImageToVideo"`).
+- **widget "prompt"** jest wieloliniowym STRING (`/object_info`:
+  `['STRING', {'multiline': True, 'dynamicPrompts': True}]`). W tej wersji
+  frontendu tworzony jako **DOM widget**: `node.addDOMWidget(name,
+  'customtext', inputEl, {getValue, setValue})`
+  (`useStringWidget.ts` w `settingStore-CwkLtSKP.js.map`). Jego setter
+  `set value(v)` robi `inputEl.value = v` ORAZ aktualizuje reaktywny
+  `widgetStore`, a bazowy `BaseDOMWidgetImpl.set value` dodatkowo woła
+  `this.callback?.(this.value)` (`domWidget.ts`). Czyli **`widget.value =
+  prompt` samo w sobie propaguje do widocznego textarea** i odpala
+  callback - nie trzeba nic więcej. `widget.element` = textarea
+  (`widget.inputEl` to deprecated alias, dotknięcie loguje ostrzeżenie -
+  używamy `widget.element`).
+- **`node.widgets`** to tablica; szukanie: `node.widgets.find(w =>
+  w.name === "prompt")` (wzorzec w rgthree, kjnodes, MMH3Tools).
+- **repaint po zmianie wartości**: `node.graph?.setDirtyCanvas(true, true)`
+  (dokładnie ten wzorzec w `ComfyUI-MMH3Tools/web/js/mmh3_dimension_calculator.js`
+  tego samego autora - ustawia `w.value` combo-widgetów, potem
+  `node.graph?.setDirtyCanvas(true, true)`).
+
+Nasze `applyLoad()` robi: `widget.value = prompt` -> `if (widget.element &&
+"value" in widget.element) widget.element.value = prompt` (belt-and-suspenders
+pod starsze wersje / legacy customtext) -> `node.graph.setDirtyCanvas(true,
+true)`. Design z zadania (picker przy >1 node zamiast zgadywania
+`selected_nodes`) NIE wymaga badania `app.canvas.selected_nodes` - i nie
+badam go.
+
+Zweryfikowane samodzielnie:
+- **Node harness** (scratchpad, niecommitowany): moduł importuje się bez
+  wyjątku, `registerExtension` OK, `setup()` nie rzuca. **30/30 asercji**
+  (24 z części 1/2 + 6 nowych): `nodeOptionLabel` (`"Node #5 — My Node"` /
+  `"...— untitled"`), `applyLoad` ustawia `widget.value` + `element.value`
+  + woła `setDirtyCanvas(true,true)`, `loadIntoNode` dla 0 dopasowań nie
+  dotyka node'a, dla 1 stosuje, dla >1 pokazuje picker i nie dotyka
+  żadnego node'a.
+- **Żywy serwer** (`main.py --port 8199 --cpu`, `curl`): pełny cykl
+  Delete - utworzono syntetyczny wpis (`deadbeef00...`, zmyślony fp,
+  `.json` + `.safetensors` + `.verbose.json` + `thumbnails/<fp>_0.jpg`),
+  `POST /h3_cache_manager/delete {fingerprint}` -> `200 {"deleted": ...}`,
+  **wszystkie 4 pliki usunięte**, `/get` potem 404. Realny cache
+  użytkownika nietknięty (zmyślony fp nigdy nie był realnym wpisem).
+  `/delete` ze złym fp -> 400, `/check` dalej działa.
+
+NIE sprawdzone (wymaga przeglądarki, do oceny użytkownika):
+- czy `app.graph.findNodesByType("MiniMaxH3CLIPCachedImageToVideo")` w
+  żywej sesji zwraca dodane do grafu node'y (harness używa atrapy grafu),
+- czy po `widget.value = prompt` + `setDirtyCanvas` textarea na canvasie
+  FAKTYCZNIE pokazuje nową wartość (to jest #1 rzecz do sprawdzenia),
+- ścieżka pickera przy >1 nodzie w realnym UI (select + przycisk),
+- `window.confirm` dla Delete, odświeżenie listy po Delete,
+- miniatury referencji w komunikacie po Load, brak błędów JS w konsoli,
+- wygląd/UX.
