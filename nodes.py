@@ -68,15 +68,23 @@ class MiniMaxH3CLIPCachedImageToVideo:
         )
 
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
-        cond, latent = MiniMaxH3ImageToVideo.execute(
-            clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
-            length=length, first_frame=first_frame, last_frame=last_frame,
-        )
-
-        if proxy.did_load_real_clip:
-            comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
-            del proxy
-            gc.collect()
-            comfy.model_management.soft_empty_cache()
+        try:
+            cond, latent = MiniMaxH3ImageToVideo.execute(
+                clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
+                length=length, first_frame=first_frame, last_frame=last_frame,
+            )
+        finally:
+            # Guarantee the ~27 GB encoder is released even if the stock node
+            # raises after our proxy already loaded it (a real failure mode
+            # seen in phase 23). We do NOT swallow the exception here -- per
+            # CLAUDE.md's "no silent fallbacks" rule the error must propagate;
+            # we only make sure it doesn't leave the encoder resident as
+            # ballast. On an exception cond/latent are never assigned and the
+            # function exits by propagating, so there is nothing to return.
+            if proxy.did_load_real_clip:
+                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                del proxy
+                gc.collect()
+                comfy.model_management.soft_empty_cache()
 
         return (cond, latent)

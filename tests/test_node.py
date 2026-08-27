@@ -13,6 +13,8 @@ import importlib.util
 import os
 import sys
 
+import pytest
+
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
 
@@ -113,6 +115,33 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
     assert real_clip.tokenize_calls == 1
     assert real_clip.encode_calls == 1
     assert cond == "real_cond"
+    assert unload_calls["count"] == 1
+    assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+def test_c_execute_raising_after_loading_clip_still_unloads_and_propagates(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        # Touch the clip first so proxy.did_load_real_clip becomes True...
+        tokens = clip.tokenize(prompt, images=[])
+        clip.encode_from_tokens_scheduled(tokens)
+        # ...then blow up the way the stock node could on a real failure.
+        raise RuntimeError("simulated failure")
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        node.execute(
+            clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+            width=1344, height=768, length=124,
+        )
+
+    assert real_clip.tokenize_calls == 1
+    assert real_clip.encode_calls == 1
     assert unload_calls["count"] == 1
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
 
