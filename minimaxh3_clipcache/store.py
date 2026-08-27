@@ -79,6 +79,25 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
         raise
 
 
+def delete_conditioning(fingerprint: str, cache_dir: Path) -> None:
+    """Remove a cache entry's core files.
+
+    Order is deliberate and mirrors the write order in reverse (plan
+    sections 15/20): the skeleton ".json" goes first, so the entry stops
+    being a HIT the instant it is gone (load_conditioning() returns None as
+    soon as ".json" is absent), then the ".safetensors" payload.
+
+    Idempotent: a missing file is silently skipped, so a Delete can be
+    retried on the same fingerprint without raising.
+    """
+    cache_dir = Path(cache_dir)
+    for suffix in (".json", ".safetensors"):
+        try:
+            (cache_dir / "{}{}".format(fingerprint, suffix)).unlink()
+        except FileNotFoundError:
+            pass
+
+
 def load_conditioning(fingerprint: str, cache_dir: Path):
     cache_dir = Path(cache_dir)
     json_path = cache_dir / "{}.json".format(fingerprint)

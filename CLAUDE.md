@@ -286,9 +286,15 @@ Ustalenia:
   `async def handler(request: web.Request) -> web.Response`.
 - **`PromptServer.instance` jest dostępny w momencie ładowania custom
   node'a** - obie referencyjne implementacje sięgają po niego wprost przy
-  imporcie modułu, bez czekania. ComfyUI ustawia `PromptServer.instance = self`
-  w `server.py` (`PromptServer.__init__`), zanim w ogóle dojdzie do
-  ładowania custom nodes.
+  imporcie modułu, bez czekania. Potwierdzona kolejność w `main.py`:
+  `server.PromptServer(asyncio_loop)` (linia ~536, ustawia
+  `PromptServer.instance = self` i `self.routes = web.RouteTableDef()`)
+  -> `nodes.init_extra_nodes()` (linia ~542, tu ładują się custom nodes,
+  więc tu wykonuje się nasz `__init__.py` i dekoratory `@routes.get/post`
+  rejestrują handlery na `self.routes`) -> `prompt_server.add_routes()`
+  (linia ~556, `self.app.add_routes(self.routes)` - dopiero tu trasy stają
+  się aktywne w aiohttp). Czyli rejestracja dekoratorem przy imporcie
+  trafia do tablicy tras ZANIM `add_routes()` ją zamontuje.
 - **Trigger rejestracji**: `__init__.py` importuje moduł z routes (w
   Prompt-Writer: `from .backend import routes as _routes  # noqa`). Sam
   import = rejestracja endpointów.

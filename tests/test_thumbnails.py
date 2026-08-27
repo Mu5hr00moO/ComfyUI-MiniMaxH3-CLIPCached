@@ -8,7 +8,11 @@ import io
 import torch
 from PIL import Image
 
-from minimaxh3_clipcache.thumbnails import save_thumbnail, tensor_to_jpeg_bytes
+from minimaxh3_clipcache.thumbnails import (
+    delete_thumbnails,
+    save_thumbnail,
+    tensor_to_jpeg_bytes,
+)
 
 FINGERPRINT = "a" * 64
 
@@ -82,3 +86,28 @@ def test_d_batch_larger_than_one_uses_frame_zero(tmp_path):
     raw = img.tobytes()  # flat R,G,B,R,G,B,...
     avg = sum(raw) / len(raw)
     assert avg < 30  # near-black -> frame 0 was used, not frame 1
+
+
+# --- Phase 5: delete_thumbnails ---
+
+FP2 = "b" * 64
+
+
+def test_e_delete_thumbnails_removes_only_this_fingerprints_files(tmp_path):
+    save_thumbnail(_image(32, 32), FINGERPRINT, 0, tmp_path)
+    save_thumbnail(_image(32, 32), FINGERPRINT, 1, tmp_path)
+    save_thumbnail(_image(32, 32), FP2, 0, tmp_path)
+
+    delete_thumbnails(FINGERPRINT, tmp_path)
+
+    thumbs = tmp_path / "thumbnails"
+    assert not (thumbs / "{}_0.jpg".format(FINGERPRINT)).exists()
+    assert not (thumbs / "{}_1.jpg".format(FINGERPRINT)).exists()
+    assert (thumbs / "{}_0.jpg".format(FP2)).exists()  # untouched
+
+
+def test_e_delete_thumbnails_is_idempotent(tmp_path):
+    save_thumbnail(_image(32, 32), FINGERPRINT, 0, tmp_path)
+    delete_thumbnails(FINGERPRINT, tmp_path)
+    delete_thumbnails(FINGERPRINT, tmp_path)      # nothing left -> no raise
+    delete_thumbnails(FINGERPRINT, tmp_path / "no-such-cache")  # no thumbnails dir -> no raise

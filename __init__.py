@@ -43,6 +43,20 @@ _spec.loader.exec_module(_nodes_module)
 
 MiniMaxH3CLIPCachedImageToVideo = _nodes_module.MiniMaxH3CLIPCachedImageToVideo
 
+# Importing routes.py registers the Cache Manager's REST endpoints on
+# PromptServer.instance.routes (Phase 5). This is optional UI plumbing: if
+# it fails (no server, an aiohttp/API change, a route-table quirk) the node
+# itself must still load, so the failure is logged, not raised -- this is
+# not a "silent fallback" on the cache-correctness path, it is a genuinely
+# optional feature. Under a bare pytest collection there is no real server;
+# tests/conftest.py stubs `server` so this still succeeds there.
+try:
+    import minimaxh3_clipcache.routes  # noqa: F401
+except Exception as _routes_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "MiniMax H3 CLIP-Cached: Cache Manager REST routes not registered (%s)", _routes_err)
+
 NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": MiniMaxH3CLIPCachedImageToVideo}
 NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": "MiniMax H3 CLIP-Cached Images to Video"}
 

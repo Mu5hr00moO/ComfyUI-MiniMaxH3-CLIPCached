@@ -80,3 +80,17 @@ def save_thumbnail(image_tensor, fingerprint, index, cache_dir, max_size=256) ->
     # Forward slash, not os.sep: this string is stored in JSON and read back
     # on any platform.
     return "{}/{}".format(THUMBNAILS_SUBDIR, filename)
+
+
+def delete_thumbnails(fingerprint, cache_dir) -> None:
+    """Remove every "thumbnails/<fingerprint>_*.jpg" for this cache entry.
+
+    Idempotent: nothing to delete (no thumbnails dir, no matching files) is
+    not an error, so a Delete can be retried on the same fingerprint.
+    """
+    thumb_dir = Path(cache_dir) / THUMBNAILS_SUBDIR
+    for path in sorted(thumb_dir.glob("{}_*.jpg".format(fingerprint))):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass

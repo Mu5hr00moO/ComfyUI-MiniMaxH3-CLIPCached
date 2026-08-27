@@ -6,10 +6,14 @@ Pure dict/JSON round-trips -- no GPU, no ComfyUI (mirrors tests/test_store.py).
 import json
 import logging
 
+import pytest
+
 from minimaxh3_clipcache.verbose_store import (
     DEFAULT_USER_METADATA,
+    delete_verbose,
     load_verbose,
     save_verbose,
+    update_user_metadata,
 )
 
 FINGERPRINT_A = "a" * 64
@@ -98,3 +102,58 @@ def test_d_corrupted_sidecar_makes_save_fall_back_to_default_user(tmp_path):
 def test_e_no_leftover_tmp_files_after_save(tmp_path):
     save_verbose(FINGERPRINT_A, _system(), tmp_path)
     assert list(tmp_path.glob("*.tmp-*")) == []
+
+
+# --- Phase 5: update_user_metadata / delete_verbose ---
+
+def test_f_update_user_metadata_partial_update_leaves_other_fields_and_system(tmp_path):
+    system = _system(prompt="described")
+    save_verbose(FINGERPRINT_A, system, tmp_path)
+
+    returned = update_user_metadata(
+        FINGERPRINT_A, {"name": "Interview S1", "favorite": True}, tmp_path)
+
+    # returned dict and on-disk dict agree
+    on_disk = load_verbose(FINGERPRINT_A, tmp_path)
+    assert returned == on_disk
+    # only the given fields changed; notes/tags untouched; system untouched
+    assert on_disk["user"] == {"name": "Interview S1", "notes": "", "tags": [], "favorite": True}
+    assert on_disk["system"] == system
+
+
+def test_f_update_user_metadata_second_update_builds_on_the_first(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    update_user_metadata(FINGERPRINT_A, {"tags": ["night"]}, tmp_path)
+    update_user_metadata(FINGERPRINT_A, {"notes": "keeper"}, tmp_path)
+
+    user = load_verbose(FINGERPRINT_A, tmp_path)["user"]
+    assert user["tags"] == ["night"]
+    assert user["notes"] == "keeper"
+
+
+def test_f_update_user_metadata_unknown_field_raises_value_error(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    with pytest.raises(ValueError, match="unknown user metadata field"):
+        update_user_metadata(FINGERPRINT_A, {"prompt": "hack the system block"}, tmp_path)
+
+
+def test_f_update_user_metadata_missing_sidecar_raises_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        update_user_metadata("f" * 64, {"name": "x"}, tmp_path)
+
+
+def test_f_update_user_metadata_no_leftover_tmp_files(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    update_user_metadata(FINGERPRINT_A, {"name": "x"}, tmp_path)
+    assert list(tmp_path.glob("*.tmp-*")) == []
+
+
+def test_g_delete_verbose_removes_file_and_is_idempotent(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    assert _verbose_file(tmp_path, FINGERPRINT_A).exists()
+
+    delete_verbose(FINGERPRINT_A, tmp_path)
+    assert not _verbose_file(tmp_path, FINGERPRINT_A).exists()
+
+    delete_verbose(FINGERPRINT_A, tmp_path)   # already gone -> no raise
+    delete_verbose("f" * 64, tmp_path)        # never existed -> no raise

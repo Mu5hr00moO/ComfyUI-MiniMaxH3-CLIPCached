@@ -10,7 +10,11 @@ import pytest
 import torch
 
 from minimaxh3_clipcache import store
-from minimaxh3_clipcache.store import load_conditioning, save_conditioning
+from minimaxh3_clipcache.store import (
+    delete_conditioning,
+    load_conditioning,
+    save_conditioning,
+)
 
 FINGERPRINT_A = "a" * 64
 FINGERPRINT_B = "b" * 64
@@ -157,3 +161,29 @@ def test_e_missing_fingerprint_returns_none_without_warning(tmp_path, caplog):
 
     assert result is None
     assert caplog.records == []
+
+
+def test_f_delete_conditioning_removes_both_core_files(tmp_path):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    assert (tmp_path / "{}.json".format(FINGERPRINT_A)).exists()
+    assert (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+
+    delete_conditioning(FINGERPRINT_A, tmp_path)
+
+    assert not (tmp_path / "{}.json".format(FINGERPRINT_A)).exists()
+    assert not (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+    assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+
+
+def test_f_delete_conditioning_is_idempotent(tmp_path):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    delete_conditioning(FINGERPRINT_A, tmp_path)
+    delete_conditioning(FINGERPRINT_A, tmp_path)  # second call must not raise
+    delete_conditioning("f" * 64, tmp_path)       # never existed -> also fine
+
+
+def test_f_delete_conditioning_cleans_a_lone_core_file(tmp_path):
+    # Only the .safetensors is present (a half-deleted or interrupted entry).
+    (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).write_bytes(b"x")
+    delete_conditioning(FINGERPRINT_A, tmp_path)
+    assert not (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
