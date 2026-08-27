@@ -316,10 +316,23 @@ def main():
             except ProcessLookupError:
                 pass
 
+        # When server_pid is still our direct child, a dead process lingers
+        # as an un-reaped zombie -- psutil.pid_exists() reports it as alive
+        # and the escalation below would keep firing signals at a corpse. Use
+        # Popen.poll()/wait() to actually reap it. (If server_pid was swapped
+        # to a different bound PID earlier, that one isn't our child and
+        # psutil.pid_exists is still the right check for it.)
+        is_our_child = server_proc.pid == server_pid
+
+        def _server_alive():
+            if is_our_child:
+                return server_proc.poll() is None
+            return psutil.pid_exists(server_pid)
+
         deadline = time.time() + 60
-        while time.time() < deadline and psutil.pid_exists(server_pid):
+        while time.time() < deadline and _server_alive():
             time.sleep(1)
-        if psutil.pid_exists(server_pid):
+        if _server_alive():
             print("!!! Server PID {} still alive after 60s -- escalating to SIGTERM !!!".format(server_pid),
                   flush=True)
             try:
@@ -327,15 +340,22 @@ def main():
             except ProcessLookupError:
                 pass
             time.sleep(5)
-        if psutil.pid_exists(server_pid):
+        if _server_alive():
             print("!!! Server PID {} still alive after SIGTERM -- escalating to SIGKILL !!!".format(server_pid),
                   flush=True)
             try:
                 os.kill(server_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        else:
-            print("=== Server PID {} confirmed exited ===".format(server_pid), flush=True)
+
+        # Reap our child so it never lingers as a zombie, whichever path
+        # above ended it.
+        try:
+            server_proc.wait(timeout=10)
+            print("=== Server child PID {} reaped, exit code {} ===".format(
+                server_proc.pid, server_proc.returncode), flush=True)
+        except subprocess.TimeoutExpired:
+            print("!!! Server child PID {} not reapable within 10s !!!".format(server_proc.pid), flush=True)
 
         server_log_f.close()
 

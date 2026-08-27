@@ -164,7 +164,13 @@ def main():
         t0 = time.time()
         clip_loader = nodes.CLIPLoader()
         (real_clip_a,) = clip_loader.load_clip(CLIP_NAME, type=CLIP_TYPE)
-        currently_resident_patcher = real_clip_a.patcher
+        # Capture the patcher once, now, while the clip object is intact.
+        # unload_model_and_clones() + `del real_clip_a` below can leave the
+        # object in a state where re-reading `.patcher` is unsafe, so every
+        # later use (the unload call, the `finally` safety net) goes through
+        # this saved reference, never back through real_clip_a / the proxy.
+        patcher_a = real_clip_a.patcher
+        currently_resident_patcher = patcher_a
         print("(a) CLIP loaded in {:.1f}s".format(time.time() - t0))
         log_memory("after-a-load")
 
@@ -180,7 +186,7 @@ def main():
         cond_a, latent_a = output_a.args
         cond_a, latent_a = _to_cpu(cond_a), _to_cpu(latent_a)
 
-        comfy.model_management.unload_model_and_clones(real_clip_a.patcher)
+        comfy.model_management.unload_model_and_clones(patcher_a)
         currently_resident_patcher = None
         del real_clip_a
         log_memory("after-a-unload")
@@ -204,8 +210,13 @@ def main():
         cond_b, latent_b = _to_cpu(cond_b), _to_cpu(latent_b)
 
         if proxy_b.did_load_real_clip:
-            currently_resident_patcher = proxy_b.real_clip.patcher
-            comfy.model_management.unload_model_and_clones(proxy_b.real_clip.patcher)
+            # Same rule as (a): grab the patcher off the proxy's real_clip
+            # once, before unloading, and drive both the unload and the
+            # safety net from that saved reference -- never re-touch
+            # proxy_b.real_clip after the unload has run.
+            patcher_b = proxy_b.real_clip.patcher
+            currently_resident_patcher = patcher_b
+            comfy.model_management.unload_model_and_clones(patcher_b)
             currently_resident_patcher = None
         log_memory("after-b-unload")
 
