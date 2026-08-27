@@ -8,7 +8,7 @@ production node (nodes.py) does. The first attempt at this script loaded (a)
 directly via nodes.CLIPLoader() and then handed (b)/(c) a lambda that reused
 that same already-loaded object -- so it never actually exercised the real
 MISS path (comfy.sd.load_clip() is only called by CachedClipProxy on a real
-MISS, via caching.loader.build_clip_loader_fn(), never through a hand-rolled
+MISS, via minimaxh3_clipcache.loader.build_clip_loader_fn(), never through a hand-rolled
 lambda). Confirmed root cause of the resulting OOM crash (see CLAUDE.md):
 comfy.sd.load_clip() does not dedupe -- an independent load call for the
 same file produces a second, fully resident model object. This version calls
@@ -26,7 +26,7 @@ the next step starts:
 Each step's output is moved to CPU right after it returns, so the later
 comparisons never depend on what is or isn't still resident on the GPU.
 
-(a)/(b)/(c) outputs compared pairwise via caching.comparison._tensors_equal
+(a)/(b)/(c) outputs compared pairwise via minimaxh3_clipcache.comparison._tensors_equal
 (torch.equal, not allclose -- (c) must replay the exact cached bytes, not a
 fresh numerically-close encode).
 
@@ -65,9 +65,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # COMFYUI_ROOT would make a later `import nodes` inside main() resolve to
 # THIS repo's nodes.py instead of ComfyUI's own, exactly the collision
 # __init__.py already documents avoiding the same way (see CLAUDE.md).
-sys.path.append(REPO_ROOT)  # for `caching.proxy` / `caching.comparison` / `caching.loader`
+sys.path.append(REPO_ROOT)  # for `minimaxh3_clipcache.proxy` / `minimaxh3_clipcache.comparison` / `minimaxh3_clipcache.loader`
 
-from caching.comparison import _tensors_equal  # noqa: E402
+from minimaxh3_clipcache.comparison import _tensors_equal  # noqa: E402
 
 CACHE_DIR = Path(REPO_ROOT) / "cache" / "test_stock_vs_cache"
 MEMORY_LOG_PATH = Path("/tmp/phase23_memory.log")
@@ -121,8 +121,8 @@ def main():
     import nodes
     import comfy.model_management
     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo, MiniMaxH3AddGuide
-    from caching.proxy import CachedClipProxy
-    from caching.loader import build_clip_loader_fn, resolve_clip_stat
+    from minimaxh3_clipcache.proxy import CachedClipProxy
+    from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 
     if CACHE_DIR.exists():
         shutil.rmtree(CACHE_DIR)

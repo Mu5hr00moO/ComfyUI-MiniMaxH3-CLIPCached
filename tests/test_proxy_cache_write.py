@@ -9,8 +9,8 @@ raise.
 
 import logging
 
-import caching.proxy
-from caching.proxy import CachedClipProxy
+import minimaxh3_clipcache.proxy
+from minimaxh3_clipcache.proxy import CachedClipProxy
 
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345
@@ -29,7 +29,7 @@ def test_save_failure_still_returns_cond_and_warns(tmp_path, monkeypatch, caplog
     def boom(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(caching.proxy, "save_conditioning", boom)
+    monkeypatch.setattr(minimaxh3_clipcache.proxy, "save_conditioning", boom)
 
     proxy = CachedClipProxy(
         lambda: FakeRealClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path,

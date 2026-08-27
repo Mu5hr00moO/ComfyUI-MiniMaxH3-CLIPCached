@@ -9,7 +9,7 @@ MiniMaxH3ImageToVideo.execute() three times against a fresh empty cache_dir:
   (c) different prompt                                  -> expect MISS again
 
 No cache logic reimplemented here -- this only wires the already-tested
-caching.proxy.CachedClipProxy into the real stock node and the real model.
+minimaxh3_clipcache.proxy.CachedClipProxy into the real stock node and the real model.
 
 Run with the comfyenv conda environment from anywhere:
     conda run -n comfyenv python scripts/test_cache_roundtrip.py
@@ -28,10 +28,10 @@ from test_proxy_gate import (  # noqa: E402
 )
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)  # for `caching.proxy` / `caching.comparison`
+sys.path.insert(0, REPO_ROOT)  # for `minimaxh3_clipcache.proxy` / `minimaxh3_clipcache.comparison`
 CACHE_DIR = Path(REPO_ROOT) / "cache" / "test_roundtrip"
 
-from caching.comparison import _tensors_equal  # noqa: E402
+from minimaxh3_clipcache.comparison import _tensors_equal  # noqa: E402
 
 
 class CallCountingClip:
@@ -56,7 +56,7 @@ def main():
     import nodes
     import comfy.model_management
     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
-    from caching.proxy import CachedClipProxy
+    from minimaxh3_clipcache.proxy import CachedClipProxy
 
     if CACHE_DIR.exists():
         shutil.rmtree(CACHE_DIR)

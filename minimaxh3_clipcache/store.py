@@ -1,7 +1,7 @@
 """Atomic, pickle-free disk cache for CONDITIONING results, keyed by fingerprint.
 
 Two files per entry: "<fingerprint>.safetensors" (tensors) and
-"<fingerprint>.json" (the skeleton from caching.serialize.flatten_tensors).
+"<fingerprint>.json" (the skeleton from minimaxh3_clipcache.serialize.flatten_tensors).
 Both are written to a temp file in cache_dir and moved into place with
 os.replace(), which is atomic on the same filesystem.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 from safetensors import SafetensorError
 from safetensors.torch import load_file, save_file
 
-from caching.serialize import flatten_tensors, unflatten_tensors
+from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 
 logger = logging.getLogger(__name__)
 

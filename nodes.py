@@ -16,8 +16,8 @@ import nodes
 import comfy.model_management
 import folder_paths
 
-from caching.loader import build_clip_loader_fn, resolve_clip_stat
-from caching.proxy import CachedClipProxy
+from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
+from minimaxh3_clipcache.proxy import CachedClipProxy
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")

@@ -11,7 +11,7 @@ pattern as test_proxy_laziness.py.
 
 import torch
 
-from caching.proxy import CachedClipProxy
+from minimaxh3_clipcache.proxy import CachedClipProxy
 
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345

@@ -1,4 +1,4 @@
-"""Unit tests for caching.store.save_conditioning / load_conditioning.
+"""Unit tests for minimaxh3_clipcache.store.save_conditioning / load_conditioning.
 
 Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 """
@@ -7,7 +7,7 @@ import logging
 
 import torch
 
-from caching.store import load_conditioning, save_conditioning
+from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 FINGERPRINT_A = "a" * 64
 FINGERPRINT_B = "b" * 64

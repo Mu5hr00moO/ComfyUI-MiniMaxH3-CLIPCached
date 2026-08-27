@@ -1,4 +1,4 @@
-"""Unit tests for caching.loader: resolve_clip_stat() and
+"""Unit tests for minimaxh3_clipcache.loader: resolve_clip_stat() and
 build_clip_loader_fn(). No GPU, no real encoder load -- comfy.sd.load_clip
 is monkeypatched with a call counter to prove the returned loader is lazy.
 """
@@ -7,7 +7,7 @@ import pytest
 
 import comfy.sd
 
-from caching.loader import build_clip_loader_fn, resolve_clip_stat
+from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 
 REAL_CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 EXPECTED_FILE_SIZE = 27141342152

@@ -18,7 +18,7 @@ import pytest
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
 
-from caching.proxy import CachedClipProxy
+from minimaxh3_clipcache.proxy import CachedClipProxy
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -153,9 +153,9 @@ def _make_spy_cached_clip_proxy():
     behaves exactly like the real proxy, we just also get to inspect what it
     was built with.
 
-    nodes.py does `from caching.proxy import CachedClipProxy`, which binds a
+    nodes.py does `from minimaxh3_clipcache.proxy import CachedClipProxy`, which binds a
     private name inside nodes.py's own module namespace at import time --
-    patching caching.proxy.CachedClipProxy afterwards would not reach that
+    patching minimaxh3_clipcache.proxy.CachedClipProxy afterwards would not reach that
     already-bound name. So the test patches node_module.CachedClipProxy
     directly, the same way _patch_common() already patches
     resolve_clip_stat/build_clip_loader_fn/CACHE_DIR on node_module.

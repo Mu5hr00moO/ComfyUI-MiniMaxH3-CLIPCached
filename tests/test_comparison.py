@@ -1,4 +1,4 @@
-"""Unit tests for caching.comparison._tensors_equal.
+"""Unit tests for minimaxh3_clipcache.comparison._tensors_equal.
 
 Pure torch tensors and comfy.nested_tensor.NestedTensor -- no GPU, no
 ComfyUI startup, no model loading (see conftest.py for how `import comfy...`
@@ -9,7 +9,7 @@ import comfy.nested_tensor
 import pytest
 import torch
 
-from caching.comparison import _tensors_equal
+from minimaxh3_clipcache.comparison import _tensors_equal
 
 
 def _av_pair(seed=0.0):

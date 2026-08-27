@@ -61,7 +61,7 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
 - __init__.py dodaje katalog repo do sys.path (append, NIE insert(0) -
   potwierdzone że globalny moduł "nodes" ComfyUI jest już w sys.modules
   na tym etapie startu, więc nie ma ryzyka przechwycenia), bo nasz
-  własny pakiet "caching" nigdy nie trafia na sys.path automatycznie
+  własny pakiet "minimaxh3_clipcache" nigdy nie trafia na sys.path automatycznie
   przez load_custom_node(), w przeciwieństwie do "nodes"/"comfy"/
   "folder_paths" które są już zaimportowane globalnie przed dotarciem
   do custom_nodes.

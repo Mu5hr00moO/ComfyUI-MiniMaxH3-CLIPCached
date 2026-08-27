@@ -6,7 +6,7 @@ comes from vae.encode(), not from CachedClipProxy or the CLIP unload path.
 
 Loads only the real MiniMax H3 VAE (minimax_h3_video_vae_int8_convrot) via
 the stock nodes.VAELoader -- no nodes.CLIPLoader() call anywhere in this
-script, no CachedClipProxy, no caching/ package involved at all. Runs
+script, no CachedClipProxy, no minimaxh3_clipcache/ package involved at all. Runs
 vae.encode() four times in a row on a freshly resized test image each time,
 exactly the same call shape as
 `kf["latent"] = vae.encode(kf.pop("image"))` in

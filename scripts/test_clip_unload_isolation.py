@@ -66,7 +66,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # append, NOT insert(0): REPO_ROOT contains our own nodes.py -- see
 # scripts/test_stock_vs_cache.py's docstring / CLAUDE.md for why insert(0)
 # here would shadow ComfyUI's own nodes.py on a later `import nodes`.
-sys.path.append(REPO_ROOT)  # for `caching.proxy` / `caching.loader`
+sys.path.append(REPO_ROOT)  # for `minimaxh3_clipcache.proxy` / `minimaxh3_clipcache.loader`
 
 CACHE_DIR = Path(REPO_ROOT) / "cache" / "test_clip_unload_isolation"
 VARIANT_A_ITERATIONS = 1  # deliberately reduced for this retry, see module docstring
@@ -205,8 +205,8 @@ def run_variant_a(rows):
 def run_variant_b(rows):
     import torch
     import comfy.model_management
-    from caching.proxy import CachedClipProxy
-    from caching.loader import build_clip_loader_fn, resolve_clip_stat
+    from minimaxh3_clipcache.proxy import CachedClipProxy
+    from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 
     if CACHE_DIR.exists():
         shutil.rmtree(CACHE_DIR)

@@ -20,11 +20,11 @@ import sys
 
 _here = os.path.dirname(os.path.abspath(__file__))
 
-# nodes.py does `from caching.loader import ...`, an absolute import of our
-# own top-level caching/ package. ComfyUI's real loader never puts this
+# nodes.py does `from minimaxh3_clipcache.loader import ...`, an absolute import of our
+# own top-level minimaxh3_clipcache/ package. ComfyUI's real loader never puts this
 # repo's own directory on sys.path (confirmed locally: the only sys.path
 # mutation in ComfyUI's init_external_custom_nodes() adds <ComfyUI_root>/comfy,
-# nothing custom-node-specific), so without this, caching.loader resolves
+# nothing custom-node-specific), so without this, minimaxh3_clipcache.loader resolves
 # fine under pytest (which puts cwd on sys.path) but fails with
 # ModuleNotFoundError under real ComfyUI. append, NOT insert(0): confirmed
 # locally that ComfyUI's own top-level "nodes" module is already fully

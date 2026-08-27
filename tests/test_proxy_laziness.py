@@ -6,9 +6,9 @@ across multiple MISSes. No GPU, no ComfyUI, no real clip.
 
 import torch
 
-from caching.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
-from caching.proxy import CachedClipProxy
-from caching.store import load_conditioning, save_conditioning
+from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
+from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345

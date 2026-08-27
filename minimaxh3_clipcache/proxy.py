@@ -12,8 +12,8 @@ MiniMaxH3ImageToVideo node hands the tokens straight back to us.
 
 import logging
 
-from caching.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
-from caching.store import load_conditioning, save_conditioning
+from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
+from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 logger = logging.getLogger(__name__)
 

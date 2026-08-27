@@ -1,11 +1,11 @@
-"""Unit tests for caching.fingerprint.compute_fingerprint.
+"""Unit tests for minimaxh3_clipcache.fingerprint.compute_fingerprint.
 
 Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI, no disk I/O.
 """
 
 import torch
 
-from caching.fingerprint import compute_fingerprint
+from minimaxh3_clipcache.fingerprint import compute_fingerprint
 
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
