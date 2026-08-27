@@ -183,11 +183,17 @@ project.
   manage saved entries from the UI. (Planned as a separate follow-up.)
 - Requires ComfyUI's native MiniMax H3 support already present in your
   ComfyUI install — this is a wrapper around it, not a substitute.
+- This node loads the encoder checkpoint itself by filename
+  (`clip_name`) rather than accepting an already-constructed `CLIP`
+  socket. If you rely on a separately loaded/patched CLIP object
+  (e.g. from another custom node), this node cannot use it -- it is a
+  drop-in replacement for the *node*, not for an arbitrary upstream
+  CLIP socket.
 - `.safetensors` checkpoints only; GGUF encoders are untested.
 
 ## Testing
 
-43 automated tests (pytest), with no GPU required for the vast majority of
+45 automated tests (pytest), with no GPU required for the vast majority of
 them:
 
 - cache-key determinism and invalidation (prompt/image/checkpoint
