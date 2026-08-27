@@ -1,4 +1,4 @@
-# ComfyUI-MiniMaxH3-Cached
+# ComfyUI-MiniMaxH3-CLIPCached
 
 A drop-in replacement for ComfyUI's stock **MiniMax H3 Image to Video** node
 that disk-caches the text/vision encode step, so identical prompts skip
@@ -56,10 +56,10 @@ completely unchanged, since they only ever see a standard ComfyUI
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-Cached
+git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached
 ```
 
-Restart ComfyUI. A new node, **"MiniMax H3 Cached Images to Video"**, will
+Restart ComfyUI. A new node, **"MiniMax H3 CLIP-Cached Images to Video"**, will
 appear under `model/conditioning/minimax/cached` — a deliberately separate
 category from the stock node's `model/conditioning/minimax`, since this
 node has different timing behavior (a first run can be much slower than a

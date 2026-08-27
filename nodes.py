@@ -1,4 +1,4 @@
-"""MiniMaxH3CachedImageToVideo: same public contract as the stock
+"""MiniMaxH3CLIPCachedImageToVideo: same public contract as the stock
 comfy_extras.nodes_minimax_h3.MiniMaxH3ImageToVideo (t2va / fl2va conditioning
 + AV latent), except the CLIP input is replaced by a clip_name string and a
 lazy CachedClipProxy. On a cache HIT the real ~27 GB MiniMax H3 encoder is
@@ -23,7 +23,7 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
 
 
-class MiniMaxH3CachedImageToVideo:
+class MiniMaxH3CLIPCachedImageToVideo:
     @classmethod
     def INPUT_TYPES(cls):
         return {

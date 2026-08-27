@@ -175,7 +175,7 @@ def submit_prompt(prompt_text):
             "inputs": {"vae_name": VAE_NAME},
         },
         "2": {
-            "class_type": "MiniMaxH3CachedImageToVideo",
+            "class_type": "MiniMaxH3CLIPCachedImageToVideo",
             "inputs": {
                 "clip_name": CLIP_NAME,
                 "vae": ["1", 0],

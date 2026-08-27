@@ -1,4 +1,4 @@
-"""Unit tests for the public MiniMaxH3CachedImageToVideo node (nodes.py at
+"""Unit tests for the public MiniMaxH3CLIPCachedImageToVideo node (nodes.py at
 repo root) and its NODE_CLASS_MAPPINGS (__init__.py). No GPU, no real
 encoder, no real ComfyUI startup -- MiniMaxH3ImageToVideo.execute(), the
 cache loader helpers, and unload_model_and_clones() are all monkeypatched.
@@ -27,7 +27,7 @@ FAKE_MTIME_NS = 222
 
 def _load_node_module():
     spec = importlib.util.spec_from_file_location(
-        "minimaxh3cached_nodes_under_test", os.path.join(REPO_ROOT, "nodes.py"))
+        "minimaxh3clipcached_nodes_under_test", os.path.join(REPO_ROOT, "nodes.py"))
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -82,7 +82,7 @@ def test_a_execute_not_touching_clip_never_unloads(monkeypatch, tmp_path):
 
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
-    node = node_module.MiniMaxH3CachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124,
@@ -104,7 +104,7 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
 
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
-    node = node_module.MiniMaxH3CachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124,
@@ -156,7 +156,7 @@ def test_d_cache_mode_auto_builds_proxy_with_force_refresh_false(monkeypatch, tm
     SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
     monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
 
-    node = node_module.MiniMaxH3CachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124, cache_mode="auto",
@@ -187,7 +187,7 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
     SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
     monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
 
-    node = node_module.MiniMaxH3CachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124, cache_mode="refresh",
@@ -204,10 +204,10 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
 
 def test_f_node_class_mappings_has_exactly_one_matching_key():
     spec = importlib.util.spec_from_file_location(
-        "minimaxh3cached_package_under_test", os.path.join(REPO_ROOT, "__init__.py"))
+        "minimaxh3clipcached_package_under_test", os.path.join(REPO_ROOT, "__init__.py"))
     package = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = package
     spec.loader.exec_module(package)
 
-    assert list(package.NODE_CLASS_MAPPINGS.keys()) == ["MiniMaxH3CachedImageToVideo"]
-    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CachedImageToVideo"].__name__ == "MiniMaxH3CachedImageToVideo"
+    assert list(package.NODE_CLASS_MAPPINGS.keys()) == ["MiniMaxH3CLIPCachedImageToVideo"]
+    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedImageToVideo"].__name__ == "MiniMaxH3CLIPCachedImageToVideo"

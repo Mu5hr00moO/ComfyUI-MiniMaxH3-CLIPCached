@@ -8,7 +8,7 @@ requires a resolvable parent package, which this __init__.py does not
 reliably have: pytest's own Package collector (created because this
 directory contains __init__.py) always executes this file directly to
 support package-level fixtures, and cannot give it package context because
-this repo's directory name ("ComfyUI-MiniMaxH3-Cached", matching the
+this repo's directory name ("ComfyUI-MiniMaxH3-CLIPCached", matching the
 GitHub repo / ComfyUI custom_nodes folder convention) contains hyphens and
 is not a valid Python identifier. Loading nodes.py this way works
 identically under ComfyUI's real loader and under pytest.
@@ -37,13 +37,13 @@ _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.append(_here)
 
-_spec = importlib.util.spec_from_file_location("minimaxh3cached_nodes", os.path.join(_here, "nodes.py"))
+_spec = importlib.util.spec_from_file_location("minimaxh3clipcached_nodes", os.path.join(_here, "nodes.py"))
 _nodes_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_nodes_module)
 
-MiniMaxH3CachedImageToVideo = _nodes_module.MiniMaxH3CachedImageToVideo
+MiniMaxH3CLIPCachedImageToVideo = _nodes_module.MiniMaxH3CLIPCachedImageToVideo
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3CachedImageToVideo": MiniMaxH3CachedImageToVideo}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CachedImageToVideo": "MiniMax H3 Cached Images to Video"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": MiniMaxH3CLIPCachedImageToVideo}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": "MiniMax H3 CLIP-Cached Images to Video"}
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
