@@ -60,5 +60,18 @@ class CachedClipProxy:
             self.did_load_real_clip = True
         real_tokens = self._real_clip.tokenize(prompt, **kwargs)
         cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
-        save_conditioning(fingerprint, cond, self.cache_dir)
+        # The encode result already exists and was expensive to compute;
+        # persisting it to disk is pure optimisation, not a source of truth.
+        # This is the one place in the project where a broad `except` is
+        # deliberate: a cache-write failure must never discard a completed
+        # encode. (load_conditioning() on the read path stays strict -- see
+        # its docstring -- because there the user has not paid the encode
+        # cost yet and should learn their environment is broken.)
+        try:
+            save_conditioning(fingerprint, cond, self.cache_dir)
+        except Exception as e:
+            logger.warning(
+                "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
+                "- continuing without caching this result", fingerprint[:12], e,
+            )
         return cond
