@@ -4,9 +4,12 @@ Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 """
 
 import logging
+import os
 
+import pytest
 import torch
 
+from minimaxh3_clipcache import store
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 FINGERPRINT_A = "a" * 64
@@ -76,6 +79,32 @@ def test_b_no_leftover_tmp_files_after_save(tmp_path):
     save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
     leftover = list(tmp_path.glob("*.tmp-*"))
     assert leftover == []
+
+
+def test_b_failed_save_leaves_nothing_behind_and_reraises(tmp_path, monkeypatch):
+    # Fail the second os.replace() -- the .json move -- after the
+    # .safetensors is already in place and the .json temp is already
+    # written. save_conditioning() must undo everything it created (temp
+    # files *and* the .safetensors it already moved into place) and let the
+    # original exception propagate, not swallow it.
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated failure moving .json into place")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="simulated failure moving .json"):
+        save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    assert calls["n"] == 2  # the second replace really was reached
+    assert list(tmp_path.glob("*.tmp-*")) == []
+    assert not (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+    assert not (tmp_path / "{}.json".format(FINGERPRINT_A)).exists()
 
 
 def test_c_missing_safetensors_after_json_written_returns_none(tmp_path, caplog):

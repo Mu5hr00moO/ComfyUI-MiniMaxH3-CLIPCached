@@ -37,12 +37,6 @@ def _tmp_name(path: Path) -> Path:
     return path.with_name("{}.tmp-{}-{}".format(path.name, os.getpid(), uuid.uuid4().hex))
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    tmp_path = _tmp_name(path)
-    tmp_path.write_bytes(data)
-    os.replace(tmp_path, path)
-
-
 def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -50,12 +44,39 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     skeleton, tensors = flatten_tensors(cond)
 
     safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
-    tmp_safetensors_path = _tmp_name(safetensors_path)
-    save_file({k: v.detach().cpu().contiguous() for k, v in tensors.items()}, str(tmp_safetensors_path))
-    os.replace(tmp_safetensors_path, safetensors_path)
-
     json_path = cache_dir / "{}.json".format(fingerprint)
-    _atomic_write_bytes(json_path, json.dumps(skeleton).encode("utf-8"))
+
+    # Every path this call has brought into existence, in creation order: the
+    # .safetensors temp, then (once os.replace() moves it into place) the
+    # final .safetensors, then the .json temp, then the final .json. If any
+    # step raises -- classically the .json write failing after the
+    # .safetensors is already in place -- we delete all of them so a failed
+    # save leaves nothing behind: no stray .tmp-*, and no .safetensors
+    # without a matching .json. The exception is then re-raised untouched;
+    # it is proxy.py, not store.py, that decides whether a cache-write
+    # failure after a costly encode should be swallowed with a WARNING.
+    created = []
+    try:
+        tmp_safetensors_path = _tmp_name(safetensors_path)
+        save_file({k: v.detach().cpu().contiguous() for k, v in tensors.items()}, str(tmp_safetensors_path))
+        created.append(tmp_safetensors_path)
+
+        os.replace(tmp_safetensors_path, safetensors_path)
+        created[-1] = safetensors_path
+
+        tmp_json_path = _tmp_name(json_path)
+        tmp_json_path.write_bytes(json.dumps(skeleton).encode("utf-8"))
+        created.append(tmp_json_path)
+
+        os.replace(tmp_json_path, json_path)
+        created[-1] = json_path
+    except BaseException:
+        for path in created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def load_conditioning(fingerprint: str, cache_dir: Path):
