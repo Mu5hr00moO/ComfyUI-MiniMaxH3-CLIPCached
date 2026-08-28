@@ -3,9 +3,12 @@
 Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI, no disk I/O.
 """
 
+import hashlib
+import json
+
 import torch
 
-from minimaxh3_clipcache.fingerprint import compute_fingerprint
+from minimaxh3_clipcache.fingerprint import _hash_tensor, compute_fingerprint
 
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
@@ -140,3 +143,45 @@ def test_hash_is_full_sha256_hex_digest():
     assert isinstance(fp, str)
     assert len(fp) == 64
     int(fp, 16)  # raises ValueError if not valid hex
+
+
+def test_l_hash_tensor_float32_byte_identical_to_legacy_numpy_path():
+    # Regression guard: for a numpy-representable dtype the new flat-uint8
+    # byte view must produce exactly the same digest as the old
+    # t.numpy().tobytes() implementation, so existing cache entries stay valid.
+    t = torch.arange(60, dtype=torch.float32).reshape(3, 4, 5)
+
+    h_new = hashlib.sha256()
+    _hash_tensor(h_new, t)
+
+    tt = t.detach().cpu().contiguous()
+    h_legacy = hashlib.sha256()
+    h_legacy.update(json.dumps(
+        {"shape": list(tt.shape), "dtype": str(tt.dtype)}, sort_keys=True).encode("utf-8"))
+    h_legacy.update(tt.numpy().tobytes())
+
+    assert h_new.hexdigest() == h_legacy.hexdigest()
+
+
+def test_m_hash_tensor_bfloat16_does_not_raise_and_is_stable():
+    # t.numpy() raises "unsupported ScalarType BFloat16"; the flat-uint8 view
+    # must handle it and return a stable digest across calls.
+    t = torch.randn(3, 4, 5).bfloat16()
+
+    h1 = hashlib.sha256()
+    _hash_tensor(h1, t)
+    h2 = hashlib.sha256()
+    _hash_tensor(h2, t)
+
+    assert h1.hexdigest() == h2.hexdigest()
+
+
+def test_n_bfloat16_image_fingerprint_stable_and_pixel_sensitive():
+    img = torch.randn(1, 8, 8, 3).bfloat16()
+    fp1 = _fp(tokenize_kwargs={"images": [img]})
+    fp2 = _fp(tokenize_kwargs={"images": [img.clone()]})
+    assert fp1 == fp2
+
+    changed = img.clone()
+    changed[0, 0, 0, 0] = changed[0, 0, 0, 0] + 5.0
+    assert _fp(tokenize_kwargs={"images": [changed]}) != fp1

@@ -23,7 +23,14 @@ def _hash_tensor(h, tensor):
     # content but different shape or dtype (e.g. a padded vs unpadded buffer,
     # or float16 vs float32 reinterpreting the same bytes) must not collide.
     h.update(json.dumps({"shape": list(t.shape), "dtype": str(t.dtype)}, sort_keys=True).encode("utf-8"))
-    h.update(t.numpy().tobytes())
+    # Hash a flat uint8 byte view instead of going through t.numpy(): numpy
+    # has no bfloat16 (or float8) dtype, so t.numpy() raises "unsupported
+    # ScalarType" for the dtypes a quantised text encoder can emit. .flatten()
+    # first because .view(torch.uint8) refuses a size-changing reinterpret on
+    # a 0-dim tensor. The shape/dtype recorded above still disambiguate two
+    # tensors that share raw bytes; for float32 this produces byte-for-byte
+    # the same digest as the old t.numpy().tobytes() path.
+    h.update(t.flatten().view(torch.uint8).numpy().tobytes())
 
 
 def _hash_value(h, value):
