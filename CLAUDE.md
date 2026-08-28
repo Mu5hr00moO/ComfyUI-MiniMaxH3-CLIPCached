@@ -508,16 +508,27 @@ select the prompt above and copy it manually.")`. Info o referencjach +
 miniatury + zdanie "Load these images manually..." zostają bez zmian
 (nadal prawdziwe - prompt w schowku, obrazy nie).
 
-Ikonka copy w lewym-górnym rogu `<pre>` z promptem (`data-h3cm-prompt-copy`,
-`.h3cm-prompt-copy`, wrap `.h3cm-prompt-wrap`): `copyPromptText(button)` -
-kopiuje SAM tekst promptu, feedback przez klasę `.is-copied` (kolor
-`#7edeb3` - istniejąca "pozytywna" zieleń z `.h3cm-badge-normal`, nie
-nowa) + `title` "Copied!" na 1.5s, na błąd `title` "Copy failed - select
-the text manually". `.h3cm-prompt` dostał `padding-top: 32px` żeby ikonka
-nie nachodziła na pierwszą linię.
+Ikonka copy przy prompcie (`data-h3cm-prompt-copy`, `.h3cm-prompt-copy`):
+`copyPromptText(button)` - kopiuje SAM tekst promptu, feedback przez klasę
+`.is-copied` (kolor `#7edeb3` - istniejąca "pozytywna" zieleń z
+`.h3cm-badge-normal`, nie nowa) + `title` "Copied!" na 1.5s, na błąd
+`title` "Copy failed - select the text manually". Iterowana pozycja:
+najpierw lewy-górny róg `<pre>` (`position: absolute`), potem prawy-górny,
+finalnie przeniesiona do własnego, NIEprzewijanego paska
+`.h3cm-prompt-toolbar` (flex, `justify-content: flex-end`) NAD `<pre>` -
+`position: absolute` nakładało ikonkę na scrollbar przewijanego `<pre>`
+(szerokość scrollbara zależy od systemu), pasek eliminuje to strukturalnie.
+`.h3cm-prompt` wróciło do zwykłego `padding: 8px 10px`.
 
-Zweryfikowane: `node --check`, harness 22/22 (moduł ładuje się czysto,
-usunięte symbole `loadIntoNode`/`applyLoad`/`nodeOptionLabel` faktycznie
+Zweryfikowane: `node --check`, harness (moduł ładuje się czysto, usunięte
+symbole `loadIntoNode`/`applyLoad`/`nodeOptionLabel` faktycznie
 `undefined`, czyste funkcje + filtry dalej OK, `setup()` nie rzuca). Do
 obejrzenia w przeglądarce: faktyczne kopiowanie do schowka (i fallback
 gdy `navigator.clipboard` niedostępne), feedback ikonki, wygląd.
+
+---
+
+Fazy 1-7 kompletne i zweryfikowane end-to-end na żywym ComfyUI+GPU
+(dyskowy HIT/MISS niezależny od cache'u ComfyUI w pamięci, backfill
+legacy->normal, Delete czyści dysk, UI część 1-4). Otwarte pomysły
+(TODO, poza repo) trzymane osobno przez użytkownika, nie w tym pliku.
