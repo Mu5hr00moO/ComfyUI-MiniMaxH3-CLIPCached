@@ -43,7 +43,24 @@ class CachedClipProxy:
         self._pending = (prompt, kwargs)
         return self._pending
 
-    def encode_from_tokens_scheduled(self, tokens):
+    def encode_from_tokens_scheduled(self, tokens, unprojected=False, add_dict=None, show_pbar=True):
+        # The real comfy.sd.CLIP.encode_from_tokens_scheduled() signature is
+        # (self, tokens, unprojected=False, add_dict={}, show_pbar=True). Both
+        # stock MiniMax H3 nodes only ever call it as (tokens), so today these
+        # never arrive -- but if a caller ever passes them we must fail loudly
+        # rather than let a silent TypeError happen, and we must never quietly
+        # ignore them: unprojected=True in particular returns a different data
+        # representation, so serving a cached (projected) result for it would
+        # be silently wrong.
+        if unprojected or add_dict or not show_pbar:
+            raise RuntimeError(
+                "CachedClipProxy.encode_from_tokens_scheduled() was called "
+                "with unprojected/add_dict/show_pbar - this proxy does not "
+                "support non-default values for these (they would silently "
+                "invalidate cached results). If you need this, the caching "
+                "logic needs to be extended to include these in the cache "
+                "key first."
+            )
         prompt, kwargs = tokens
         fingerprint = compute_fingerprint(
             prompt, kwargs, self.clip_name, self.clip_file_size, self.clip_mtime_ns,
