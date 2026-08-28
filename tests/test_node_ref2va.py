@@ -199,6 +199,27 @@ def test_f_is_changed_auto_is_stable_across_calls():
     assert cls.IS_CHANGED(prompt="p", width=1344) == cls.IS_CHANGED(prompt="p", width=1344)
 
 
+def test_i_is_changed_auto_reflects_checkpoint_file_identity(monkeypatch):
+    """cache_mode="auto" must change when the checkpoint file underneath
+    an unchanged clip_name changes (swapped file, same filename) --
+    otherwise ComfyUI's own execution cache could skip re-running this
+    node entirely and our on-disk fingerprint (which does include file
+    identity) would never even get computed. Same-stat calls must stay
+    stable so an unchanged graph still hits ComfyUI's own execution
+    cache."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedRef2VA
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222))
+    before = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    before_again = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert before == before_again
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (333, 444))
+    after = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert after != before
+
+
 def test_g_node_class_mappings_keeps_both_nodes():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_ref2va_under_test", os.path.join(REPO_ROOT, "__init__.py"))

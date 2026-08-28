@@ -64,17 +64,32 @@ class MiniMaxH3CLIPCachedFL2VA:
     CATEGORY = "model/conditioning/minimax/cached"
 
     @classmethod
-    def IS_CHANGED(cls, cache_mode="auto", **kwargs):
+    def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
-        # only name the one we care about and swallow the rest. Returning a
+        # only name the ones we care about and swallow the rest. Returning a
         # fresh NaN whenever cache_mode == "refresh" makes the executor's
         # signature comparison fail on every Queue (NaN != NaN), so "refresh"
         # forces a real re-execution even when the user clicks Queue again
-        # with all inputs unchanged. In "auto" mode we return a stable value
-        # so identical graphs still hit ComfyUI's own execution cache.
+        # with all inputs unchanged.
+        #
+        # In "auto" mode we must NOT return a bare constant: ComfyUI's own
+        # execution cache keys on (literal inputs, IS_CHANGED result), and
+        # clip_name is just a filename string. If the on-disk checkpoint is
+        # replaced under the same filename, the literal input is unchanged,
+        # so a constant IS_CHANGED would let ComfyUI skip re-executing this
+        # node entirely -- serving a stale CONDITIONING without our own
+        # fingerprint (which already includes file_size/mtime_ns) ever being
+        # computed. Folding the same stat into IS_CHANGED closes that gap: a
+        # swapped file changes this return value, forcing a real
+        # re-execution, at which point our own on-disk cache does its normal
+        # fingerprint-based HIT/MISS. clip_name is only absent when a test
+        # calls IS_CHANGED directly without it; real graphs always supply it.
         if cache_mode == "refresh":
             return float("nan")
-        return cache_mode
+        if clip_name is None:
+            return cache_mode
+        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        return (cache_mode, clip_name, file_size, mtime_ns)
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
@@ -207,14 +222,19 @@ class MiniMaxH3CLIPCachedRef2VA:
     CATEGORY = "model/conditioning/minimax/cached"
 
     @classmethod
-    def IS_CHANGED(cls, cache_mode="auto", **kwargs):
+    def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # Same contract as MiniMaxH3CLIPCachedFL2VA.IS_CHANGED: a fresh NaN
-        # whenever cache_mode == "refresh" (NaN != NaN forces a real
-        # re-execution on every Queue), a stable value otherwise so an
-        # unchanged graph still hits ComfyUI's own execution cache.
+        # whenever cache_mode == "refresh" (forces re-execution on every
+        # Queue), and otherwise (file_size, mtime_ns) folded in alongside
+        # clip_name so a checkpoint swapped under the same filename still
+        # forces re-execution instead of being skipped by ComfyUI's own
+        # execution cache.
         if cache_mode == "refresh":
             return float("nan")
-        return cache_mode
+        if clip_name is None:
+            return cache_mode
+        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        return (cache_mode, clip_name, file_size, mtime_ns)
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
                 ref_image_size="match",
