@@ -13,7 +13,29 @@ wykonać całą właściwą mechanikę H3 (resize, VAE encode keyframes, AV late
 minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
 
 ## Potwierdzone fakty o środowisku (nie zakładać nic ponad to bez ponownej weryfikacji)
-- ComfyUI lokalnie: v0.34.0, w /home/kamil/ComfyUI
+- ComfyUI lokalnie: v0.34.2 (aktualizowane w trakcie prac nad Ref2Video,
+  patrz notatka R1 o length), w /home/kamil/ComfyUI. Wersję sprawdzać przez
+  comfyui_version.py / pyproject.toml (oba: "0.34.2") oraz git describe.
+- UWAGA: użytkownik utrzymuje lokalne monkey-patche na czysty ComfyUI
+  (git stash "MiniMax H3 local monkey patches before master update" w repo
+  ComfyUI /home/kamil/ComfyUI, NIE w tym repo). Łatki dotyczą: (a) widgetu
+  length w nodes_minimax_h3.py (min=1/max=3600/step=1 zamiast stockowego
+  min=5/max=3600/step=17, we wszystkich 3 node'ach: EmptyMiniMaxH3LatentAV,
+  MiniMaxH3ImageToVideo, MiniMaxH3ReferenceToVideo), plus zabezpieczenia
+  n<=1 w align_frame_count()/video_latent_t() i max(1, length) zamiast
+  max(5, length) w temporal_shape(); (b) zakomentowania v = v.clone() w
+  comfy/ldm/minimax/model.py (Attention, perf/VRAM). Ten projekt celuje w
+  CZYSTY upstream, nie w załatane środowisko - jeśli coś kiedyś znowu
+  wygląda niespójne ze stockiem, sprawdź NAJPIERW czy lokalne ComfyUI ma
+  nałożone łatki (git status / git stash list w repo ComfyUI, nie w tym
+  repo), zanim uznasz to za bug w naszym kodzie.
+- Łatka na v.clone() w comfy/ldm/minimax/model.py jest OBECNIE nałożona
+  (git status w repo ComfyUI pokazuje "M" na tym pliku - stan po
+  częściowym re-aplikowaniu po aktualizacji do v0.34.2; łatka length
+  została w stashu i NIE jest nałożona). Dotyczy realnej ścieżki
+  obliczeniowej modelu (forward Attention), nie tylko UI węzła. Poza
+  zakresem tego projektu, ale warto wiedzieć że tam jest - może wpływać
+  na czasy/VRAM w benchmarkach.
 - MiniMaxH3ImageToVideo.execute(clip, vae, prompt, width, height, length,
   first_frame=None, last_frame=None) w comfy_extras/nodes_minimax_h3.py
   - na clip wywołuje WYŁĄCZNIE: clip.tokenize(prompt, images=images) i

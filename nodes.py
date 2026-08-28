@@ -36,7 +36,7 @@ class MiniMaxH3CLIPCachedImageToVideo:
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
-                "length": ("INT", {"default": 124, "min": 1, "max": 3600, "step": 1,
+                "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid "
                                                "(124 = ~5s; trained range is ~124-362, longer is untested)"}),
             },
