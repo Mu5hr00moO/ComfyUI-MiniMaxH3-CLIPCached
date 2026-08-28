@@ -25,10 +25,11 @@ FILE_SIZE = 27141342152
 MTIME_NS = 1712345678000000000
 
 
-def _fp(ref_items=None, kwargs=None, prompt="a ref2va prompt"):
+def _fp(ref_items=None, kwargs=None, prompt="a ref2va prompt",
+        clip_name=CLIP_NAME, file_size=FILE_SIZE, mtime_ns=MTIME_NS):
     if kwargs is None:
         kwargs = {"minimax_ref_items": ref_items}
-    return compute_fingerprint(prompt, kwargs, CLIP_NAME, FILE_SIZE, MTIME_NS, 1)
+    return compute_fingerprint(prompt, kwargs, clip_name, file_size, mtime_ns, 1)
 
 
 def _image_item(seed):
@@ -136,3 +137,72 @@ def test_h_ref_item_keys_do_not_raise_value_error():
         pytest.fail("compute_fingerprint raised ValueError on valid ref_items: {}".format(e))
     assert isinstance(fp, str) and len(fp) == 64
     int(fp, 16)
+
+
+# --- i) change one image of two, same position -------------------------
+
+def test_i_changing_one_image_of_two_leaves_the_other_changes_fingerprint():
+    # Ref2VA analog of test_fingerprint.py's test_j/test_k: with two images
+    # at fixed positions in the list, changing only index 0 must move the
+    # digest even though index 1 is byte-identical. test_b (add) and test_c
+    # (reorder) never exercised a same-length, same-position content swap.
+    keep = _image_item(2)
+    before = [_image_item(1), keep]
+    after = [_image_item(7), _clone_items([keep])[0]]
+    assert _fp(before) != _fp(after)
+
+
+# --- j) same video, same timestamps, different frame pixels ------------
+
+def test_j_changing_only_video_frames_changes_fingerprint():
+    # Mirror of test_f (which changes only the timestamps): here the
+    # timestamps and the item type are identical and only the frame tensor
+    # differs, so the pixel content of a reference video is proven to matter
+    # on its own.
+    base = _video_item(7, timestamps=(0.0, 0.5, 1.0))
+    other = _clone_items([base])[0]
+    other["data"] = torch.rand(3, 48, 48, 3, generator=torch.Generator().manual_seed(31))
+    assert _fp([base]) != _fp([other])
+
+
+# --- k) add / remove a reference video --------------------------------
+
+def test_k_adding_or_removing_a_reference_video_changes_fingerprint():
+    # test_b covers add/remove for images; a video item carries both a
+    # tensor and a timestamps list, so confirm its presence moves the digest
+    # too. The assertion is symmetric: left->right reads as "add a video",
+    # right->left as "remove a video".
+    img = _image_item(1)
+    assert _fp([img]) != _fp([img, _video_item(2)])
+
+
+# --- l) clip identity on the minimax_ref_items path -------------------
+
+def test_l_clip_identity_changes_fingerprint_on_the_ref_items_path():
+    # test_fingerprint.py proves clip identity (name / file_size / mtime_ns)
+    # drives the digest, but only on the "images" kwarg path. Clip identity
+    # is hashed in the metadata block ahead of any kwargs, independent of the
+    # kwargs shape, so it must behave identically for a request that carries
+    # minimax_ref_items.
+    items = [_image_item(1), _video_item(2), _audio_item()]
+    base = _fp(items)
+    assert _fp(items, clip_name="a_different_encoder.safetensors") != base
+    assert _fp(items, file_size=FILE_SIZE + 1) != base
+    assert _fp(items, mtime_ns=MTIME_NS + 1) != base
+
+
+# --- m) control: seed / sampler / steps / scheduler cannot reach the key -
+
+def test_m_compute_fingerprint_has_no_sampling_parameters():
+    # seed / sampler / steps / scheduler are inputs to KSampler, downstream
+    # of the CONDITIONING output -- neither node threads them into the proxy,
+    # and compute_fingerprint() has no parameter to receive them. This is the
+    # structural reason changing them is always a HIT (same as FL2VA). Guard
+    # the signature so a future refactor can't quietly add one.
+    import inspect
+
+    params = list(inspect.signature(compute_fingerprint).parameters)
+    assert params == [
+        "prompt", "tokenize_kwargs", "clip_name", "clip_file_size",
+        "clip_mtime_ns", "cache_schema_version",
+    ]
