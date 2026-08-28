@@ -1,8 +1,9 @@
 # ComfyUI-MiniMaxH3-CLIPCached
 
-A drop-in replacement for ComfyUI's stock **MiniMax H3 Image to Video** node
-that disk-caches the text/vision encode step, so identical prompts skip
-loading the ~27 GB Qwen3-VL encoder entirely.
+Drop-in replacements for ComfyUI's stock **MiniMax H3 Image to Video** and
+**MiniMax H3 Reference to Video** nodes that disk-cache the text/vision
+encode step, so identical prompts skip loading the ~27 GB Qwen3-VL encoder
+entirely.
 
 > **Not to be confused with** `ComfyUI-MiniMaxH3-Cache`, `-TeaCache`, or
 > `-FirstBlockCache`. Those projects cache/skip *diffusion sampling steps*
@@ -26,15 +27,17 @@ straight from an empty VRAM to conditioning in a fraction of a second.
 ## What this is *not*
 
 This is not a reimplementation of MiniMax H3. It calls ComfyUI's own stock
-`MiniMaxH3ImageToVideo.execute()` directly and lets it do all the real work
-(frame resizing, VAE keyframe encoding, AV latent construction,
-`minimax_keyframes`). The only thing this node changes is what the stock
-node sees as its `clip` input: instead of a real, already-loaded CLIP
-object, it gets a transparent proxy that checks a disk cache before
-deciding whether to load the real encoder at all.
+`MiniMaxH3ImageToVideo.execute()` (or `MiniMaxH3ReferenceToVideo.execute()`)
+directly and lets it do all the real work (frame resizing, VAE keyframe /
+reference encoding, AV latent construction, `minimax_keyframes` /
+`minimax_refs`). The only thing these nodes change is what the stock node
+sees as its `clip` input: instead of a real, already-loaded CLIP object, it
+gets a transparent proxy that checks a disk cache before deciding whether to
+load the real encoder at all.
 
-Because of this design, the node's `CONDITIONING`/`LATENT` output is
-**bit-for-bit identical** to the stock node's output for the same inputs.
+Because of this design, each node's `CONDITIONING`/`LATENT` output is
+**bit-for-bit identical** to the matching stock node's output for the same
+inputs.
 The bit-exact proof lives in [`scripts/test_stock_vs_cache.py`](scripts/test_stock_vs_cache.py):
 it loads the real ~27 GB Qwen3-VL encoder and checks
 `stock == cached-MISS == cached-HIT` with exact `torch.equal` (not
@@ -69,13 +72,14 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached
 ```
 
-Restart ComfyUI. A new node, **"MiniMax H3 CLIP-Cached FL2VA"**, will
-appear under `model/conditioning/minimax/cached` — a deliberately separate
-category from the stock node's `model/conditioning/minimax`, since this
-node has different timing behavior (a first run can be much slower than a
-cached repeat) and a different input contract.
+Restart ComfyUI. Two new nodes, **"MiniMax H3 CLIP-Cached FL2VA"** and
+**"MiniMax H3 CLIP-Cached Ref2VA"**, will appear under
+`model/conditioning/minimax/cached` — a deliberately separate category from
+the stock nodes' `model/conditioning/minimax`, since these nodes have
+different timing behavior (a first run can be much slower than a cached
+repeat) and a different input contract.
 
-## The node
+## The FL2VA node
 
 | Input | Type | Notes |
 |---|---|---|
@@ -140,6 +144,89 @@ as a warning; it never raises and never blocks generation.
   returns. The encoder never lingers in VRAM after a single request
   completes, regardless of whether that request was a hit or a miss.
 
+## The Ref2VA node
+
+**"MiniMax H3 CLIP-Cached Ref2VA"** is the same design applied to ComfyUI's
+stock **MiniMax H3 Reference to Video** node: a transparent cached-CLIP
+proxy in front of `MiniMaxH3ReferenceToVideo.execute()`, which still does
+all the real work (reference resizing, VAE image/video/audio encoding, AV
+latent construction, `minimax_refs`). Only the raw output of
+`clip.encode_from_tokens_scheduled()` is cached.
+
+| Input | Type | Notes |
+|---|---|---|
+| `clip_name` | dropdown (`models/text_encoders`) | Replaces the stock `clip` input. Loaded lazily — **only on a cache miss**. |
+| `vae` | VAE | Video VAE. Same as stock — always required; reference/keyframe encoding is never cached. |
+| `audio_vae` | VAE | Audio VAE, for reference audio and video soundtracks. Not part of the cached state (see below), but still required by the stock node. |
+| `prompt` | string (multiline) | Same as stock. Refers to references by ordinal tag — `<Picture 1>`, `<Video 1>`, `<Audio 1>` — counted 1-based per type in presentation order (images, then videos, then standalone audio). |
+| `width` / `height` | int | Same defaults and range as stock (1344×768, min 32, step 32). |
+| `length` | int | Same as stock (default 124, min 5, max 3600, step 17). |
+| `ref_image_size` | `match` / `max` | How reference images are sized before encoding. `match` scales each image down to the generation's pixel area; `max` scales to a 2048px short edge for best identity fidelity (and is several times slower, since reference tokens ride through every sampling step). Matches the stock option exactly. |
+| `ref_image_0`–`ref_image_8` | image (optional) | Up to 9 reference images. |
+| `ref_video_0`–`ref_video_2` | image (optional) | Up to 3 reference videos, each an `IMAGE` batch of frames (not a `VIDEO`). |
+| `ref_video_audio_0`–`ref_video_audio_2` | audio (optional) | Soundtrack for the same-numbered reference video (`ref_video_audio_1` pairs with `ref_video_1`). |
+| `ref_audio_0`–`ref_audio_2` | audio (optional) | Up to 3 standalone reference audios. |
+| `cache_mode` | `auto` / `refresh` | Same as the FL2VA node. |
+
+These 18 reference slots are **v1-style fixed optional inputs** — one
+socket per slot, with the counts (9 / 3 / 3 / 3) mirroring the stock node's
+own limits. The stock node uses a dynamic `io.Autogrow` input that adds
+sockets on demand; this node does not — the slot count is hard-capped in
+v1.
+
+Outputs (`positive` / `latent`) are identical in type and shape to the
+stock node's `CONDITIONING` / `LATENT`.
+
+### How caching works for Ref2VA
+
+The cache key is built the same way as for the FL2VA node — a SHA-256
+fingerprint over the schema version, the encoder checkpoint identity, the
+prompt, and every argument passed into `clip.tokenize()`, with list order
+preserved and never sorted. For Ref2VA that last part is the list of
+reference items (`minimax_ref_items`) the stock node assembles before
+tokenizing. A few consequences are specific to this node:
+
+- **Reference order is semantically load-bearing.** The prompt addresses
+  references by position (`<Picture 2>` is the second image in the list,
+  not a slot literally named `ref_image_2`), so the fingerprint preserves
+  that order exactly — the same mechanism by which `first_frame` and
+  `last_frame` are never interchangeable in the FL2VA node.
+
+- **The absolute UI slot index does not matter — only the relative order
+  of the connected references does.** Moving your only reference image from
+  `ref_image_0` to `ref_image_5` still produces a cache **hit**: the stock
+  node compacts the connected slots into a dense list before tokenizing, so
+  both cases present exactly one `<Picture 1>`. This is intended, not a
+  bug, and is covered by a test (R8).
+
+- **Audio content never enters the cached state.** The raw waveform of a
+  reference audio or a video soundtrack is encoded by `audio_vae` into
+  `minimax_refs` (recomputed on every call, hit or miss) and is *never*
+  passed to the text/vision encoder — the encoder only sees an `<Audio N>`
+  marker. So swapping just the audio file, with the same prompt / images /
+  videos, does **not** invalidate the cache: the encoder cannot see the
+  difference. The *number and position* of audio references does affect the
+  cache, though, even with identical content, because that changes the
+  `<Audio N>` tags in the token stream.
+
+- **`ref_image_size` affects the cache only indirectly, through pixels.**
+  It changes the resized reference image that goes into the encoder, so for
+  large images (short edge well above the generation size) `match` and
+  `max` produce different fingerprints. For small images that neither mode
+  upscales, the resized tensor is bit-identical either way and the
+  fingerprints deliberately collide — a safe collision, since the encoder
+  input really is identical.
+
+### Limitations specific to Ref2VA
+
+- **There is no "safe" reorder operation in the UI.** Because reference
+  order changes what the prompt's `<Picture N>` / `<Video N>` / `<Audio N>`
+  tags mean, any reordering of connected references is a real semantic
+  change and will (correctly) miss the cache.
+- **The slot limits are fixed in v1** (9 images, 3 videos, 3 video
+  soundtracks, 3 standalone audios), not the stock node's dynamic
+  `io.Autogrow`. If you need more references than that, use the stock node.
+
 ## Measured performance
 
 Numbers below are from real runs on one machine (RTX-class GPU, 16 GB
@@ -152,6 +239,12 @@ hardware — treat these as orders of magnitude, not guarantees:
   ~19–20s per distinct prompt.
 - Real encode in a cold, isolated process (no DynamicVRAM, encoder not
   yet resident): well over a minute.
+
+Side-by-side RAM/VRAM monitor captures of a cache miss (the ~27 GB encoder
+loading) vs. a cache hit (the load line never appears) are still to be
+added here.
+
+<!-- TODO: memory comparison screenshots, see CLAUDE.md R10 prep -->
 
 ## A note on memory behavior
 
@@ -184,10 +277,11 @@ project.
   loading the full encoder (or raises, if that fails) — there's currently
   no way to say "only ever use the cache, never load the 27 GB model." A
   `cache_mode="cache_only"` option is planned but not implemented yet.
-- Only wraps `MiniMaxH3ImageToVideo` (text-to-video / first+last-frame
-  conditioning). `MiniMaxH3ReferenceToVideo` (reference-to-video) uses a
-  different `tokenize()` call signature (`minimax_ref_items=` instead of
-  `images=`) and is **not** cached by this node yet.
+- Wraps only the two stock MiniMax H3 conditioning nodes that actually run
+  the encoder: `MiniMaxH3ImageToVideo` (the FL2VA node) and
+  `MiniMaxH3ReferenceToVideo` (the Ref2VA node). The other stock MiniMax H3
+  nodes (`EmptyMiniMaxH3LatentAV`, `MiniMax H3 Add Guide`) never touch the
+  encoder, so there is nothing there to cache.
 - No built-in prompt library or named-prompt management — this node
   caches by content fingerprint only, with no way to browse, name, or
   manage saved entries from the UI. (Planned as a separate follow-up.)
@@ -203,7 +297,7 @@ project.
 
 ## Testing
 
-54 automated tests (pytest), none of which require a GPU or the real
+97 automated tests (pytest), none of which require a GPU or the real
 encoder — they all use small stand-in tensors:
 
 - cache-key determinism and invalidation (prompt/image/checkpoint
@@ -219,6 +313,11 @@ this suite — it is proven separately by
 [`scripts/test_stock_vs_cache.py`](scripts/test_stock_vs_cache.py) (phase 23),
 a manually run script that needs the checkpoint and a GPU and compares
 `stock == cached-MISS == cached-HIT` with exact `torch.equal`.
+
+The Ref2VA node went through the same verification process as the FL2VA
+node: equivalence against the real encoder (`torch.equal`), an end-to-end
+test through a live server, and a short memory-trend check — see `CLAUDE.md`
+for the full history.
 
 ```bash
 pytest
