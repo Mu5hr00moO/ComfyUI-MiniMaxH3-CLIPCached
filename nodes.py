@@ -57,6 +57,19 @@ class MiniMaxH3CLIPCachedImageToVideo:
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
+    @classmethod
+    def IS_CHANGED(cls, cache_mode="auto", **kwargs):
+        # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
+        # only name the one we care about and swallow the rest. Returning a
+        # fresh NaN whenever cache_mode == "refresh" makes the executor's
+        # signature comparison fail on every Queue (NaN != NaN), so "refresh"
+        # forces a real re-execution even when the user clicks Queue again
+        # with all inputs unchanged. In "auto" mode we return a stable value
+        # so identical graphs still hit ComfyUI's own execution cache.
+        if cache_mode == "refresh":
+            return float("nan")
+        return cache_mode
+
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
         file_size, mtime_ns = resolve_clip_stat(clip_name)

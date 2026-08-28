@@ -10,6 +10,7 @@ ComfyUI repo) loads a custom node package in production -- never as a bare
 """
 
 import importlib.util
+import math
 import os
 import sys
 
@@ -230,6 +231,39 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
     assert real_clip.encode_calls == 1
     assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
+
+
+def test_g_is_changed_refresh_forces_reexecution_every_call():
+    """cache_mode="refresh" must return a value that never equals itself
+    between two consecutive Queue clicks, so ComfyUI's signature comparison
+    always misses and execute() actually re-runs. NaN is that value."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+
+    # ComfyUI hands IS_CHANGED every graph input as a kwarg -- make sure the
+    # signature absorbs the ones we don't name.
+    first = cls.IS_CHANGED(cache_mode="refresh", clip_name=CLIP_NAME, vae="v",
+                            prompt="p", width=1344, height=768, length=124)
+    second = cls.IS_CHANGED(cache_mode="refresh", clip_name=CLIP_NAME, vae="v",
+                             prompt="p", width=1344, height=768, length=124)
+
+    assert isinstance(first, float) and math.isnan(first)
+    assert isinstance(second, float) and math.isnan(second)
+    # NaN != NaN -- this inequality is exactly what forces re-execution.
+    assert not (first == second)
+
+
+def test_h_is_changed_auto_is_stable_across_calls():
+    """cache_mode="auto" (and the default) must return a stable, self-equal
+    value so an unchanged graph still hits ComfyUI's own execution cache."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+
+    assert cls.IS_CHANGED(cache_mode="auto", prompt="p") == \
+           cls.IS_CHANGED(cache_mode="auto", prompt="p")
+    # default (IS_CHANGED called with no cache_mode at all, e.g. optional
+    # input left unconnected) must also be stable
+    assert cls.IS_CHANGED(prompt="p", width=1344) == cls.IS_CHANGED(prompt="p", width=1344)
 
 
 def test_f_node_class_mappings_has_exactly_one_matching_key():
