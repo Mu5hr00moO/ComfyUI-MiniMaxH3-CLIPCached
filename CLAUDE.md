@@ -287,6 +287,26 @@ historyczny procesu, nie lista otwartych zadań.**
 Po utworzeniu pliku zrób git add CLAUDE.md i commit z opisem
 "Add project context and plan for CC sessions". Nic więcej teraz nie rób.
 
+## R10 prep: zrzuty ekranu do README (TODO dla użytkownika, nie dla CC)
+
+Przed napisaniem sekcji README dla Ref2VA - zrzuty ekranu porównawcze
+zajęcia RAM/VRAM (nvitop/nvidia-smi na żywo):
+
+- BEZ cache'a: pełny real encode przez stockowy node/nasz node przy
+  MISS - pokazać moment ładowania ~26GB Qwen3-VL encodera (linia
+  "Requested to load MiniMaxH3TEModel_" w logu serwera) + peak VRAM/RAM
+  w tym momencie.
+- Z cache'em (HIT): identyczny graf, drugi przebieg - pokazać że ta
+  linia w logu w ogóle się nie pojawia, VRAM/RAM zostaje płaskie.
+
+Gotowy scenariusz do powtórzenia: dokładnie ten sam setup co R7 (dwa
+świeże serwery, ten sam graf Ref2VA) - logi z R7 już to demonstrują
+tekstowo (/tmp/r7_server.log dla MISS, /tmp/r7_hit_server.log dla HIT),
+brakuje tylko wizualnego zrzutu ekranu z monitora GPU/RAM w trakcie.
+
+To jest task DLA UŻYTKOWNIKA (wymaga ręcznego zrobienia screenshotów przy
+odpalonym nvitop), nie coś do zautomatyzowania w kodzie/testach.
+
 ## Cache Manager (drugi wątek)
 
 Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
