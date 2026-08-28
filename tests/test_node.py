@@ -320,10 +320,13 @@ def test_j_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp
 
 
 def test_k_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp_path):
-    """If the real encoder's own encode_from_tokens_scheduled() raises (before
-    the proxy's new early-unload runs), nodes.py's outer finally must still be
-    the safety net that releases the encoder -- exactly once, not skipped just
-    because did_load_real_clip is True."""
+    """If the real encoder's own encode_from_tokens_scheduled() raises, the
+    encoder must still be released exactly once -- today that happens inside
+    CachedClipProxy's own try/finally (added for the process-wide encoder
+    lock), with nodes.py's outer finally as a no-op safety net once
+    proxy.real_clip is already None. This test only asserts the outcome
+    (exactly one unload, correct patcher), not which of the two release
+    points fired, so it stays valid regardless of which one does."""
     node_module = _load_node_module()
 
     class FailingRealClip(FakeRealClip):
