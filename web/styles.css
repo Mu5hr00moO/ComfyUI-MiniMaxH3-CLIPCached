@@ -291,20 +291,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.h3cm-prompt-wrap {
-  position: relative;
+.h3cm-prompt-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
 }
 .h3cm-prompt-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 1;
+  position: static;
   display: grid;
   place-items: center;
   padding: 4px;
   border: none;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.4);
+  background: transparent;
   color: #cfd3da;
   cursor: pointer;
   opacity: 0.6;
@@ -320,8 +319,7 @@
   margin: 0 0 10px;
   max-height: 160px;
   overflow-y: auto;
-  /* extra top space so the copy icon does not sit over the first line */
-  padding: 32px 10px 8px;
+  padding: 8px 10px;
   border: 1px solid #2b2f38;
   border-radius: 6px;
   background: #101216;

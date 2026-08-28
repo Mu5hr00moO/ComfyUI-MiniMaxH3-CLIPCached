@@ -175,13 +175,15 @@ function createPanel() {
           <button type="button" class="h3cm-button" data-h3cm-detail-close>Close details</button>
         </div>
         <div class="h3cm-prompt-wrap">
-          <button type="button" class="h3cm-prompt-copy" data-h3cm-prompt-copy
-            title="Copy prompt" aria-label="Copy prompt">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-              <rect x="4" y="4" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
-              <path d="M2.5 9.5V2.5A1 1 0 0 1 3.5 1.5H10.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
-            </svg>
-          </button>
+          <div class="h3cm-prompt-toolbar">
+            <button type="button" class="h3cm-prompt-copy" data-h3cm-prompt-copy
+              title="Copy prompt" aria-label="Copy prompt">
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <rect x="4" y="4" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                <path d="M2.5 9.5V2.5A1 1 0 0 1 3.5 1.5H10.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+              </svg>
+            </button>
+          </div>
           <pre class="h3cm-prompt" data-h3cm-detail-prompt></pre>
         </div>
         <label class="h3cm-field">Name
