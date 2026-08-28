@@ -266,12 +266,17 @@ def test_h_is_changed_auto_is_stable_across_calls():
     assert cls.IS_CHANGED(prompt="p", width=1344) == cls.IS_CHANGED(prompt="p", width=1344)
 
 
-def test_f_node_class_mappings_has_exactly_one_matching_key():
+def test_f_node_class_mappings_has_both_node_keys():
+    """Regression: adding the Ref2VA node must not drop or shadow the FL2VA
+    entry -- both keys must be present, each pointing at its own class."""
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_under_test", os.path.join(REPO_ROOT, "__init__.py"))
     package = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = package
     spec.loader.exec_module(package)
 
-    assert list(package.NODE_CLASS_MAPPINGS.keys()) == ["MiniMaxH3CLIPCachedFL2VA"]
+    assert set(package.NODE_CLASS_MAPPINGS.keys()) == {
+        "MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedRef2VA"}
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VA"].__name__ == "MiniMaxH3CLIPCachedFL2VA"
+    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedRef2VA"].__name__ == "MiniMaxH3CLIPCachedRef2VA"
+    assert set(package.NODE_DISPLAY_NAME_MAPPINGS.keys()) == set(package.NODE_CLASS_MAPPINGS.keys())

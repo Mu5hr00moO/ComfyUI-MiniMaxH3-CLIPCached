@@ -42,8 +42,15 @@ _nodes_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_nodes_module)
 
 MiniMaxH3CLIPCachedFL2VA = _nodes_module.MiniMaxH3CLIPCachedFL2VA
+MiniMaxH3CLIPCachedRef2VA = _nodes_module.MiniMaxH3CLIPCachedRef2VA
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedFL2VA": "MiniMax H3 CLIP-Cached FL2VA"}
+NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA,
+    "MiniMaxH3CLIPCachedRef2VA": MiniMaxH3CLIPCachedRef2VA,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3CLIPCachedFL2VA": "MiniMax H3 CLIP-Cached FL2VA",
+    "MiniMaxH3CLIPCachedRef2VA": "MiniMax H3 CLIP-Cached Ref2VA",
+}
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

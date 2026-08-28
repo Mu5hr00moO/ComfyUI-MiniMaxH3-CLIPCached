@@ -1,12 +1,18 @@
-"""MiniMaxH3CLIPCachedFL2VA: same public contract as the stock
-comfy_extras.nodes_minimax_h3.MiniMaxH3ImageToVideo (t2va / fl2va conditioning
-+ AV latent), except the CLIP input is replaced by a clip_name string and a
-lazy CachedClipProxy. On a cache HIT the real ~27 GB MiniMax H3 encoder is
-never loaded at all; on a MISS it is loaded, used once, and unloaded again
-via targeted unload_model_and_clones() before returning (CLAUDE.md phases
-17-19). All the actual H3 mechanics (resize, VAE keyframe encode, AV latent,
-minimax_keyframes) stay in the stock node -- this file never reimplements
-them, it only substitutes what the stock node sees as "clip".
+"""Cached-CLIP siblings of the stock MiniMax H3 conditioning nodes:
+
+- MiniMaxH3CLIPCachedFL2VA  wraps comfy_extras.nodes_minimax_h3.MiniMaxH3ImageToVideo
+  (t2va / fl2va: prompt + optional first/last keyframes)
+- MiniMaxH3CLIPCachedRef2VA wraps comfy_extras.nodes_minimax_h3.MiniMaxH3ReferenceToVideo
+  (ref2va: prompt + reference images / videos / audio)
+
+Both have the same public contract as their stock counterpart, except the
+CLIP input is replaced by a clip_name string and a lazy CachedClipProxy. On a
+cache HIT the real ~27 GB MiniMax H3 encoder is never loaded at all; on a
+MISS it is loaded, used once, and unloaded again via targeted
+unload_model_and_clones() before returning (CLAUDE.md phases 17-19). All the
+actual H3 mechanics (resize, VAE keyframe / reference encode, AV latent,
+minimax_keyframes / minimax_refs) stay in the stock node -- this file never
+reimplements them, it only substitutes what the stock node sees as "clip".
 """
 
 import gc
@@ -85,6 +91,164 @@ class MiniMaxH3CLIPCachedFL2VA:
             cond, latent = MiniMaxH3ImageToVideo.execute(
                 clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
                 length=length, first_frame=first_frame, last_frame=last_frame,
+            )
+        finally:
+            # Guarantee the ~27 GB encoder is released even if the stock node
+            # raises after our proxy already loaded it (a real failure mode
+            # seen in phase 23). We do NOT swallow the exception here -- per
+            # CLAUDE.md's "no silent fallbacks" rule the error must propagate;
+            # we only make sure it doesn't leave the encoder resident as
+            # ballast. On an exception cond/latent are never assigned and the
+            # function exits by propagating, so there is nothing to return.
+            if proxy.did_load_real_clip:
+                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                del proxy
+                gc.collect()
+                comfy.model_management.soft_empty_cache()
+
+        return (cond, latent)
+
+
+# --- Ref2VA (reference images / videos / audio) -----------------------------
+
+# v1 keeps a fixed number of single reference slots instead of the stock
+# node's io.Autogrow, mirroring the stock limits: 9 reference images, 3
+# reference videos (each an IMAGE batch of frames, not a VIDEO), 3 matching
+# soundtracks, 3 standalone audios.
+_REF_IMAGE_COUNT = 9
+_REF_VIDEO_COUNT = 3
+_REF_AUDIO_COUNT = 3
+
+# Tooltips copied verbatim from the stock MiniMaxH3ReferenceToVideo schema.
+_REF_IMAGE_TOOLTIP = "Reference image (downscaled to 2048 short edge if larger, never upscaled)"
+_REF_VIDEO_TOOLTIP = "Reference video frames at 24 fps (2-15s)"
+_REF_VIDEO_AUDIO_TOOLTIP = "Soundtrack of the same-numbered reference video"
+_REF_AUDIO_TOOLTIP = "Standalone reference audio"
+_REF_IMAGE_SIZE_TOOLTIP = (
+    "Reference image sizing. 'match' scales each ref (down only, keeping aspect) "
+    "to the generation's pixel area; 'max' uses the reference pipeline's 2048px "
+    "short edge for best identity fidelity. Reference tokens ride through every "
+    "sampling step, so 'max' can be several times slower."
+)
+
+
+def _build_ref_slot_dicts(ref_image_slots, ref_video_slots, ref_video_audio_slots, ref_audio_slots):
+    """Turn the four flat lists of fixed optional slots into the
+    dict-of-named-slots shape the stock MiniMaxH3ReferenceToVideo.execute()
+    expects for its ref_images / ref_videos / ref_video_audios / ref_audios
+    arguments.
+
+    Each returned dict maps "<prefix><index>" -> value for every slot that is
+    actually connected, in ascending slot order; None slots are dropped. A
+    group whose slots are all empty is returned as None, not {} -- that is the
+    stock execute()'s own default for these arguments. The stock node treats
+    None and {} identically (it does `(ref_images or {}).values()` and
+    `ref_video_audios = ref_video_audios or {}`), but None matches the stock
+    signature exactly and reads unambiguously.
+
+    The "<prefix><index>" key format is load-bearing for videos: the stock
+    node pairs a soundtrack to its video with
+    `ref_video_audios.get("ref_video_audio_" + name.rsplit("_", 1)[-1])`, so
+    ref_video_audio_<i> is only picked up as the soundtrack of ref_video_<i>
+    when both keys carry the same trailing index.
+    """
+    def _group(slots, prefix):
+        d = {prefix + str(i): v for i, v in enumerate(slots) if v is not None}
+        return d or None
+
+    return (
+        _group(ref_image_slots, "ref_image_"),
+        _group(ref_video_slots, "ref_video_"),
+        _group(ref_video_audio_slots, "ref_video_audio_"),
+        _group(ref_audio_slots, "ref_audio_"),
+    )
+
+
+class MiniMaxH3CLIPCachedRef2VA:
+    @classmethod
+    def INPUT_TYPES(cls):
+        optional = {}
+        for i in range(_REF_IMAGE_COUNT):
+            optional["ref_image_" + str(i)] = ("IMAGE", {"tooltip": _REF_IMAGE_TOOLTIP})
+        for i in range(_REF_VIDEO_COUNT):
+            optional["ref_video_" + str(i)] = ("IMAGE", {"tooltip": _REF_VIDEO_TOOLTIP})
+        for i in range(_REF_VIDEO_COUNT):
+            optional["ref_video_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_VIDEO_AUDIO_TOOLTIP})
+        for i in range(_REF_AUDIO_COUNT):
+            optional["ref_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_AUDIO_TOOLTIP})
+        optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
+            "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
+                       "images/videos/audio + clip_name (checkpoint identity = "
+                       "filename+size+mtime) if one exists, otherwise encode and save it. "
+                       "refresh: ignore any cached encode, always re-encode and overwrite "
+                       "the cache.",
+        })
+        return {
+            "required": {
+                "clip_name": (folder_paths.get_filename_list("text_encoders"), {
+                    "tooltip": "MiniMax H3 text/vision encoder (Qwen3-VL) checkpoint from "
+                               "models/text_encoders. Loaded lazily -- only on a cache miss.",
+                }),
+                "vae": ("VAE",),
+                "audio_vae": ("VAE",),
+                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
+                                    "tooltip": "Frame count at 24 fps, (124 = ~5s, trained range is ~124-362)"}),
+                "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
+            },
+            "optional": optional,
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "LATENT")
+    RETURN_NAMES = ("positive", "latent")
+    FUNCTION = "execute"
+    CATEGORY = "model/conditioning/minimax/cached"
+
+    @classmethod
+    def IS_CHANGED(cls, cache_mode="auto", **kwargs):
+        # Same contract as MiniMaxH3CLIPCachedFL2VA.IS_CHANGED: a fresh NaN
+        # whenever cache_mode == "refresh" (NaN != NaN forces a real
+        # re-execution on every Queue), a stable value otherwise so an
+        # unchanged graph still hits ComfyUI's own execution cache.
+        if cache_mode == "refresh":
+            return float("nan")
+        return cache_mode
+
+    def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
+                ref_image_size="match",
+                ref_image_0=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+                ref_image_4=None, ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                ref_image_8=None,
+                ref_video_0=None, ref_video_1=None, ref_video_2=None,
+                ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
+                ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
+                cache_mode="auto"):
+        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        loader_fn = build_clip_loader_fn(clip_name)
+        proxy = CachedClipProxy(
+            loader_fn, clip_name, file_size, mtime_ns,
+            cache_dir=CACHE_DIR,
+            force_refresh=(cache_mode == "refresh"),
+        )
+
+        ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
+            [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
+             ref_image_5, ref_image_6, ref_image_7, ref_image_8],
+            [ref_video_0, ref_video_1, ref_video_2],
+            [ref_video_audio_0, ref_video_audio_1, ref_video_audio_2],
+            [ref_audio_0, ref_audio_1, ref_audio_2],
+        )
+
+        from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
+        try:
+            cond, latent = MiniMaxH3ReferenceToVideo.execute(
+                clip=proxy, vae=vae, audio_vae=audio_vae, prompt=prompt,
+                width=width, height=height, length=length,
+                ref_image_size=ref_image_size,
+                ref_images=ref_images, ref_videos=ref_videos,
+                ref_video_audios=ref_video_audios, ref_audios=ref_audios,
             )
         finally:
             # Guarantee the ~27 GB encoder is released even if the stock node
