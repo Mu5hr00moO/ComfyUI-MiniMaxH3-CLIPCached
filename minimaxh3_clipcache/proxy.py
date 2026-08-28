@@ -11,11 +11,31 @@ MiniMaxH3ImageToVideo node hands the tokens straight back to us.
 """
 
 import logging
+import threading
 
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 logger = logging.getLogger(__name__)
+
+# One lock per cache fingerprint, shared across every CachedClipProxy
+# instance in the process. It serialises the whole lookup -> encode -> save
+# path for a given entry so two racing MISS requests for the same fingerprint
+# (e.g. two Queue runs, or a Cache Manager delete landing mid-write) cannot
+# both load the ~27 GB encoder at once: the second thread re-checks the cache
+# after the first releases the lock and finds the freshly written result.
+# Distinct fingerprints get distinct locks, so unrelated encodes still run in
+# parallel. The dict grows by one small Lock per unique fingerprint seen in a
+# session -- negligible even for thousands of prompts.
+_fingerprint_locks: dict[str, threading.Lock] = {}
+_fingerprint_locks_guard = threading.Lock()
+
+
+def _get_lock(fingerprint: str) -> threading.Lock:
+    with _fingerprint_locks_guard:
+        if fingerprint not in _fingerprint_locks:
+            _fingerprint_locks[fingerprint] = threading.Lock()
+        return _fingerprint_locks[fingerprint]
 
 MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
 # encoder output. A mismatch here almost always means clip_name points
@@ -67,40 +87,46 @@ class CachedClipProxy:
             CACHE_SCHEMA_VERSION,
         )
 
-        if not self.force_refresh:
-            cond = load_conditioning(fingerprint, self.cache_dir)
-            if cond is not None:
-                logger.info("[CACHE HIT] %s", fingerprint[:12])
-                self._validate_output_hidden_dim(cond, fingerprint)
-                return cond
-            logger.info("[CACHE MISS] %s", fingerprint[:12])
-        else:
-            logger.info("[CACHE REFRESH] %s", fingerprint[:12])
+        # Hold the per-fingerprint lock across the ENTIRE lookup -> encode ->
+        # save path. A second thread that was blocked here re-runs
+        # load_conditioning() below (inside the lock) before deciding to
+        # encode, so if the first thread already produced and saved the
+        # result it is served as a HIT and the encoder is never loaded twice.
+        with _get_lock(fingerprint):
+            if not self.force_refresh:
+                cond = load_conditioning(fingerprint, self.cache_dir)
+                if cond is not None:
+                    logger.info("[CACHE HIT] %s", fingerprint[:12])
+                    self._validate_output_hidden_dim(cond, fingerprint)
+                    return cond
+                logger.info("[CACHE MISS] %s", fingerprint[:12])
+            else:
+                logger.info("[CACHE REFRESH] %s", fingerprint[:12])
 
-        if self._real_clip is None:
-            self._real_clip = self.clip_loader_fn()
-            self.did_load_real_clip = True
-        real_tokens = self._real_clip.tokenize(prompt, **kwargs)
-        cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
-        # Validate the shape BEFORE persisting: a wrong-checkpoint encode
-        # must never be written to the cache, and the error must surface
-        # here rather than as a cryptic matmul failure later in the sampler.
-        self._validate_output_hidden_dim(cond, fingerprint)
-        # The encode result already exists and was expensive to compute;
-        # persisting it to disk is pure optimisation, not a source of truth.
-        # This is the one place in the project where a broad `except` is
-        # deliberate: a cache-write failure must never discard a completed
-        # encode. (load_conditioning() on the read path stays strict -- see
-        # its docstring -- because there the user has not paid the encode
-        # cost yet and should learn their environment is broken.)
-        try:
-            save_conditioning(fingerprint, cond, self.cache_dir)
-        except Exception as e:
-            logger.warning(
-                "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
-                "- continuing without caching this result", fingerprint[:12], e,
-            )
-        return cond
+            if self._real_clip is None:
+                self._real_clip = self.clip_loader_fn()
+                self.did_load_real_clip = True
+            real_tokens = self._real_clip.tokenize(prompt, **kwargs)
+            cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
+            # Validate the shape BEFORE persisting: a wrong-checkpoint encode
+            # must never be written to the cache, and the error must surface
+            # here rather than as a cryptic matmul failure later in the sampler.
+            self._validate_output_hidden_dim(cond, fingerprint)
+            # The encode result already exists and was expensive to compute;
+            # persisting it to disk is pure optimisation, not a source of truth.
+            # This is the one place in the project where a broad `except` is
+            # deliberate: a cache-write failure must never discard a completed
+            # encode. (load_conditioning() on the read path stays strict -- see
+            # its docstring -- because there the user has not paid the encode
+            # cost yet and should learn their environment is broken.)
+            try:
+                save_conditioning(fingerprint, cond, self.cache_dir)
+            except Exception as e:
+                logger.warning(
+                    "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
+                    "- continuing without caching this result", fingerprint[:12], e,
+                )
+            return cond
 
     def _validate_output_hidden_dim(self, cond, fingerprint):
         """Fail loudly if the conditioning's hidden dim isn't the MiniMax H3
