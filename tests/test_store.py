@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from minimaxh3_clipcache import store
+from minimaxh3_clipcache.store import gc_orphaned_cache_files
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 FINGERPRINT_A = "a" * 64
@@ -157,3 +158,55 @@ def test_e_missing_fingerprint_returns_none_without_warning(tmp_path, caplog):
 
     assert result is None
     assert caplog.records == []
+
+
+def test_f_load_self_heals_orphaned_safetensors_without_json(tmp_path, caplog):
+    # Simulate a process killed between the two os.replace() calls in
+    # save_conditioning(): a .safetensors exists with no matching .json.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    (tmp_path / "{}.json".format(FINGERPRINT_A)).unlink()
+    assert (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+
+    with caplog.at_level(logging.WARNING):
+        result = load_conditioning(FINGERPRINT_A, tmp_path)
+
+    assert result is None
+    assert not (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+    assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_f_load_self_heal_leaves_a_fresh_write_of_the_same_fingerprint_intact(tmp_path):
+    # After the self-heal above, writing and reading the same fingerprint
+    # again must work exactly as normal -- the orphan is gone, not the
+    # ability to use that fingerprint.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    (tmp_path / "{}.json".format(FINGERPRINT_A)).unlink()
+    load_conditioning(FINGERPRINT_A, tmp_path)  # triggers the self-heal
+
+    cond = _cond_variant_b()
+    save_conditioning(FINGERPRINT_A, cond, tmp_path)
+    loaded = load_conditioning(FINGERPRINT_A, tmp_path)
+    _assert_cond_equal(cond, loaded)
+
+
+def test_g_gc_removes_only_orphaned_safetensors(tmp_path):
+    cond_a = _cond_variant_a()
+    save_conditioning(FINGERPRINT_A, cond_a, tmp_path)
+    cond_b = _cond_variant_b()
+    save_conditioning(FINGERPRINT_B, cond_b, tmp_path)
+    orphan_fp = "e" * 64
+    save_conditioning(orphan_fp, _cond_variant_a(), tmp_path)
+    (tmp_path / "{}.json".format(orphan_fp)).unlink()
+
+    removed = gc_orphaned_cache_files(tmp_path)
+
+    assert removed == [orphan_fp]
+    assert not (tmp_path / "{}.safetensors".format(orphan_fp)).exists()
+    _assert_cond_equal(cond_a, load_conditioning(FINGERPRINT_A, tmp_path))
+    _assert_cond_equal(cond_b, load_conditioning(FINGERPRINT_B, tmp_path))
+
+
+def test_g_gc_on_empty_or_missing_dir_returns_empty_list(tmp_path):
+    assert gc_orphaned_cache_files(tmp_path) == []
+    assert gc_orphaned_cache_files(tmp_path / "does-not-exist") == []

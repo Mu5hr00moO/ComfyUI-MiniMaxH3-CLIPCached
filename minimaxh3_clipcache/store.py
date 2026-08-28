@@ -85,6 +85,25 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
     safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
 
     if not json_path.exists():
+        if safetensors_path.exists():
+            # A .safetensors with no matching .json can only be left behind
+            # by an interrupted write (save_conditioning() writes tensors
+            # first, the skeleton last -- see the module docstring): the
+            # tensors aren't corrupt, they were just orphaned mid-write.
+            # Self-heal it now so this fingerprint doesn't accumulate an
+            # ever-growing dead file every time it MISSes and gets
+            # re-encoded and re-saved. A fingerprint that is never looked up
+            # again is not covered by this -- see gc_orphaned_cache_files()
+            # below for a directory-wide sweep.
+            logger.warning(
+                "Cache MISS for fingerprint %s: found orphaned %s with no "
+                "matching %s (likely an interrupted write) - removing it",
+                fingerprint, safetensors_path, json_path,
+            )
+            try:
+                safetensors_path.unlink()
+            except OSError:
+                pass  # best-effort cleanup, not worth failing the MISS over
         return None  # ordinary MISS, not logged
 
     try:
@@ -119,3 +138,34 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
         logger.warning("Cache MISS for fingerprint %s: skeleton/tensors mismatch while reconstructing: %s",
                         fingerprint, e)
         return None
+
+
+def gc_orphaned_cache_files(cache_dir: Path) -> list[str]:
+    """Remove every "<fingerprint>.safetensors" in cache_dir that has no
+    matching "<fingerprint>.json", and return the list of fingerprints
+    removed. These can only be left behind by a process killed between
+    the two os.replace() calls in save_conditioning() (tensors first,
+    skeleton last); load_conditioning() already self-heals a
+    fingerprint's own orphan the next time that exact fingerprint
+    MISSes, but a fingerprint that is never looked up again would
+    otherwise accumulate a dead file forever.
+
+    Not called automatically anywhere in this repo today -- it is a
+    reusable primitive for a caller that wants to sweep the whole cache
+    directory (e.g. on demand, or from a future management UI), not
+    something every node execution should pay a directory scan for.
+    """
+    cache_dir = Path(cache_dir)
+    if not cache_dir.is_dir():
+        return []
+    removed = []
+    for safetensors_path in cache_dir.glob("*.safetensors"):
+        fingerprint = safetensors_path.stem
+        json_path = cache_dir / "{}.json".format(fingerprint)
+        if not json_path.exists():
+            try:
+                safetensors_path.unlink()
+                removed.append(fingerprint)
+            except OSError as e:
+                logger.warning("Failed to remove orphaned cache file %s: %s", safetensors_path, e)
+    return removed
