@@ -41,9 +41,9 @@ _spec = importlib.util.spec_from_file_location("minimaxh3clipcached_nodes", os.p
 _nodes_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_nodes_module)
 
-MiniMaxH3CLIPCachedImageToVideo = _nodes_module.MiniMaxH3CLIPCachedImageToVideo
+MiniMaxH3CLIPCachedFL2VA = _nodes_module.MiniMaxH3CLIPCachedFL2VA
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": MiniMaxH3CLIPCachedImageToVideo}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedImageToVideo": "MiniMax H3 CLIP-Cached Images to Video"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3CLIPCachedFL2VA": "MiniMax H3 CLIP-Cached FL2VA"}
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

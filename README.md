@@ -69,7 +69,7 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached
 ```
 
-Restart ComfyUI. A new node, **"MiniMax H3 CLIP-Cached Images to Video"**, will
+Restart ComfyUI. A new node, **"MiniMax H3 CLIP-Cached FL2VA"**, will
 appear under `model/conditioning/minimax/cached` — a deliberately separate
 category from the stock node's `model/conditioning/minimax`, since this
 node has different timing behavior (a first run can be much slower than a

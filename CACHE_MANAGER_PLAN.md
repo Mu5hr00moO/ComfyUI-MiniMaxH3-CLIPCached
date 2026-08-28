@@ -1,6 +1,6 @@
 # MiniMax H3 CLIP Cache Manager — plan wdrożenia (v2, po review kodu)
 
-Rozszerzenie istniejącego `MiniMaxH3CLIPCachedImageToVideo` o czytelne metadata
+Rozszerzenie istniejącego `MiniMaxH3CLIPCachedFL2VA` o czytelne metadata
 cache, miniaturki referencji i interaktywny manager.
 
 Dokument zastępuje wcześniejszy plan „Biblioteka nazwanych promptów + Manager +
@@ -292,7 +292,7 @@ Manager pozwala:
 - zmieniać nazwę, tagi, favorite i notes.
 
 Zmiana samego promptu odbywa się po załadowaniu go do normalnego widgetu
-`prompt` w `MiniMaxH3CLIPCachedImageToVideo`.
+`prompt` w `MiniMaxH3CLIPCachedFL2VA`.
 
 Po kolejnym uruchomieniu zmodyfikowany prompt naturalnie tworzy właściwy
 fingerprint i ewentualnie nowy cache entry.
@@ -661,7 +661,7 @@ Nie dodajemy cache statusu per preset / wpis.
 `Load`:
 
 1. kopiuje dokładny prompt wybranego wpisu do widgetu `prompt` głównego
-   `MiniMaxH3CLIPCachedImageToVideo`,
+   `MiniMaxH3CLIPCachedFL2VA`,
 2. nie próbuje automatycznie odtwarzać pełnych obrazów referencyjnych,
 3. jeśli wpis został utworzony z referencjami, **musi wyświetlić użytkownikowi
    wyraźną informację o ich obecności**.

@@ -1,7 +1,7 @@
 # ComfyUI-MiniMaxH3-CLIPCached — kontekst projektu
 
 ## Cel
-Custom node ComfyUI: "MiniMax H3 CLIP-Cached Images to Video". Cache'uje wynik
+Custom node ComfyUI: "MiniMax H3 CLIP-Cached FL2VA". Cache'uje wynik
 text/vision-encodingu (Qwen3-VL, przez natywny obiekt CLIP ComfyUI z
 clip_type=MINIMAX) na dysku, żeby przy powtórzonym prompt+first_frame+
 last_frame nie trzeba było w ogóle ładować ~27 GB encodera.

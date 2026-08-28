@@ -61,7 +61,7 @@ from test_proxy_gate import (  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # append, NOT insert(0): REPO_ROOT contains our own nodes.py (the public
-# MiniMaxH3CLIPCachedImageToVideo node, added phase 18) -- inserting it ahead of
+# MiniMaxH3CLIPCachedFL2VA node, added phase 18) -- inserting it ahead of
 # COMFYUI_ROOT would make a later `import nodes` inside main() resolve to
 # THIS repo's nodes.py instead of ComfyUI's own, exactly the collision
 # __init__.py already documents avoiding the same way (see CLAUDE.md).

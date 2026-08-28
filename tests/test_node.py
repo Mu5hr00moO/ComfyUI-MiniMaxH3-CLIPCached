@@ -1,4 +1,4 @@
-"""Unit tests for the public MiniMaxH3CLIPCachedImageToVideo node (nodes.py at
+"""Unit tests for the public MiniMaxH3CLIPCachedFL2VA node (nodes.py at
 repo root) and its NODE_CLASS_MAPPINGS (__init__.py). No GPU, no real
 encoder, no real ComfyUI startup -- MiniMaxH3ImageToVideo.execute(), the
 cache loader helpers, and unload_model_and_clones() are all monkeypatched.
@@ -86,7 +86,7 @@ def test_a_execute_not_touching_clip_never_unloads(monkeypatch, tmp_path):
 
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
-    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124,
@@ -108,7 +108,7 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
 
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
-    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124,
@@ -135,7 +135,7 @@ def test_c_execute_raising_after_loading_clip_still_unloads_and_propagates(monke
 
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
-    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
     with pytest.raises(RuntimeError, match="simulated failure"):
         node.execute(
             clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
@@ -187,7 +187,7 @@ def test_d_cache_mode_auto_builds_proxy_with_force_refresh_false(monkeypatch, tm
     SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
     monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
 
-    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124, cache_mode="auto",
@@ -218,7 +218,7 @@ def test_e_cache_mode_refresh_builds_proxy_with_force_refresh_true(monkeypatch, 
     SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
     monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
 
-    node = node_module.MiniMaxH3CLIPCachedImageToVideo()
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
     cond, latent = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
         width=1344, height=768, length=124, cache_mode="refresh",
@@ -238,7 +238,7 @@ def test_g_is_changed_refresh_forces_reexecution_every_call():
     between two consecutive Queue clicks, so ComfyUI's signature comparison
     always misses and execute() actually re-runs. NaN is that value."""
     node_module = _load_node_module()
-    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+    cls = node_module.MiniMaxH3CLIPCachedFL2VA
 
     # ComfyUI hands IS_CHANGED every graph input as a kwarg -- make sure the
     # signature absorbs the ones we don't name.
@@ -257,7 +257,7 @@ def test_h_is_changed_auto_is_stable_across_calls():
     """cache_mode="auto" (and the default) must return a stable, self-equal
     value so an unchanged graph still hits ComfyUI's own execution cache."""
     node_module = _load_node_module()
-    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+    cls = node_module.MiniMaxH3CLIPCachedFL2VA
 
     assert cls.IS_CHANGED(cache_mode="auto", prompt="p") == \
            cls.IS_CHANGED(cache_mode="auto", prompt="p")
@@ -273,5 +273,5 @@ def test_f_node_class_mappings_has_exactly_one_matching_key():
     sys.modules[spec.name] = package
     spec.loader.exec_module(package)
 
-    assert list(package.NODE_CLASS_MAPPINGS.keys()) == ["MiniMaxH3CLIPCachedImageToVideo"]
-    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedImageToVideo"].__name__ == "MiniMaxH3CLIPCachedImageToVideo"
+    assert list(package.NODE_CLASS_MAPPINGS.keys()) == ["MiniMaxH3CLIPCachedFL2VA"]
+    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VA"].__name__ == "MiniMaxH3CLIPCachedFL2VA"
