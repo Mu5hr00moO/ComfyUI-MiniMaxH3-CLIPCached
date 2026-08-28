@@ -220,6 +220,64 @@ def test_i_is_changed_auto_reflects_checkpoint_file_identity(monkeypatch):
     assert after != before
 
 
+def test_h_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp_path):
+    """Same guarantee as FL2VA: the real encoder must be released as soon as
+    encode_from_tokens_scheduled() returns, before any work the stock node
+    still does afterwards. Today's stock Ref2VA does its VAE ref-encoding
+    BEFORE the CLIP encode, so this is currently a no-op for Ref2VA in
+    practice -- this test guards the contract in case that ever changes."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        assert unload_calls["count"] == 1
+        assert clip.real_clip is None
+        return (cond, "latent_fake")
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    cond, latent = _execute(node)
+
+    assert real_clip.tokenize_calls == 1
+    assert real_clip.encode_calls == 1
+    assert unload_calls["count"] == 1
+    assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+def test_j_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp_path):
+    """If the real encoder's own encode_from_tokens_scheduled() raises before
+    the proxy's new early-unload runs, nodes.py's outer finally must still be
+    the safety net that releases the encoder -- exactly once."""
+    node_module = _load_node_module()
+
+    class FailingRealClip(FakeRealClip):
+        def encode_from_tokens_scheduled(self, tokens):
+            self.encode_calls += 1
+            raise RuntimeError("simulated ref2va encoder failure")
+
+    real_clip = FailingRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        return clip.encode_from_tokens_scheduled(tokens)
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    with pytest.raises(RuntimeError, match="simulated ref2va encoder failure"):
+        _execute(node)
+
+    assert unload_calls["count"] == 1
+    assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
 def test_g_node_class_mappings_keeps_both_nodes():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_ref2va_under_test", os.path.join(REPO_ROOT, "__init__.py"))

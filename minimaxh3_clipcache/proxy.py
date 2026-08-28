@@ -44,13 +44,22 @@ MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
 
 class CachedClipProxy:
     def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir,
-                 force_refresh=False):
+                 force_refresh=False, unload_fn=None):
         self.clip_loader_fn = clip_loader_fn
         self.clip_name = clip_name
         self.clip_file_size = clip_file_size
         self.clip_mtime_ns = clip_mtime_ns
         self.cache_dir = cache_dir
         self.force_refresh = force_refresh
+        # Optional callback(patcher) to release the real encoder as soon as
+        # this proxy is done with it, called right after a successful real
+        # encode -- before returning control to the stock node, which may
+        # still have its own post-encode work left (e.g. FL2VA's keyframe
+        # VAE encode). None (the default) means "do nothing here", which is
+        # what every proxy-level test that constructs CachedClipProxy
+        # directly (no ComfyUI, no real model_management) relies on; nodes.py
+        # is the only caller that supplies a real one today.
+        self.unload_fn = unload_fn
         self._pending = None
         self._real_clip = None
         self.did_load_real_clip = False
@@ -126,6 +135,15 @@ class CachedClipProxy:
                     "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
                     "- continuing without caching this result", fingerprint[:12], e,
                 )
+            # The real encoder's only job for this request is done. Release
+            # it now (if the caller gave us a way to) instead of waiting for
+            # the stock node's remaining work to finish first -- for FL2VA
+            # that remaining work is the keyframe VAE encode, which today
+            # runs strictly after this call returns, so without this the
+            # ~27 GB encoder would sit resident through it for nothing.
+            if self.unload_fn is not None:
+                self.unload_fn(self._real_clip.patcher)
+                self._real_clip = None
             return cond
 
     def _validate_output_hidden_dim(self, cond, fingerprint):

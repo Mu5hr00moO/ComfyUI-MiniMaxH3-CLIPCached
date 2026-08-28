@@ -99,6 +99,7 @@ class MiniMaxH3CLIPCachedFL2VA:
             loader_fn, clip_name, file_size, mtime_ns,
             cache_dir=CACHE_DIR,
             force_refresh=(cache_mode == "refresh"),
+            unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
         )
 
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
@@ -108,15 +109,24 @@ class MiniMaxH3CLIPCachedFL2VA:
                 length=length, first_frame=first_frame, last_frame=last_frame,
             )
         finally:
-            # Guarantee the ~27 GB encoder is released even if the stock node
-            # raises after our proxy already loaded it (a real failure mode
-            # seen in phase 23). We do NOT swallow the exception here -- per
-            # CLAUDE.md's "no silent fallbacks" rule the error must propagate;
-            # we only make sure it doesn't leave the encoder resident as
-            # ballast. On an exception cond/latent are never assigned and the
-            # function exits by propagating, so there is nothing to return.
+            # The proxy already released the ~27 GB encoder itself right
+            # after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
+            # via the unload_fn passed in above), before the keyframe VAE
+            # encode below even runs, so it no longer sits resident through
+            # that step. The explicit unload call here is now only the
+            # safety net for a failure INSIDE the real encode itself, before
+            # the proxy got a chance to unload (a real failure mode seen in
+            # phase 23) -- proxy.real_clip is None once the proxy has
+            # already released it, so the inner guard avoids a redundant
+            # double-unload. We do NOT swallow the exception here -- per
+            # CLAUDE.md's "no silent fallbacks" rule the error must
+            # propagate; we only make sure it doesn't leave the encoder
+            # resident as ballast. On an exception cond/latent are never
+            # assigned and the function exits by propagating, so there is
+            # nothing to return.
             if proxy.did_load_real_clip:
-                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                if proxy.real_clip is not None:
+                    comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
                 del proxy
                 gc.collect()
                 comfy.model_management.soft_empty_cache()
@@ -251,6 +261,7 @@ class MiniMaxH3CLIPCachedRef2VA:
             loader_fn, clip_name, file_size, mtime_ns,
             cache_dir=CACHE_DIR,
             force_refresh=(cache_mode == "refresh"),
+            unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
         )
 
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
@@ -271,15 +282,24 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_video_audios=ref_video_audios, ref_audios=ref_audios,
             )
         finally:
-            # Guarantee the ~27 GB encoder is released even if the stock node
-            # raises after our proxy already loaded it (a real failure mode
-            # seen in phase 23). We do NOT swallow the exception here -- per
-            # CLAUDE.md's "no silent fallbacks" rule the error must propagate;
-            # we only make sure it doesn't leave the encoder resident as
-            # ballast. On an exception cond/latent are never assigned and the
-            # function exits by propagating, so there is nothing to return.
+            # Same contract as MiniMaxH3CLIPCachedFL2VA: the proxy already
+            # released the encoder itself right after its own real encode,
+            # via the unload_fn passed in above. For Ref2VA specifically the
+            # stock node's VAE ref-encoding runs BEFORE the CLIP encode, not
+            # after, so today there is no post-encode work left here for the
+            # early release to protect -- but the shared proxy contract means
+            # this stays correct (and future-proof) without a special case.
+            # The explicit unload call below is only the safety net for a
+            # failure INSIDE the real encode itself, before the proxy got a
+            # chance to unload; proxy.real_clip is None once the proxy has
+            # already released it, so the inner guard avoids a redundant
+            # double-unload. We do NOT swallow the exception here -- per
+            # CLAUDE.md's "no silent fallbacks" rule the error must
+            # propagate; we only make sure it doesn't leave the encoder
+            # resident as ballast.
             if proxy.did_load_real_clip:
-                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                if proxy.real_clip is not None:
+                    comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
                 del proxy
                 gc.collect()
                 comfy.model_management.soft_empty_cache()

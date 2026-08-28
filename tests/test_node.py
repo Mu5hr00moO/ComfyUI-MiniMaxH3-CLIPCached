@@ -287,6 +287,70 @@ def test_i_is_changed_auto_reflects_checkpoint_file_identity(monkeypatch):
     assert after != before
 
 
+def test_j_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp_path):
+    """The real encoder must be released as soon as encode_from_tokens_scheduled()
+    returns, before any work the stock node still does afterwards (e.g. FL2VA's
+    keyframe VAE encode) -- not only in nodes.py's outer finally once the whole
+    stock execute() has returned."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        # Simulate the stock node's post-encode VAE work (e.g. FL2VA's
+        # keyframe encode): the encoder must already be gone by this point.
+        assert unload_calls["count"] == 1
+        assert clip.real_clip is None
+        return (cond, "latent_fake")
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    cond, latent = node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+    )
+
+    assert real_clip.tokenize_calls == 1
+    assert real_clip.encode_calls == 1
+    assert unload_calls["count"] == 1
+    assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+def test_k_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp_path):
+    """If the real encoder's own encode_from_tokens_scheduled() raises (before
+    the proxy's new early-unload runs), nodes.py's outer finally must still be
+    the safety net that releases the encoder -- exactly once, not skipped just
+    because did_load_real_clip is True."""
+    node_module = _load_node_module()
+
+    class FailingRealClip(FakeRealClip):
+        def encode_from_tokens_scheduled(self, tokens):
+            self.encode_calls += 1
+            raise RuntimeError("simulated encoder failure")
+
+    real_clip = FailingRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        return clip.encode_from_tokens_scheduled(tokens)
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    with pytest.raises(RuntimeError, match="simulated encoder failure"):
+        node.execute(
+            clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+            width=1344, height=768, length=124,
+        )
+
+    assert unload_calls["count"] == 1
+    assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
 def test_f_node_class_mappings_has_both_node_keys():
     """Regression: adding the Ref2VA node must not drop or shadow the FL2VA
     entry -- both keys must be present, each pointing at its own class."""
