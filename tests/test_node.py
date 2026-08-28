@@ -10,6 +10,7 @@ ComfyUI repo) loads a custom node package in production -- never as a bare
 """
 
 import importlib.util
+import logging
 import math
 import os
 import sys
@@ -352,6 +353,102 @@ def test_k_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp
 
     assert unload_calls["count"] == 1
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+class _FakeProxy:
+    """Stand-in for CachedClipProxy carrying only the three fields
+    _sync_verbose_metadata() reads back after a run."""
+
+    def __init__(self, fingerprint="a" * 64, last_hit=False, last_core_cache_written=True):
+        self.last_fingerprint = fingerprint
+        self.last_hit = last_hit
+        self.last_core_cache_written = last_core_cache_written
+
+
+def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
+    """A fresh MISS whose core cache landed on disk writes a sidecar whose
+    system block is tagged node_variant="fl2va" and lists the keyframes as
+    positional image references with their labels."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    items = [("image", torch.zeros(1, 4, 4, 3)), ("image", torch.ones(1, 4, 4, 3))]
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        items, labels=["first_frame", "last_frame"])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["node_variant"] == "fl2va"
+    assert system["prompt"] == "a prompt"
+    assert [r["type"] for r in system["references"]] == ["image", "image"]
+    assert [r["label"] for r in system["references"]] == ["first_frame", "last_frame"]
+    assert [r["index"] for r in system["references"]] == [0, 1]
+
+
+def test_m_sync_verbose_miss_without_core_cache_write_does_nothing(monkeypatch, tmp_path):
+    """last_core_cache_written is False (the cache write failed): there is no
+    entry to describe, so no sidecar is written."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=False)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert load_verbose("a" * 64, tmp_path) is None
+
+
+def test_n_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
+    """A HIT of a legacy entry that has no sidecar yet backfills one."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        [("image", torch.zeros(1, 4, 4, 3))], labels=["first_frame"])
+
+    assert load_verbose("a" * 64, tmp_path)["system"]["node_variant"] == "fl2va"
+
+
+def test_o_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, tmp_path):
+    """A HIT of an entry that already has a sidecar is a no-op -- the existing
+    file is left byte-for-byte untouched."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import save_verbose
+
+    save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va", "references": []}, tmp_path)
+    before = (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes()
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a different prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes() == before
+
+
+def test_p_sync_verbose_write_failure_is_swallowed(monkeypatch, tmp_path, caplog):
+    """save_verbose() raising must not propagate: the verbose layer is not the
+    source of truth, the core cache result stands regardless."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+
+    def boom(fingerprint, system, cache_dir):
+        raise OSError("verbose sidecar disk full")
+
+    monkeypatch.setattr(node_module, "save_verbose", boom)
+
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    with caplog.at_level(logging.WARNING):
+        node_module._sync_verbose_metadata(
+            proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert any("VERBOSE WRITE FAILED" in r.getMessage() for r in caplog.records)
 
 
 def test_f_node_class_mappings_has_both_node_keys():

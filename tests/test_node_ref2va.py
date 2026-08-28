@@ -278,6 +278,133 @@ def test_j_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
 
 
+def test_k_build_reference_items_images_and_video_no_audio():
+    node_module = _load_node_module()
+    i0, i1 = torch.zeros(1, 2, 2, 3), torch.ones(1, 2, 2, 3)
+    v0 = torch.zeros(4, 2, 2, 3)
+
+    items = node_module._build_reference_items(
+        {"ref_image_0": i0, "ref_image_1": i1}, {"ref_video_0": v0}, None, None)
+
+    assert [t for t, _ in items] == ["image", "image", "video"]
+    assert items[0][1] is i0 and items[1][1] is i1 and items[2][1] is v0
+
+
+def test_l_build_reference_items_matched_audio_comes_before_its_video():
+    """The stock node feeds a reference video's soundtrack to the encoder as
+    an "<Audio N>" marker immediately before the video (CLAUDE.md R1). The
+    audio entry carries no tensor -- the waveform never reaches the encoder."""
+    node_module = _load_node_module()
+    v1 = torch.zeros(4, 2, 2, 3)
+
+    items = node_module._build_reference_items(
+        None, {"ref_video_1": v1}, {"ref_video_audio_1": "wave"}, None)
+
+    assert items == [("audio", None), ("video", v1)]
+
+
+def test_m_build_reference_items_standalone_audio_only():
+    node_module = _load_node_module()
+
+    items = node_module._build_reference_items(
+        None, None, None, {"ref_audio_0": "w0", "ref_audio_2": "w2"})
+
+    assert items == [("audio", None), ("audio", None)]
+
+
+def test_n_build_reference_items_full_mix_ordering():
+    node_module = _load_node_module()
+    i0, i2 = torch.zeros(1, 2, 2, 3), torch.ones(1, 2, 2, 3)
+    v0, v1 = torch.zeros(4, 2, 2, 3), torch.ones(4, 2, 2, 3)
+
+    items = node_module._build_reference_items(
+        {"ref_image_0": i0, "ref_image_2": i2},
+        {"ref_video_0": v0, "ref_video_1": v1},
+        {"ref_video_audio_1": "wave"},          # only video 1 has a soundtrack
+        {"ref_audio_0": "standalone"},
+    )
+
+    assert [t for t, _ in items] == [
+        "image", "image", "video", "audio", "video", "audio"]
+    assert items[2][1] is v0            # video 0: no matched audio, no marker before it
+    assert items[3] == ("audio", None)  # video 1's soundtrack marker ...
+    assert items[4][1] is v1            # ... immediately before video 1
+    assert items[5] == ("audio", None)  # standalone audio last
+
+
+def test_o_build_reference_items_orders_by_slot_number_not_dict_order():
+    node_module = _load_node_module()
+    i0, i2 = torch.zeros(1, 2, 2, 3), torch.ones(1, 2, 2, 3)
+
+    items = node_module._build_reference_items(
+        {"ref_image_2": i2, "ref_image_0": i0}, None, None, None)
+
+    assert items[0][1] is i0 and items[1][1] is i2
+
+
+def test_p_build_reference_items_all_groups_empty_is_empty_list():
+    node_module = _load_node_module()
+    assert node_module._build_reference_items(None, None, None, None) == []
+
+
+def test_q_sync_verbose_fresh_miss_writes_ref2va_variant(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    class _FakeProxy:
+        last_fingerprint = "b" * 64
+        last_hit = False
+        last_core_cache_written = True
+
+    items = [("image", torch.zeros(1, 2, 2, 3)), ("audio", None),
+             ("video", torch.zeros(4, 2, 2, 3))]
+    node_module._sync_verbose_metadata(
+        _FakeProxy(), "ref2va", "a ref2va prompt", CLIP_NAME,
+        FAKE_FILE_SIZE, FAKE_MTIME_NS, items)
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert system["node_variant"] == "ref2va"
+    assert [r["type"] for r in system["references"]] == ["image", "audio", "video"]
+    assert [r["index"] for r in system["references"]] == [0, 1, 2]
+    assert "label" not in system["references"][0]  # Ref2VA passes no labels
+
+
+def test_r_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    class _FakeProxy:
+        last_fingerprint = "b" * 64
+        last_hit = True
+        last_core_cache_written = None
+
+    node_module._sync_verbose_metadata(
+        _FakeProxy(), "ref2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert load_verbose("b" * 64, tmp_path)["system"]["node_variant"] == "ref2va"
+
+
+def test_s_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import save_verbose
+
+    save_verbose("b" * 64, {"prompt": "original", "node_variant": "ref2va", "references": []}, tmp_path)
+    before = (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes()
+
+    class _FakeProxy:
+        last_fingerprint = "b" * 64
+        last_hit = True
+        last_core_cache_written = None
+
+    node_module._sync_verbose_metadata(
+        _FakeProxy(), "ref2va", "a changed prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes() == before
+
+
 def test_g_node_class_mappings_keeps_both_nodes():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_ref2va_under_test", os.path.join(REPO_ROOT, "__init__.py"))

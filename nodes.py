@@ -16,17 +16,95 @@ reimplements them, it only substitutes what the stock node sees as "clip".
 """
 
 import gc
+import logging
 import os
 
 import nodes
 import comfy.model_management
 import folder_paths
 
+from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.proxy import CachedClipProxy
+from minimaxh3_clipcache.thumbnails import save_thumbnail
+from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
+
+logger = logging.getLogger(__name__)
+
+
+def _build_references(fingerprint, items, labels=None):
+    """Build the positional reference descriptors for the verbose sidecar,
+    each with a best-effort JPEG thumbnail.
+
+    items: list[(type: str, tensor_or_None)] in the exact order the stock
+    node presents them to the encoder. labels: optional list of the same
+    length (only FL2VA -- "first_frame"/"last_frame"); omitted for Ref2VA,
+    whose UI derives its numbering positionally from index + type.
+
+    The thumbnail write for one reference must not lose the others or abort
+    the verbose write, so the try/except is inside the loop: on failure that
+    entry is simply listed without a "thumbnail" key. An audio reference has
+    no tensor (None) and is listed without a thumbnail by construction.
+    """
+    references = []
+    for i, (item_type, tensor) in enumerate(items):
+        entry = {"index": i, "type": item_type}
+        if labels is not None:
+            entry["label"] = labels[i]
+        if tensor is not None:
+            try:
+                entry["thumbnail"] = save_thumbnail(tensor, fingerprint, i, CACHE_DIR)
+            except Exception as e:
+                logger.warning(
+                    "[THUMBNAIL WRITE FAILED] %s (%s, index %d): %s - reference "
+                    "will be listed without a thumbnail", fingerprint[:12], item_type, i, e,
+                )
+        references.append(entry)
+    return references
+
+
+def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
+                           clip_file_size, clip_mtime_ns, items, labels=None):
+    """Write or backfill this run's ``<fingerprint>.verbose.json`` for the
+    Cache Manager (plan sections 7 and 8), for either node variant.
+
+    Two cases warrant a write: a fresh MISS whose core cache actually landed
+    on disk, and a HIT of an entry that has no verbose sidecar yet (a legacy
+    entry -- backfill it from the data this HIT already knows). Everything
+    else is a no-op.
+
+    Never raises. The verbose layer is not the source of truth, so a failure
+    here must not disturb the already-valid conditioning / core cache result.
+    """
+    fingerprint = proxy.last_fingerprint
+    if fingerprint is None:
+        return  # defensive; should not happen after a successful execute()
+
+    fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
+    hit_needs_backfill = proxy.last_hit is True and load_verbose(fingerprint, CACHE_DIR) is None
+    if not (fresh_miss_written or hit_needs_backfill):
+        return
+
+    references = _build_references(fingerprint, items, labels)
+    system = {
+        "prompt": prompt,
+        "clip_name": clip_name,
+        "clip_file_size": clip_file_size,
+        "clip_mtime_ns": clip_mtime_ns,
+        "cache_schema_version": CACHE_SCHEMA_VERSION,
+        "node_variant": node_variant,
+        "references": references,
+    }
+    try:
+        save_verbose(fingerprint, system, CACHE_DIR)
+    except Exception as e:
+        logger.warning(
+            "[VERBOSE WRITE FAILED] %s: could not persist Cache Manager "
+            "metadata (%s) - core cache remains valid", fingerprint[:12], e,
+        )
 
 
 class MiniMaxH3CLIPCachedFL2VA:
@@ -108,6 +186,17 @@ class MiniMaxH3CLIPCachedFL2VA:
                 clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
                 length=length, first_frame=first_frame, last_frame=last_frame,
             )
+            # Inside the try (not the finally): only describe a run that
+            # actually produced a conditioning. If the stock execute() raised,
+            # there is no successful operation to record.
+            items, labels = [], []
+            if first_frame is not None:
+                items.append(("image", first_frame))
+                labels.append("first_frame")
+            if last_frame is not None:
+                items.append(("image", last_frame))
+                labels.append("last_frame")
+            _sync_verbose_metadata(proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items, labels)
         finally:
             # The proxy already released the ~27 GB encoder itself right
             # after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
@@ -187,6 +276,34 @@ def _build_ref_slot_dicts(ref_image_slots, ref_video_slots, ref_video_audio_slot
         _group(ref_video_audio_slots, "ref_video_audio_"),
         _group(ref_audio_slots, "ref_audio_"),
     )
+
+
+def _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios):
+    """Reconstruct the flat, ordered reference list the stock
+    MiniMaxH3ReferenceToVideo builds for the encoder, as
+    list[(type: str, tensor_or_None)] for _build_references().
+
+    Order mirrors the stock node's own assembly (see _build_ref_slot_dicts
+    above): all reference images in ascending slot order, then per reference
+    video in ascending slot order its matched soundtrack (if connected)
+    immediately BEFORE the video itself, then the standalone audios in
+    ascending slot order. Audio entries carry no tensor -- the encoder only
+    ever sees an "<Audio N>" marker for them, never the waveform.
+    """
+    def _slot_index(key):
+        return int(key.rsplit("_", 1)[-1])
+
+    items = []
+    for key in sorted(ref_images or {}, key=_slot_index):
+        items.append(("image", ref_images[key]))
+    for key in sorted(ref_videos or {}, key=_slot_index):
+        audio_key = "ref_video_audio_" + key.rsplit("_", 1)[-1]
+        if ref_video_audios and audio_key in ref_video_audios:
+            items.append(("audio", None))
+        items.append(("video", ref_videos[key]))
+    for key in sorted(ref_audios or {}, key=_slot_index):
+        items.append(("audio", None))
+    return items
 
 
 class MiniMaxH3CLIPCachedRef2VA:
@@ -281,6 +398,11 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_images=ref_images, ref_videos=ref_videos,
                 ref_video_audios=ref_video_audios, ref_audios=ref_audios,
             )
+            # Inside the try (not the finally): only describe a run that
+            # actually produced a conditioning. If the stock execute() raised,
+            # there is no successful operation to record.
+            items = _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
+            _sync_verbose_metadata(proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items)
         finally:
             # Same contract as MiniMaxH3CLIPCachedFL2VA: the proxy already
             # released the encoder itself right after its own real encode,
