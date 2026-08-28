@@ -293,8 +293,13 @@
 }
 .h3cm-prompt-toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   margin-bottom: 4px;
+}
+.h3cm-refs-hint {
+  flex: 1;
+  color: #9aa1ad;
+  font-size: 12px;
 }
 .h3cm-prompt-copy {
   position: static;

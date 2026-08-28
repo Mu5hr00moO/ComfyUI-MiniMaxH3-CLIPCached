@@ -176,6 +176,7 @@ function createPanel() {
         </div>
         <div class="h3cm-prompt-wrap">
           <div class="h3cm-prompt-toolbar">
+            <span class="h3cm-refs-hint" data-h3cm-refs-hint></span>
             <button type="button" class="h3cm-prompt-copy" data-h3cm-prompt-copy
               title="Copy prompt" aria-label="Copy prompt">
               <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -528,6 +529,10 @@ function resetCopyUI() {
   revokeCopyResultUrls();
   resultEl.innerHTML = "";
   resultEl.hidden = true;
+  // The reference hint is set only by a Copy-prompt click, so clear it when
+  // the panel switches entries or closes -- it must never leak onto a
+  // freshly opened entry.
+  panel.detailEl.querySelector("[data-h3cm-refs-hint]").textContent = "";
 }
 
 async function saveDetail() {
@@ -653,39 +658,58 @@ function renderCopyResult(fingerprint, verbose, headline) {
   resultEl.appendChild(note);
 }
 
-// The small icon on the prompt box: a quick, self-contained shortcut that
-// copies just the prompt text (no references panel), so the user does not
-// have to select it by hand. Independent of the "Copy prompt" button.
+// The small icon on the prompt box is just a compact trigger for the same
+// action as the big "Copy prompt" button -- it defers entirely to
+// copyPrompt() and only adds its own transient "Copied!" affordance.
 async function copyPromptText(button) {
-  const text = panel.detailEl.querySelector("[data-h3cm-detail-prompt]").textContent || "";
-  try {
-    await navigator.clipboard.writeText(text);
-    button.classList.add("is-copied");
-    button.title = "Copied!";
+  const ok = await copyPrompt();
+  button.classList.toggle("is-copied", ok);
+  button.title = ok ? "Copied!" : "Copy failed - select the text manually";
+  if (ok) {
     setTimeout(() => {
       button.classList.remove("is-copied");
       button.title = "Copy prompt";
     }, 1500);
-  } catch (err) {
-    button.title = "Copy failed - select the text manually";
   }
 }
 
+// Copies the open entry's prompt to the clipboard, renders the reference
+// panel below, and sets the toolbar hint -- all only on this click, never
+// on panel open. Returns true on a successful clipboard write, false
+// otherwise.
 async function copyPrompt() {
-  if (!openDetailFingerprint) return;
+  if (!openDetailFingerprint) return false;
   const entry = findNormalEntry(openDetailFingerprint);
-  if (!entry) return;
+  if (!entry) return false;
+
   const prompt = (entry.verbose.system && entry.verbose.system.prompt) || "";
+  const references =
+    (entry.verbose.system
+      && Array.isArray(entry.verbose.system.references)
+      && entry.verbose.system.references)
+    || [];
+
+  let ok;
   try {
     await navigator.clipboard.writeText(prompt);
     renderCopyResult(entry.fingerprint, entry.verbose, "Copied to clipboard.");
+    ok = true;
   } catch (err) {
     renderCopyResult(
       entry.fingerprint,
       entry.verbose,
       "Couldn't copy automatically - select the prompt above and copy it manually.",
     );
+    ok = false;
   }
+
+  const hintEl = panel.detailEl.querySelector("[data-h3cm-refs-hint]");
+  hintEl.textContent =
+    references.length > 0
+      ? `${references.length > 1 ? "References" : "Reference"} detected — see below.`
+      : "";
+
+  return ok;
 }
 
 // --- Delete: remove a whole cache entry --------------------------------
