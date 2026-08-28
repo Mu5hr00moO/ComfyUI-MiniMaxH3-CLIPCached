@@ -73,10 +73,10 @@ def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip
     MiniMaxH3ImageToVideo node always calls tokenize(prompt, images=images)
     with images=[] when there are no keyframes, so in practice the "images"
     key is always present for that call path; a request with no "images" key
-    at all can only come from a different tokenize() call shape (e.g. a
-    future ref2va path using minimax_ref_items instead). Treating those as
-    different avoids ever conflating two different call signatures under one
-    cache key.
+    at all can only come from a different tokenize() call shape (e.g. the
+    ref2va path (MiniMaxH3CLIPCachedRef2VA) using minimax_ref_items instead).
+    Treating those as different avoids ever conflating two different call
+    signatures under one cache key.
     """
     metadata = {
         "cache_schema_version": cache_schema_version,

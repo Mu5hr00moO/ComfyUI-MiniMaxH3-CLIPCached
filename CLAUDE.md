@@ -287,6 +287,40 @@ historyczny procesu, nie lista otwartych zadań.**
 Po utworzeniu pliku zrób git add CLAUDE.md i commit z opisem
 "Add project context and plan for CC sessions". Nic więcej teraz nie rób.
 
+## Ref2Video (R1-R10) - status: WSZYSTKIE ZAKOŃCZONE
+
+Drugi node w tym repo, MiniMaxH3CLIPCachedRef2VA, wrapuje stockowy
+comfy_extras.nodes_minimax_h3.MiniMaxH3ReferenceToVideo tą samą zasadą
+nadrzędną co FL2VA (proxy nad clip, zero reimplementacji mechaniki H3).
+Fazy poniżej to skrócone podsumowanie, analogiczne do stylu faz 1-25 -
+pełna historia jest w historii commitów (git log), nie tutaj.
+
+R1: kontrakt MiniMaxH3ReferenceToVideo zweryfikowany lokalnie (ref_items
+    jako płaska lista heterogenicznych dictów, kolejność semantycznie
+    znacząca, audio-przed-swoim-wideo, tylko tokenize/encode_from_tokens_scheduled
+    na clip)
+R2: fingerprint stres-testowany na syntetycznym ref_items (heterogeniczna
+    lista, markery audio, kolejność, znaczniki czasowe) - PASS
+R3: bramka go/no-go z SpyClipProxy podstawionym przed stockowy
+    MiniMaxH3ReferenceToVideo - PASS
+R4: równoważność stock/proxy na realnym enkoderze (image+video+audio) -
+    torch.equal, 12/12 pól PASS
+R5-R6: MiniMaxH3CLIPCachedRef2VA dodany - v1, 18 stałych opcjonalnych
+    slotów (9 obrazów, 3 wideo, 3 ich ścieżki dźwiękowe, 3 samodzielne
+    audio) zamiast stockowego io.Autogrow, builder slot->dict przetestowany
+    w izolacji
+R7: end-to-end przez żywy serwer (dwa świeże serwery, ten sam graf) -
+    real MISS i real HIT potwierdzone w logach (/tmp/r7_server.log,
+    /tmp/r7_hit_server.log)
+R8: testy inwalidacji (zmiana treści/rozmiaru referencji, zamiana
+    kolejności slotów) - w trakcie prac poprawiona błędna hipoteza:
+    indeks konkretnego slotu jest nieistotny dla fingerprintu, liczy się
+    wyłącznie względna kolejność niepustych referencji
+R9: test trendu pamięci na żywym serwerze przy wielu kolejnych realnych
+    MISS - trend płaski, spójny z wynikiem dla FL2VA z fazy 24
+R10: README rozszerzone o sekcję Ref2VA obok FL2VA (zrzuty ekranu
+    porównawcze RAM/VRAM wciąż zaległe - patrz sekcja "R10 prep" poniżej)
+
 ## R10 prep: zrzuty ekranu do README (TODO dla użytkownika, nie dla CC)
 
 Przed napisaniem sekcji README dla Ref2VA - zrzuty ekranu porównawcze
