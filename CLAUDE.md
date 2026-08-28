@@ -271,6 +271,14 @@ Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
 source of truth, manager jest warstwą indeksującą, fingerprint = ID
 wpisu, prompt jest read-only w managerze.
 
+Doniesione z ogólnego przeglądu (poza Managerem): naprawiony length
+widget (upstream v0.34.2 defaults), dodany IS_CHANGED dla
+cache_mode=refresh, proxy odrzuca nie-domyślne kwargi
+encode_from_tokens_scheduled, dodany per-fingerprint lock przeciw
+równoległemu podwójnemu MISS-owi, hash tensora w fingerprincie w pełni
+dtype-agnostyczny (bfloat16). Pełna historia inżynierska tych pięciu
+poprawek: CLAUDE.md na feature/ref2video_no-manager.
+
 ### Faza 5 - lokalna konwencja PromptServer routes
 
 Zweryfikowane lokalnie (grep w custom_nodes/ tej instalacji ComfyUI,
