@@ -296,7 +296,7 @@ bo wtedy opis nie odpowiadałby conditioningowi.
 Manager pozwala:
 
 - wyświetlić cały prompt,
-- skopiować / `Load` prompt do głównego noda,
+- skopiować prompt do schowka (przycisk `Copy prompt`),
 - zmieniać nazwę, tagi, favorite i notes.
 
 Zmiana samego promptu odbywa się po załadowaniu go do normalnego widgetu
@@ -599,7 +599,7 @@ Docelowy panel:
 │ Name: [Sidewalk interview S1_______________] │
 │ Favorite: ★                                   │
 │                                               │
-│ [ Load ]                         [ Delete ]    │
+│ [ Copy prompt ]                  [ Delete ]    │
 └───────────────────────────────────────────────┘
 ```
 
@@ -664,9 +664,9 @@ Nie dodajemy cache statusu per preset / wpis.
 
 ---
 
-## 14. `Load`
+## 14. `Copy prompt`
 
-`Load`:
+`Copy prompt`:
 
 1. kopiuje dokładny prompt wybranego wpisu **do schowka systemowego**
    (`navigator.clipboard.writeText`), **nie** do widgetu w grafie.
@@ -965,8 +965,8 @@ Dodać:
 - `tags`,
 - `favorite`,
 - globalny cache size/count,
-- `Load`,
-- informację o image refs przy `Load`,
+- `Copy prompt`,
+- informację o image refs przy `Copy prompt`,
 - `Delete` + confirmation.
 
 Frontend testować osobno od backendu.
@@ -984,7 +984,7 @@ MISS
 → Check
 → wpis widoczny
 → name/tags/notes/favorite
-→ Load
+→ Copy prompt
 → informacja o refs
 → kolejny RUN = HIT
 → Delete + confirm
@@ -1197,7 +1197,7 @@ fingerprint = identity
 prompt = read-only metadata
 user metadata = name/tags/favorite/notes
 Check = rebuild/refresh widoku
-Load = prompt + ostrzeżenie o referencjach
+Copy prompt = prompt + ostrzeżenie o referencjach
 Delete = pełny cache entry + confirmation
 prewarm = usunięty
 ```
