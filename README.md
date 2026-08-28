@@ -57,7 +57,7 @@ idea it came from a cache.
 
 - ComfyUI with native MiniMax H3 support (`comfy_extras/nodes_minimax_h3.py`
   in ComfyUI core — this has been part of ComfyUI since v0.30.0; developed
-  and tested against v0.34.0).
+  and tested against v0.34.2).
 - A MiniMax H3 text/vision encoder checkpoint in `models/text_encoders`
   (e.g. `qwen3vl_32b_minimax_h3_int8_convrot.safetensors`, `.safetensors`
   format — GGUF checkpoints are untested with this node).
@@ -216,6 +216,16 @@ tokenizing. A few consequences are specific to this node:
   upscales, the resized tensor is bit-identical either way and the
   fingerprints deliberately collide — a safe collision, since the encoder
   input really is identical.
+
+- **`length` can affect the cache key too, through reference videos.** The
+  stock node trims each reference video to `length`'s frame count before
+  subsampling it to 2 fps for the encoder. For a reference video shorter
+  than that cut point, the same frames reach the encoder regardless of
+  `length`, so changing it is still a cache **hit**. For a reference video
+  longer than the cut point, a different `length` produces a different
+  subsampled frame set, so it **misses** — correctly, since the encoder
+  really did see different frames, but this can look surprising if you
+  expect `length` to only affect the output duration.
 
 ### Limitations specific to Ref2VA
 
