@@ -2,8 +2,12 @@
 racing on encode_from_tokens_scheduled() must not both load the ~27 GB
 encoder for the same cache fingerprint: the per-fingerprint lock plus the
 in-lock cache re-check means the loser of the race is served the winner's
-freshly saved result as a HIT. Distinct fingerprints must still encode
-independently and in parallel. No GPU, no ComfyUI, no real clip.
+freshly saved result as a HIT. Distinct fingerprints must still each get
+their own independent load+encode (never merged, never blocked forever),
+but a process-wide encoder lock now serialises the actual load+encode
+step across fingerprints too, so two real ~27 GB encoders are never
+resident at the same time -- they no longer literally overlap in
+wall-clock time. No GPU, no ComfyUI, no real clip.
 """
 
 import threading
@@ -79,3 +83,52 @@ def test_distinct_fingerprints_race_encode_independently(tmp_path):
         ["prompt one", "prompt two"], tmp_path)
     assert loader_count == 2
     assert encode_count == 2
+
+
+def test_distinct_fingerprints_never_run_encode_concurrently(tmp_path):
+    """The per-fingerprint lock alone only stops the SAME fingerprint
+    loading twice; two DIFFERENT fingerprints racing a MISS must never
+    have two real encoders active (loaded and encoding) at the same
+    time. Tracks how many are concurrently inside encode_from_tokens_scheduled()
+    and asserts it never exceeds 1."""
+    guard = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    class TrackingRealClip:
+        def __init__(self):
+            self.patcher = "fake_patcher"
+
+        def tokenize(self, prompt, **kwargs):
+            return ("real_tokens", prompt, kwargs)
+
+        def encode_from_tokens_scheduled(self, tokens):
+            with guard:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time.sleep(0.05)
+            with guard:
+                state["active"] -= 1
+            return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def worker(prompt):
+        try:
+            proxy = CachedClipProxy(
+                lambda: TrackingRealClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path,
+            )
+            tokens = proxy.tokenize(prompt, images=[])
+            barrier.wait()
+            proxy.encode_from_tokens_scheduled(tokens)
+        except Exception as e:  # noqa: BLE001 - surface it in the assertion
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(p,)) for p in ("prompt one", "prompt two")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, "worker thread raised: {}".format(errors)
+    assert state["max_active"] == 1

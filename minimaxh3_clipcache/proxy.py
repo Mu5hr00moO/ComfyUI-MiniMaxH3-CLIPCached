@@ -37,6 +37,18 @@ def _get_lock(fingerprint: str) -> threading.Lock:
             _fingerprint_locks[fingerprint] = threading.Lock()
         return _fingerprint_locks[fingerprint]
 
+
+# A single process-wide lock around the actual "load the real ~27 GB encoder
+# and run it" step, independent of fingerprint. The per-fingerprint lock
+# above only prevents the SAME fingerprint from loading twice; two DIFFERENT
+# fingerprints (e.g. two different prompts, or FL2VA and Ref2VA in the same
+# graph) racing a MISS at the same time would otherwise each call
+# clip_loader_fn() and end up with two ~27 GB encoders resident at once.
+# This lock forces those onto one at a time. Held only around the real
+# load+encode+unload, never around the cache lookup above, so two racing
+# cache HITs (or a HIT racing a MISS) are never blocked by it.
+_encoder_load_lock = threading.Lock()
+
 MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
 # encoder output. A mismatch here almost always means clip_name points
 # at a checkpoint that isn't the MiniMax H3 text/vision encoder.
@@ -112,38 +124,44 @@ class CachedClipProxy:
             else:
                 logger.info("[CACHE REFRESH] %s", fingerprint[:12])
 
-            if self._real_clip is None:
-                self._real_clip = self.clip_loader_fn()
-                self.did_load_real_clip = True
-            real_tokens = self._real_clip.tokenize(prompt, **kwargs)
-            cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
-            # Validate the shape BEFORE persisting: a wrong-checkpoint encode
-            # must never be written to the cache, and the error must surface
-            # here rather than as a cryptic matmul failure later in the sampler.
-            self._validate_output_hidden_dim(cond, fingerprint)
-            # The encode result already exists and was expensive to compute;
-            # persisting it to disk is pure optimisation, not a source of truth.
-            # This is the one place in the project where a broad `except` is
-            # deliberate: a cache-write failure must never discard a completed
-            # encode. (load_conditioning() on the read path stays strict -- see
-            # its docstring -- because there the user has not paid the encode
-            # cost yet and should learn their environment is broken.)
-            try:
-                save_conditioning(fingerprint, cond, self.cache_dir)
-            except Exception as e:
-                logger.warning(
-                    "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
-                    "- continuing without caching this result", fingerprint[:12], e,
-                )
-            # The real encoder's only job for this request is done. Release
-            # it now (if the caller gave us a way to) instead of waiting for
-            # the stock node's remaining work to finish first -- for FL2VA
-            # that remaining work is the keyframe VAE encode, which today
-            # runs strictly after this call returns, so without this the
-            # ~27 GB encoder would sit resident through it for nothing.
-            if self.unload_fn is not None:
-                self.unload_fn(self._real_clip.patcher)
-                self._real_clip = None
+            with _encoder_load_lock:
+                try:
+                    if self._real_clip is None:
+                        self._real_clip = self.clip_loader_fn()
+                        self.did_load_real_clip = True
+                    real_tokens = self._real_clip.tokenize(prompt, **kwargs)
+                    cond = self._real_clip.encode_from_tokens_scheduled(real_tokens)
+                    # Validate the shape BEFORE persisting: a wrong-checkpoint encode
+                    # must never be written to the cache, and the error must surface
+                    # here rather than as a cryptic matmul failure later in the sampler.
+                    self._validate_output_hidden_dim(cond, fingerprint)
+                    # The encode result already exists and was expensive to compute;
+                    # persisting it to disk is pure optimisation, not a source of truth.
+                    # This is the one place in the project where a broad `except` is
+                    # deliberate: a cache-write failure must never discard a completed
+                    # encode. (load_conditioning() on the read path stays strict -- see
+                    # its docstring -- because there the user has not paid the encode
+                    # cost yet and should learn their environment is broken.)
+                    try:
+                        save_conditioning(fingerprint, cond, self.cache_dir)
+                    except Exception as e:
+                        logger.warning(
+                            "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
+                            "- continuing without caching this result", fingerprint[:12], e,
+                        )
+                finally:
+                    # Release the real encoder BEFORE releasing the lock above,
+                    # not after -- otherwise a second thread queued on
+                    # _encoder_load_lock could start loading its own ~27 GB
+                    # encoder while ours is still resident (e.g. because
+                    # _validate_output_hidden_dim() just raised), briefly
+                    # recreating the exact two-encoders-at-once situation this
+                    # lock exists to prevent. Guarded so a HIT-only call (which
+                    # never enters this block) and a proxy built without
+                    # unload_fn (every proxy-level test) are unaffected.
+                    if self.unload_fn is not None and self._real_clip is not None:
+                        self.unload_fn(self._real_clip.patcher)
+                        self._real_clip = None
             return cond
 
     def _validate_output_hidden_dim(self, cond, fingerprint):
