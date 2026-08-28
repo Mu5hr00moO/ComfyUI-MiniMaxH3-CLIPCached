@@ -42,7 +42,7 @@ class MiniMaxH3CLIPCachedImageToVideo:
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
-                "length": ("INT", {"default": 124, "min": 1, "max": 3600, "step": 1,
+                "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid "
                                                "(124 = ~5s; trained range is ~124-362, longer is untested)"}),
             },
@@ -62,6 +62,19 @@ class MiniMaxH3CLIPCachedImageToVideo:
     RETURN_NAMES = ("positive", "latent")
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
+
+    @classmethod
+    def IS_CHANGED(cls, cache_mode="auto", **kwargs):
+        # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
+        # only name the one we care about and swallow the rest. Returning a
+        # fresh NaN whenever cache_mode == "refresh" makes the executor's
+        # signature comparison fail on every Queue (NaN != NaN), so "refresh"
+        # forces a real re-execution even when the user clicks Queue again
+        # with all inputs unchanged. In "auto" mode we return a stable value
+        # so identical graphs still hit ComfyUI's own execution cache.
+        if cache_mode == "refresh":
+            return float("nan")
+        return cache_mode
 
     def _build_references(self, fingerprint, first_frame, last_frame):
         """Build the positional reference descriptors for the verbose sidecar,

@@ -11,6 +11,7 @@ ComfyUI repo) loads a custom node package in production -- never as a bare
 
 import importlib.util
 import logging
+import math
 import os
 import sys
 
@@ -428,6 +429,38 @@ def test_k_verbose_write_failure_is_swallowed_and_warned(monkeypatch, tmp_path, 
     assert result == ("cond_fake", "latent_fake")
     assert any(r.levelno == logging.WARNING and "VERBOSE WRITE FAILED" in r.getMessage()
                for r in caplog.records)
+
+
+def test_l_is_changed_refresh_returns_a_fresh_nan_every_call():
+    """cache_mode="refresh" must return a value that never compares equal to
+    itself between two consecutive Queue clicks, so ComfyUI's IS_CHANGED
+    signature comparison always misses and execute() actually re-runs. NaN is
+    that value (NaN != NaN). IS_CHANGED is also handed every graph input as a
+    kwarg, so the signature has to absorb the ones it does not name."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+
+    first = cls.IS_CHANGED(cache_mode="refresh", clip_name=CLIP_NAME, vae="v",
+                           prompt="a prompt", width=1344, height=768, length=124)
+    second = cls.IS_CHANGED(cache_mode="refresh", clip_name=CLIP_NAME, vae="v",
+                            prompt="a prompt", width=1344, height=768, length=124)
+
+    assert isinstance(first, float) and math.isnan(first)
+    assert isinstance(second, float) and math.isnan(second)
+    assert not (first == second)
+
+
+def test_m_is_changed_auto_is_stable_across_calls():
+    """cache_mode="auto" (and the default, e.g. the optional input left
+    unconnected) must return a stable, self-equal value so an unchanged graph
+    still hits ComfyUI's own execution cache."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedImageToVideo
+
+    assert cls.IS_CHANGED(cache_mode="auto", prompt="a prompt") == \
+           cls.IS_CHANGED(cache_mode="auto", prompt="a prompt")
+    assert cls.IS_CHANGED(prompt="a prompt", width=1344) == \
+           cls.IS_CHANGED(prompt="a prompt", width=1344)
 
 
 def test_f_node_class_mappings_has_exactly_one_matching_key():
