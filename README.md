@@ -227,17 +227,6 @@ pytest
 See `CLAUDE.md` in this repo for the full engineering history and the
 reasoning behind specific design decisions, if you're extending this.
 
-## See also
-
-This node speeds up the text/vision encode step only. If you're also
-looking to speed up the diffusion sampling itself (the DiT forward
-passes), these are complementary, independent projects worth combining
-with this one:
-
-- [`ComfyUI-MiniMaxH3-Cache`](https://github.com/lihaoyun6/ComfyUI-MiniMaxH3-Cache)
-- [`ComfyUI-MiniMaxH3-TeaCache`](https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache)
-- [`ComfyUI-MiniMaxH3-FirstBlockCache`](https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache)
-
 ## Credits
 
 The pattern of disk-caching text-encoder output is inspired by Kijai's
