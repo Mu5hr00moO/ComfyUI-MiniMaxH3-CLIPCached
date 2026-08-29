@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 # delete landing mid-write) cannot both load the ~27 GB encoder at once: the
 # second thread re-checks the cache after the first releases the lock and
 # finds the freshly written result. Distinct fingerprints get distinct locks,
-# so unrelated encodes still run in parallel. That lock now lives in its own
+# so unrelated LOOKUPS still run in parallel -- but see _encoder_load_lock
+# right below, which serializes the actual load+encode step across ALL
+# fingerprints regardless of this lock. That lock now lives in its own
 # module because nodes.py and routes.py hold it too.
 
 # A single process-wide lock around the actual "load the real ~27 GB encoder
