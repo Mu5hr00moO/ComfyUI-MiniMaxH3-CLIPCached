@@ -468,7 +468,38 @@ funkcji). WYŁĄCZNIE informacyjne: nie wchodzi do compute_fingerprint(),
 nie wpływa na HIT/MISS. Ma pomóc przy diagnozie "dlaczego stary wpis w
 cache wygląda inaczej" po aktualizacji ComfyUI.
 
-Pełne rozwiązanie problemu dryfu semantycznego (niezależny "encoding ABI
-fingerprint" hashujący pliki źródłowe H3/Qwen preprocessing w ComfyUI)
-rozważone i świadomie odłożone - zbyt kruche jak na ten etap.
-comfyui_version to tani, informacyjny kompromis, nie pełne rozwiązanie.
+comfyui_version w verbose metadata to tani, informacyjny kompromis. Węższy,
+ale realnie działający wariant "encoding ABI fingerprint" (wchodzący do
+HIT/MISS, w przeciwieństwie do pola informacyjnego wyżej) został dodany -
+patrz sekcja niżej.
+
+### Encoder ABI fingerprint (audit punkt 1) - dodany 2026-08-29
+
+Nowy moduł minimaxh3_clipcache/encoder_abi.py: get_encoder_abi_id() zwraca
+(abi_id, available), gdzie abi_id = "{comfyui_version}:{sha256 pliku
+comfy/text_encoders/minimax.py}", liczone i cache'owane RAZ na proces
+(plik nie zmienia się w trakcie działania ComfyUI; cache'owany jest też
+wynik porażki, a WARNING loguje się raz na sesję). compute_fingerprint()
+dostał wymagany, keyword-only parametr encoder_abi_id (bez wartości
+domyślnej - nie da się go po cichu pominąć); CachedClipProxy ma go z
+testowym defaultem "test-abi-id" (nigdy nie trafia na produkcję - nodes.py
+zawsze podaje jawną wartość). Gdy ABI jest niedostępne (available=False),
+oba węzły wymuszają realny encode niezależnie od cache_mode
+(force_refresh=True, encoder_abi_id="unavailable") i IS_CHANGED zwraca
+NaN - nigdy nie serwujemy ani nie zapisujemy HIT-a policzonego pod
+niezweryfikowaną implementacją tokenizera (np. po zmianie w rodzaju
+PR #15808 "Minimax-H3: Add missing special tokens").
+
+Świadomy efekt uboczny: JEDNORAZOWA inwalidacja całego istniejącego
+cache'a przy tym wdrożeniu - każdy dotychczasowy wpis przestaje być
+trafiany, niezależnie od realnej wartości ABI, bo sam kształt danych
+wchodzących w fingerprint się zmienił. To nie bug, to oczekiwany koszt
+jednorazowy.
+
+Zakres świadomie zawężony do comfyui_version + hash
+comfy/text_encoders/minimax.py - NIE obejmuje łańcucha zależności
+(qwen3vl.py -> qwen_vl.py -> qwen35.py -> llama.py -> sd1_clip.py, których
+minimax.py używa). Zmiana WYŁĄCZNIE w jednym z tych współdzielonych plików,
+nietykająca minimax.py, nie zostanie wykryta - zaakceptowany residual risk
+w zamian za brak budowania pełnego trackera zależności ComfyUI i brak
+inwalidacji cache'a przy każdej niezwiązanej zmianie upstream.
