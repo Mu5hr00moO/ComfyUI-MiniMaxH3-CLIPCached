@@ -89,7 +89,14 @@ routes = PromptServer.instance.routes
 
 @routes.get(ROUTE_PREFIX + "/check")
 async def check(request) -> web.Response:
-    return web.json_response(scan_cache(CACHE_DIR))
+    # scan_cache() walks the whole cache directory and reads every sidecar
+    # from disk -- fast for a handful of entries, but O(entries) blocking I/O
+    # that would freeze the aiohttp event loop (all of ComfyUI) for a large
+    # cache. Push it onto a worker thread, same pattern as the lock waits in
+    # /update and /delete.
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, scan_cache, CACHE_DIR)
+    return web.json_response(data)
 
 
 @routes.get(ROUTE_PREFIX + "/get")
