@@ -26,6 +26,7 @@ import folder_paths
 
 from minimaxh3_clipcache.encoder_abi import get_encoder_abi_id
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
+from minimaxh3_clipcache.last_used import record_last_used
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.proxy import CachedClipProxy
@@ -137,6 +138,20 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
             "[VERBOSE WRITE FAILED] %s: could not persist Cache Manager "
             "metadata (%s) - core cache remains valid", fingerprint[:12], e,
         )
+
+
+def _record_last_used(proxy, node_variant):
+    """Record this run's fingerprint as `node_variant`'s currently active
+    entry, for the Cache Manager's "highlight the active row" feature
+    (minimaxh3_clipcache.last_used). Unlike _sync_verbose_metadata(), this
+    runs unconditionally on every successful execute() - HIT, MISS, or
+    refresh alike - because "which entry is active right now" doesn't care
+    whether this run wrote anything new.
+    """
+    fingerprint = proxy.last_fingerprint
+    if fingerprint is None:
+        return  # defensive; should not happen after a successful execute()
+    record_last_used(node_variant, fingerprint)
 
 
 class MiniMaxH3CLIPCachedFL2VA:
@@ -253,6 +268,7 @@ class MiniMaxH3CLIPCachedFL2VA:
                 proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
                 labels, clip_ctime_ns=ctime_ns,
             )
+            _record_last_used(proxy, "fl2va")
         finally:
             # The proxy already released the ~27 GB encoder itself right
             # after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
@@ -489,6 +505,7 @@ class MiniMaxH3CLIPCachedRef2VA:
                 proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
                 clip_ctime_ns=ctime_ns,
             )
+            _record_last_used(proxy, "ref2va")
         finally:
             # Same contract as MiniMaxH3CLIPCachedFL2VA: the proxy already
             # released the encoder itself right after its own real encode,

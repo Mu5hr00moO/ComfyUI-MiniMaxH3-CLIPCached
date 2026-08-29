@@ -13,6 +13,7 @@ import importlib.util
 import logging
 import math
 import os
+import re
 import sys
 
 import pytest
@@ -21,6 +22,7 @@ import torch
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
 
+from minimaxh3_clipcache import last_used as last_used_module
 from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,6 +31,15 @@ CLIP_NAME = "fake_clip.safetensors"
 FAKE_FILE_SIZE = 111
 FAKE_MTIME_NS = 222
 FAKE_CTIME_NS = 333
+
+
+@pytest.fixture(autouse=True)
+def _reset_last_used():
+    """minimaxh3_clipcache.last_used is process-wide module state, so without
+    a reset each test would see fingerprints recorded by earlier ones."""
+    last_used_module._reset_for_tests()
+    yield
+    last_used_module._reset_for_tests()
 
 
 def _load_node_module():
@@ -121,6 +132,33 @@ def test_b_execute_touching_clip_unloads_exactly_once(monkeypatch, tmp_path):
     assert torch.equal(cond[0][0], torch.zeros(1, MINIMAX_H3_HIDDEN_DIM))
     assert unload_calls["count"] == 1
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+def test_b2_execute_records_last_used_fingerprint(monkeypatch, tmp_path):
+    """After a real node.execute() (real CachedClipProxy, not _FakeProxy), the
+    last_used module must hold something that looks like a genuine fingerprint
+    for the "fl2va" variant -- proof the hook is actually wired into execute().
+    Not a check of the exact value: that belongs to fingerprint.py's own
+    tests."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+    )
+
+    fp = last_used_module.get_last_used()["fl2va"]
+    assert fp is not None and re.fullmatch(r"[0-9a-f]{64}", fp)
 
 
 def test_c_execute_raising_after_loading_clip_still_unloads_and_propagates(monkeypatch, tmp_path):
@@ -674,6 +712,24 @@ def test_s_sync_verbose_skips_write_when_delete_won_the_race_for_the_core_entry(
 
     assert save_verbose_calls == []
     assert load_verbose("a" * 64, tmp_path) is None
+
+
+def test_t_record_last_used_writes_fingerprint_for_variant():
+    """_record_last_used() copies the proxy's last fingerprint into the
+    process-wide last_used map under the given variant key."""
+    node_module = _load_node_module()
+    proxy = _FakeProxy(fingerprint="a" * 64)
+    node_module._record_last_used(proxy, "fl2va")
+    assert last_used_module.get_last_used()["fl2va"] == "a" * 64
+
+
+def test_u_record_last_used_is_noop_when_fingerprint_is_none():
+    """A proxy with no fingerprint (should not happen after a successful
+    execute(), but guard it) leaves the last_used map untouched."""
+    node_module = _load_node_module()
+    proxy = _FakeProxy(fingerprint=None)
+    node_module._record_last_used(proxy, "fl2va")
+    assert last_used_module.get_last_used()["fl2va"] is None
 
 
 def test_f_node_class_mappings_has_both_node_keys():
