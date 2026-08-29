@@ -274,15 +274,31 @@ way. The full investigation, including the two incidents that triggered
 it, is documented in `CLAUDE.md` for anyone curious or extending this
 project.
 
+## Cache Manager
+
+A built-in panel for inspecting and pruning the cache, opened from the
+floating button ComfyUI shows over the graph (or the Extensions menu).
+
+- **Check** scans `cache/` and lists every entry with its prompt,
+  reference thumbnails, and size.
+- **Search**, **tag**, and **favorite** filters narrow the list. A display
+  name, notes, and tags are yours to edit per entry; the prompt itself
+  stays read-only — the cache on disk is the source of truth.
+- **Load** copies an entry's prompt to the clipboard; **Delete** removes a
+  whole entry (core cache + sidecar + thumbnails) after a confirmation.
+- A **FL2VA / Ref2VA** switch flips the list between the two nodes' entries.
+
+The manager is only an index over the cache directory, so deleting `cache/`
+by hand and re-running **Check** is always safe.
+
 ## Limitations
 
-- **No cache eviction.** Entries accumulate in `cache/` forever; nothing
-  in this node deletes old ones automatically. Each entry is small
-  (roughly tens of MB, not gigabytes — it's a conditioning tensor, not a
-  model), but a long-running install will still need occasional manual
-  cleanup of the `cache/` directory. A management UI (browse, name,
-  delete, see total size) is planned as a separate follow-up, not part of
-  this node.
+- **No automatic cache eviction.** Entries accumulate in `cache/`
+  indefinitely; nothing deletes old ones by age or total size. Each entry
+  is small (roughly tens of MB, not gigabytes — it's a conditioning
+  tensor, not a model), but a long-running install will still need the
+  occasional clear-out. The Cache Manager makes that point-and-click, but
+  deciding *when* is still up to you.
 - **No "cache-only" mode.** On a miss, this node always falls through to
   loading the full encoder (or raises, if that fails) — there's currently
   no way to say "only ever use the cache, never load the 27 GB model." A
@@ -292,9 +308,10 @@ project.
   `MiniMaxH3ReferenceToVideo` (the Ref2VA node). The other stock MiniMax H3
   nodes (`EmptyMiniMaxH3LatentAV`, `MiniMax H3 Add Guide`) never touch the
   encoder, so there is nothing there to cache.
-- No built-in prompt library or named-prompt management — this node
-  caches by content fingerprint only, with no way to browse, name, or
-  manage saved entries from the UI. (Planned as a separate follow-up.)
+- No prompt *library*: the cache is keyed by content fingerprint, and the
+  Cache Manager lets you name, tag, search, and delete those entries, but
+  there is no separate store of reusable named prompts independent of a
+  cached encode.
 - Requires ComfyUI's native MiniMax H3 support already present in your
   ComfyUI install — this is a wrapper around it, not a substitute.
 - This node loads the encoder checkpoint itself by filename
@@ -307,16 +324,19 @@ project.
 
 ## Testing
 
-97 automated tests (pytest), none of which require a GPU or the real
-encoder — they all use small stand-in tensors:
+A comprehensive automated test suite (pytest), none of which require a GPU
+or the real encoder — they all use small stand-in tensors — covering:
 
 - cache-key determinism and invalidation (prompt/image/checkpoint
   changes produce a different key; sampler/seed/scheduler changes do not),
 - cache serialization round-trips, including atomic-write, dotted-key
   rejection, and corrupted/partial-entry handling,
-- proxy laziness (the real encoder loader is never called on a hit),
+- proxy laziness (the real encoder loader is never called on a hit) and
+  concurrency (two racing misses for one entry load the encoder only once),
 - node wiring (`cache_mode` correctly reaches the proxy, node
-  registration is correct).
+  registration is correct),
+- the Cache Manager: verbose-sidecar storage, HTTP routes, orphan
+  scanning, and thumbnail generation.
 
 Proxy/stock output equivalence against the **real 27 GB encoder** is not in
 this suite — it is proven separately by

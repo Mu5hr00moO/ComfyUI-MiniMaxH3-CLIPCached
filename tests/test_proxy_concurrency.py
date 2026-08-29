@@ -56,7 +56,7 @@ def _race_two_proxies(prompts, tmp_path):
             proxy = CachedClipProxy(
                 loader, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path)
             tokens = proxy.tokenize(prompt, images=[])
-            barrier.wait()
+            barrier.wait(timeout=10)
             proxy.encode_from_tokens_scheduled(tokens)
         except Exception as e:  # noqa: BLE001 - surface it in the assertion
             errors.append(e)
@@ -65,7 +65,8 @@ def _race_two_proxies(prompts, tmp_path):
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=30)
+        assert not t.is_alive(), "worker thread did not finish within 30s (deadlock?)"
 
     assert not errors, "worker thread raised: {}".format(errors)
     return loader_calls["count"], real_clip.encode_calls
@@ -119,7 +120,7 @@ def test_distinct_fingerprints_never_run_encode_concurrently(tmp_path):
                 lambda: TrackingRealClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, tmp_path,
             )
             tokens = proxy.tokenize(prompt, images=[])
-            barrier.wait()
+            barrier.wait(timeout=10)
             proxy.encode_from_tokens_scheduled(tokens)
         except Exception as e:  # noqa: BLE001 - surface it in the assertion
             errors.append(e)
@@ -128,7 +129,8 @@ def test_distinct_fingerprints_never_run_encode_concurrently(tmp_path):
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=30)
+        assert not t.is_alive(), "worker thread did not finish within 30s (deadlock?)"
 
     assert not errors, "worker thread raised: {}".format(errors)
     assert state["max_active"] == 1
