@@ -16,6 +16,14 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
 - ComfyUI lokalnie: v0.34.2 (aktualizowane w trakcie prac nad Ref2Video,
   patrz notatka R1 o length), w /home/kamil/ComfyUI. Wersję sprawdzać przez
   comfyui_version.py / pyproject.toml (oba: "0.34.2") oraz git describe.
+- Wersja ComfyUI w RUNTIME: `from comfyui_version import __version__`
+  (albo `import comfyui_version; comfyui_version.__version__`). To jest ten
+  sam sposób, którego używa sam ComfyUI - server.py robi
+  `from comfyui_version import __version__` (linia 44) i zwraca to pole jako
+  "comfyui_version" w /system_stats (linia ~724), a main.py loguje je przy
+  starcie. Plik comfyui_version.py leży w korzeniu repo ComfyUI i jest
+  generowany automatycznie z pyproject.toml przez build. Moduł jest lekki
+  (sam string), bezpieczny do importu w node bez uruchamiania serwera.
 - UWAGA: użytkownik utrzymuje lokalne monkey-patche na czysty ComfyUI
   (git stash "MiniMax H3 local monkey patches before master update" w repo
   ComfyUI /home/kamil/ComfyUI, NIE w tym repo). Łatki dotyczą: (a) widgetu
@@ -451,3 +459,16 @@ H3-cached zgadywał to z grafu przez introspekcję. To realny, ale znacznie
 większy projekt niż drobna poprawka (osobna rodzina wrapperów, nie jedna
 linijka) - może zostać podjęty kiedyś, jeśli okaże się wystarczająco
 wartościowy, nie jest odrzucony na stałe.
+
+### comfyui_version w verbose metadata (informacyjnie)
+
+_sync_verbose_metadata() w nodes.py zapisuje pole "comfyui_version" w
+bloku "system" sidecara (best-effort, try/except - nigdy nie wywala
+funkcji). WYŁĄCZNIE informacyjne: nie wchodzi do compute_fingerprint(),
+nie wpływa na HIT/MISS. Ma pomóc przy diagnozie "dlaczego stary wpis w
+cache wygląda inaczej" po aktualizacji ComfyUI.
+
+Pełne rozwiązanie problemu dryfu semantycznego (niezależny "encoding ABI
+fingerprint" hashujący pliki źródłowe H3/Qwen preprocessing w ComfyUI)
+rozważone i świadomie odłożone - zbyt kruche jak na ten etap.
+comfyui_version to tani, informacyjny kompromis, nie pełne rozwiązanie.

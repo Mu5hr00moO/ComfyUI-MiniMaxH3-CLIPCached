@@ -513,6 +513,24 @@ def test_p_sync_verbose_write_failure_is_swallowed(monkeypatch, tmp_path, caplog
     assert any("VERBOSE WRITE FAILED" in r.getMessage() for r in caplog.records)
 
 
+def test_r_sync_verbose_fresh_miss_records_comfyui_version(monkeypatch, tmp_path):
+    """The verbose sidecar written after a fresh MISS carries an informational
+    "comfyui_version" field in its system block. It is best-effort and never
+    part of the fingerprint -- it only helps diagnose why an older entry's
+    encode differs after an upstream ComfyUI update."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+    import comfyui_version
+
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["comfyui_version"] == comfyui_version.__version__
+
+
 def test_f_node_class_mappings_has_both_node_keys():
     """Regression: adding the Ref2VA node must not drop or shadow the FL2VA
     entry -- both keys must be present, each pointing at its own class."""

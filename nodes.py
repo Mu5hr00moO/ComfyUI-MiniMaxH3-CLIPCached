@@ -99,6 +99,17 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
         "node_variant": node_variant,
         "references": references,
     }
+    # Informational only: which ComfyUI version produced this cache entry, to
+    # help diagnose why an older entry's encode looks different after an
+    # upstream update. NOT part of compute_fingerprint() -- it never affects
+    # HIT/MISS. Best-effort: a missing/renamed comfyui_version module (or any
+    # other failure) must never break the verbose write.
+    try:
+        from comfyui_version import __version__ as comfyui_version
+        system["comfyui_version"] = comfyui_version
+    except Exception as e:
+        logger.debug("could not record comfyui_version in verbose metadata: %s", e)
+
     try:
         # Same per-fingerprint lock the proxy holds around its save and the
         # Cache Manager holds around delete/update: this backfill also does a
