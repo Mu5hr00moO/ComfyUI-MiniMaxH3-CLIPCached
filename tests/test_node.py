@@ -427,6 +427,16 @@ class _FakeProxy:
         self.last_core_cache_written = last_core_cache_written
 
 
+def _make_core_json(cache_dir, fingerprint="a" * 64):
+    """Create the core <fingerprint>.json so _sync_verbose_metadata()'s
+    under-the-lock re-check ("has Delete already removed the core entry?")
+    passes. Every scenario these tests simulate -- a fresh MISS whose core
+    cache landed, or a HIT of an existing entry -- genuinely has this file on
+    disk; only the "Delete won the race" case (test_s) deliberately omits it.
+    """
+    (cache_dir / "{}.json".format(fingerprint)).write_bytes(b"{}")
+
+
 def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
     """A fresh MISS whose core cache landed on disk writes a sidecar whose
     system block is tagged node_variant="fl2va" and lists the keyframes as
@@ -435,6 +445,7 @@ def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose
 
+    _make_core_json(tmp_path)
     proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
     items = [("image", torch.zeros(1, 4, 4, 3)), ("image", torch.ones(1, 4, 4, 3))]
     node_module._sync_verbose_metadata(
@@ -450,12 +461,16 @@ def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
 
 
 def test_m_sync_verbose_miss_without_core_cache_write_does_nothing(monkeypatch, tmp_path):
-    """last_core_cache_written is False (the cache write failed): there is no
-    entry to describe, so no sidecar is written."""
+    """last_core_cache_written is False (this run's cache write failed): there
+    is no entry to describe, so no sidecar is written. The core <fp>.json is
+    created here so the test reaches and exercises the
+    fresh_miss_written / hit_needs_backfill guard rather than short-circuiting
+    on the earlier "core entry gone" re-check."""
     node_module = _load_node_module()
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose
 
+    _make_core_json(tmp_path)
     proxy = _FakeProxy(last_hit=False, last_core_cache_written=False)
     node_module._sync_verbose_metadata(
         proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
@@ -469,6 +484,7 @@ def test_n_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose
 
+    _make_core_json(tmp_path)
     proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
     node_module._sync_verbose_metadata(
         proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
@@ -484,6 +500,7 @@ def test_o_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, 
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import save_verbose
 
+    _make_core_json(tmp_path)
     save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va", "references": []}, tmp_path)
     before = (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes()
 
@@ -505,6 +522,7 @@ def test_p_sync_verbose_write_failure_is_swallowed(monkeypatch, tmp_path, caplog
 
     monkeypatch.setattr(node_module, "save_verbose", boom)
 
+    _make_core_json(tmp_path)
     proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
     with caplog.at_level(logging.WARNING):
         node_module._sync_verbose_metadata(
@@ -523,12 +541,38 @@ def test_r_sync_verbose_fresh_miss_records_comfyui_version(monkeypatch, tmp_path
     from minimaxh3_clipcache.verbose_store import load_verbose
     import comfyui_version
 
+    _make_core_json(tmp_path)
     proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
     node_module._sync_verbose_metadata(
         proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
 
     system = load_verbose("a" * 64, tmp_path)["system"]
     assert system["comfyui_version"] == comfyui_version.__version__
+
+
+def test_s_sync_verbose_skips_write_when_delete_won_the_race_for_the_core_entry(monkeypatch, tmp_path):
+    """A run can be a genuine fresh MISS (proxy: last_hit False,
+    last_core_cache_written True) and still have its core <fp>.json deleted by
+    a Cache Manager Delete before _sync_verbose_metadata() takes the
+    fingerprint lock. The whole decision now runs under that lock and
+    re-checks the core entry: with no <fp>.json on disk, nothing is written,
+    so a phantom sidecar with no core cache behind it is never resurrected."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    save_verbose_calls = []
+    monkeypatch.setattr(node_module, "save_verbose",
+                         lambda *a, **k: save_verbose_calls.append((a, k)))
+
+    # Delete already removed the core entry -- no <fp>.json is created here.
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        [("image", torch.zeros(1, 4, 4, 3))], labels=["first_frame"])
+
+    assert save_verbose_calls == []
+    assert load_verbose("a" * 64, tmp_path) is None
 
 
 def test_f_node_class_mappings_has_both_node_keys():

@@ -25,6 +25,14 @@ FAKE_FILE_SIZE = 111
 FAKE_MTIME_NS = 222
 
 
+def _make_core_json(cache_dir, fingerprint="b" * 64):
+    """Create the core <fingerprint>.json so _sync_verbose_metadata()'s
+    under-the-lock re-check ("has Delete already removed the core entry?")
+    passes -- every scenario these tests simulate genuinely has this file on
+    disk."""
+    (cache_dir / "{}.json".format(fingerprint)).write_bytes(b"{}")
+
+
 def _load_node_module():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_nodes_ref2va_under_test", os.path.join(REPO_ROOT, "nodes.py"))
@@ -369,6 +377,8 @@ def test_q_sync_verbose_fresh_miss_writes_ref2va_variant(monkeypatch, tmp_path):
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose
 
+    _make_core_json(tmp_path)
+
     class _FakeProxy:
         last_fingerprint = "b" * 64
         last_hit = False
@@ -392,6 +402,8 @@ def test_r_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose
 
+    _make_core_json(tmp_path)
+
     class _FakeProxy:
         last_fingerprint = "b" * 64
         last_hit = True
@@ -408,6 +420,7 @@ def test_s_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, 
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import save_verbose
 
+    _make_core_json(tmp_path)
     save_verbose("b" * 64, {"prompt": "original", "node_variant": "ref2va", "references": []}, tmp_path)
     before = (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes()
 

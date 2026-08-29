@@ -18,6 +18,7 @@ reimplements them, it only substitutes what the stock node sees as "clip".
 import gc
 import logging
 import os
+from pathlib import Path
 
 import nodes
 import comfy.model_management
@@ -84,38 +85,48 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
     if fingerprint is None:
         return  # defensive; should not happen after a successful execute()
 
-    fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
-    hit_needs_backfill = proxy.last_hit is True and load_verbose(fingerprint, CACHE_DIR) is None
-    if not (fresh_miss_written or hit_needs_backfill):
-        return
-
-    references = _build_references(fingerprint, items, labels)
-    system = {
-        "prompt": prompt,
-        "clip_name": clip_name,
-        "clip_file_size": clip_file_size,
-        "clip_mtime_ns": clip_mtime_ns,
-        "cache_schema_version": CACHE_SCHEMA_VERSION,
-        "node_variant": node_variant,
-        "references": references,
-    }
-    # Informational only: which ComfyUI version produced this cache entry, to
-    # help diagnose why an older entry's encode looks different after an
-    # upstream update. NOT part of compute_fingerprint() -- it never affects
-    # HIT/MISS. Best-effort: a missing/renamed comfyui_version module (or any
-    # other failure) must never break the verbose write.
     try:
-        from comfyui_version import __version__ as comfyui_version
-        system["comfyui_version"] = comfyui_version
-    except Exception as e:
-        logger.debug("could not record comfyui_version in verbose metadata: %s", e)
-
-    try:
-        # Same per-fingerprint lock the proxy holds around its save and the
-        # Cache Manager holds around delete/update: this backfill also does a
-        # read-modify-write on <fingerprint>.verbose.json, so a concurrent
-        # /update must not be able to interleave with it.
+        # Hold the per-fingerprint lock across the ENTIRE decision + write,
+        # not just the final save_verbose(). The Cache Manager Delete holds
+        # this same lock while removing the core <fp>.json/.safetensors,
+        # <fp>.verbose.json and thumbnails, and it can win the race between
+        # "this run was a fresh MISS" (decided from proxy state) and this
+        # function acquiring the lock. Deciding and writing under one lock
+        # closes that gap.
         with get_lock(fingerprint):
+            # Re-verify under the lock: if Delete already ran, the core
+            # <fp>.json is gone and writing a verbose sidecar now would
+            # resurrect a phantom entry with no core cache behind it.
+            if not (Path(CACHE_DIR) / "{}.json".format(fingerprint)).exists():
+                return
+
+            fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
+            hit_needs_backfill = proxy.last_hit is True and load_verbose(fingerprint, CACHE_DIR) is None
+            if not (fresh_miss_written or hit_needs_backfill):
+                return
+
+            references = _build_references(fingerprint, items, labels)
+            system = {
+                "prompt": prompt,
+                "clip_name": clip_name,
+                "clip_file_size": clip_file_size,
+                "clip_mtime_ns": clip_mtime_ns,
+                "cache_schema_version": CACHE_SCHEMA_VERSION,
+                "node_variant": node_variant,
+                "references": references,
+            }
+            # Informational only: which ComfyUI version produced this cache
+            # entry, to help diagnose why an older entry's encode looks
+            # different after an upstream update. NOT part of
+            # compute_fingerprint() -- it never affects HIT/MISS. Best-effort:
+            # a missing/renamed comfyui_version module (or any other failure)
+            # must never break the verbose write.
+            try:
+                from comfyui_version import __version__ as comfyui_version
+                system["comfyui_version"] = comfyui_version
+            except Exception as e:
+                logger.debug("could not record comfyui_version in verbose metadata: %s", e)
+
             save_verbose(fingerprint, system, CACHE_DIR)
     except Exception as e:
         logger.warning(
