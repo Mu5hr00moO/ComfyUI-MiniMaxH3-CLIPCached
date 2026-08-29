@@ -14,29 +14,19 @@ import logging
 import threading
 
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
 logger = logging.getLogger(__name__)
 
-# One lock per cache fingerprint, shared across every CachedClipProxy
-# instance in the process. It serialises the whole lookup -> encode -> save
-# path for a given entry so two racing MISS requests for the same fingerprint
-# (e.g. two Queue runs, or a Cache Manager delete landing mid-write) cannot
-# both load the ~27 GB encoder at once: the second thread re-checks the cache
-# after the first releases the lock and finds the freshly written result.
-# Distinct fingerprints get distinct locks, so unrelated encodes still run in
-# parallel. The dict grows by one small Lock per unique fingerprint seen in a
-# session -- negligible even for thousands of prompts.
-_fingerprint_locks: dict[str, threading.Lock] = {}
-_fingerprint_locks_guard = threading.Lock()
-
-
-def _get_lock(fingerprint: str) -> threading.Lock:
-    with _fingerprint_locks_guard:
-        if fingerprint not in _fingerprint_locks:
-            _fingerprint_locks[fingerprint] = threading.Lock()
-        return _fingerprint_locks[fingerprint]
-
+# The per-fingerprint lock (minimaxh3_clipcache.locking.get_lock) serialises
+# the whole lookup -> encode -> save path for a given entry so two racing MISS
+# requests for the same fingerprint (e.g. two Queue runs, or a Cache Manager
+# delete landing mid-write) cannot both load the ~27 GB encoder at once: the
+# second thread re-checks the cache after the first releases the lock and
+# finds the freshly written result. Distinct fingerprints get distinct locks,
+# so unrelated encodes still run in parallel. That lock now lives in its own
+# module because nodes.py and routes.py hold it too.
 
 # A single process-wide lock around the actual "load the real ~27 GB encoder
 # and run it" step, independent of fingerprint. The per-fingerprint lock
@@ -120,7 +110,7 @@ class CachedClipProxy:
         # load_conditioning() below (inside the lock) before deciding to
         # encode, so if the first thread already produced and saved the
         # result it is served as a HIT and the encoder is never loaded twice.
-        with _get_lock(fingerprint):
+        with get_lock(fingerprint):
             if not self.force_refresh:
                 cond = load_conditioning(fingerprint, self.cache_dir)
                 if cond is not None:
