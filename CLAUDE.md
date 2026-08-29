@@ -408,3 +408,27 @@ potwierdzona na żywych danych, generalizacja Copy prompt pod N
 heterogenicznych referencji). master promowany z feature/ref2video
 (55f0f9a) 29.08.2026 - poprzedni stan czysto-FL2VA zamrożony jako branch
 FL2V_master (613d234).
+
+### Sesja porządkowa (audyty Grok/GPT/CodeRabbit), 29.08.2026
+
+Osiem grup drobnych poprawek, każda osobny commit (afa1705..ad942e2),
+pełny pytest zielony po każdej grupie (197 passed na końcu). Zakres m.in.:
+maskowanie wyjątku przez nieudany unload w finally (proxy.py + oba
+execute() w nodes.py), obsługa 1- i 4-kanałowych tensorów IMAGE w
+thumbnails, sprzątanie plików .tmp-* po nieudanym zapisie w
+verbose_store/thumbnails, timeouty w testach współbieżności, poprawki
+None-formatting w skryptach diagnostycznych.
+
+Zmiany w web/main.js (Grupa 3: dropdown tagów filtruje po
+currentVariant; Grupa 6: wpis "normal" z uszkodzonym verbose.json
+renderuje się jak legacy) zweryfikowane BEZ przeglądarki zgodnie ze
+stałym workflow: node --check na kopii .mjs (składnia OK) + harness
+Node w scratchpadzie (loader hook stubuje /scripts/app.js i
+/scripts/api.js, wymusza format module na main.js; minimalny document)
+- moduł importuje się bez wyjątku, allNormalTags(entries, variant)
+zwraca tagi tylko z danego wariantu i [] gdy wariant pominięty,
+filterEntries nie wywala się na verbose=null i traktuje taki wpis jak
+legacy (widoczny tylko bez filtrów). NIE zweryfikowane (do sprawdzenia
+przez użytkownika w ComfyUI): realny render wiersza uszkodzonego wpisu
+przez buildLegacyRow, faktyczne przełączenie wariantu w dropdownie tagów
+na żywym DOM, brak błędów w konsoli.
