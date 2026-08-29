@@ -2,16 +2,20 @@
 MiniMaxH3CLIPCachedRef2VA through a LIVE ComfyUI server.
 
 The first R7 run (test_ref2video_server_e2e.py) proved the MISS path: a real
-[CACHE MISS] + ~30s Qwen3-VL encode, and it wrote the cache entry
-46655ab96797. Its second iteration could not prove the HIT path because an
-identical graph in the SAME server session is short-circuited by ComfyUI's
-own execution cache ("Prompt executed in 0.00 seconds") before our node ever
-re-runs.
+[CACHE MISS] + ~30s Qwen3-VL encode, and it wrote a cache entry. It also
+records the fingerprint it actually observed to a small handoff file
+(/tmp/r7_last_fingerprint.txt); this script reads that value back rather than
+carrying a hardcoded fingerprint that goes stale every time a fingerprint
+input changes (encoder ABI, cache schema version, stat fields, hash framing,
+...). The MISS run's second iteration could not prove the HIT path itself
+because an identical graph in the SAME server session is short-circuited by
+ComfyUI's own execution cache ("Prompt executed in 0.00 seconds") before our
+node ever re-runs.
 
 This script uses a FRESH server (empty execution cache) and submits that same
 graph once. Now our node actually executes, recomputes the fingerprint, finds
 the entry the earlier MISS wrote, and must:
-  - log [CACHE HIT] 46655ab96797
+  - log [CACHE HIT] <the fingerprint from the handoff file>
   - never emit "Requested to load MiniMaxH3TEModel_" (the ~26 GB encoder)
   - keep VRAM flat and low (video VAE only, no text encoder)
   - finish in ~0s of real compute
@@ -43,6 +47,10 @@ BASE_URL = "http://{}:{}".format(HOST, PORT)
 SERVER_LOG_PATH = "/tmp/r7_hit_server.log"
 SERVER_STARTUP_TIMEOUT_S = 300
 PROMPT_MAX_WAIT_S = 300
+# Written by test_ref2video_server_e2e.py's MISS run and read back here, so
+# this script never carries a hardcoded fingerprint that goes stale whenever
+# a fingerprint input changes.
+FINGERPRINT_HANDOFF_PATH = Path("/tmp/r7_last_fingerprint.txt")
 
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 VAE_NAME = "minimax_h3_video_vae_int8_convrot.safetensors"
@@ -51,7 +59,6 @@ PROMPT_TEXT = "a test prompt with <Picture 1>"
 WIDTH, HEIGHT, LENGTH = 1344, 768, 124
 REF_IMAGE_SIZE = "match"
 REF_IMAGE_HW = 256
-EXPECTED_FINGERPRINT = "46655ab96797"
 
 _server_pid_for_cleanup = None
 
@@ -149,6 +156,14 @@ def main():
     global _server_pid_for_cleanup
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
+
+    if not FINGERPRINT_HANDOFF_PATH.is_file():
+        print("!!! No fingerprint handoff file at {} -- run "
+              "test_ref2video_server_e2e.py first !!!".format(FINGERPRINT_HANDOFF_PATH), flush=True)
+        sys.exit(1)
+    EXPECTED_FINGERPRINT = FINGERPRINT_HANDOFF_PATH.read_text().strip()
+    print("=== Using fingerprint {} from {} ===".format(
+        EXPECTED_FINGERPRINT, FINGERPRINT_HANDOFF_PATH), flush=True)
 
     cache_dir = Path(__file__).resolve().parent.parent / "cache"
     cache_files = sorted(p.name for p in cache_dir.glob(EXPECTED_FINGERPRINT + "*")) \

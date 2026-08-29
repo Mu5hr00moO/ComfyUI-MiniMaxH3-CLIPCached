@@ -50,6 +50,11 @@ BASE_URL = "http://{}:{}".format(HOST, PORT)
 
 SERVER_LOG_PATH = "/tmp/r7_server.log"
 WATCHDOG_LOG_PATH = "/tmp/r7_server_watchdog.log"
+# The HIT-path follow-up (test_ref2video_server_hit.py) reads the fingerprint
+# this run actually observed from here, instead of carrying a hardcoded value
+# that goes stale every time a fingerprint input changes (encoder ABI, cache
+# schema version, stat fields, hash framing, ...).
+FINGERPRINT_HANDOFF_PATH = Path("/tmp/r7_last_fingerprint.txt")
 SERVER_STARTUP_TIMEOUT_S = 300
 SERVER_STARTUP_POLL_INTERVAL_S = 3
 
@@ -413,6 +418,20 @@ def main():
     miss = results.get("MISS", {})
     hit = results.get("HIT", {})
     miss_ok = any("[CACHE MISS]" in ln for ln in miss.get("new_cache_lines", []))
+
+    # Hand the fingerprint this run actually observed to the HIT-path follow-up
+    # script (test_ref2video_server_hit.py), so it never needs a hardcoded value.
+    miss_fp = None
+    for ln in miss.get("new_cache_lines", []):
+        m = re.search(r"\[CACHE MISS\]\s+([0-9a-f]+)", ln)
+        if m:
+            miss_fp = m.group(1)
+            break
+    if miss_fp:
+        FINGERPRINT_HANDOFF_PATH.write_text(miss_fp)
+        print("=== Wrote observed fingerprint {} to {} for the HIT-path "
+              "follow-up script ===".format(miss_fp, FINGERPRINT_HANDOFF_PATH), flush=True)
+
     hit_ok = any("[CACHE HIT]" in ln for ln in hit.get("new_cache_lines", []))
     ok = results.get("nodes_registered") and miss_ok and hit_ok
     if stopped_by_watchdog:
