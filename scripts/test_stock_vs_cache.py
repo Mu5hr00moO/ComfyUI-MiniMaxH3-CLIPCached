@@ -130,8 +130,9 @@ def main():
     print("cache_dir: {}".format(CACHE_DIR))
     print("memory log: {}".format(MEMORY_LOG_PATH))
 
-    clip_file_size, clip_mtime_ns = resolve_clip_stat(CLIP_NAME)
-    print("clip identity: name={} file_size={} mtime_ns={}".format(CLIP_NAME, clip_file_size, clip_mtime_ns))
+    clip_file_size, clip_mtime_ns, clip_ctime_ns = resolve_clip_stat(CLIP_NAME)
+    print("clip identity: name={} file_size={} mtime_ns={} ctime_ns={}".format(
+        CLIP_NAME, clip_file_size, clip_mtime_ns, clip_ctime_ns))
 
     print("=== Load real VAE once (kept resident for the whole run -- small compared to the encoder) ===")
     log_memory("before-vae-load")
@@ -195,6 +196,7 @@ def main():
         print("=== (b) fresh CachedClipProxy, empty cache_dir, REAL build_clip_loader_fn -- expect MISS ===")
         proxy_b = CachedClipProxy(
             build_clip_loader_fn(CLIP_NAME), CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR,
+            clip_ctime_ns=clip_ctime_ns,
         )
         t0 = time.time()
         output_b = MiniMaxH3ImageToVideo.execute(
@@ -224,6 +226,7 @@ def main():
         print("=== (c) fresh CachedClipProxy, same cache_dir as (b) -- expect HIT, nothing to unload ===")
         proxy_c = CachedClipProxy(
             build_clip_loader_fn(CLIP_NAME), CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR,
+            clip_ctime_ns=clip_ctime_ns,
         )
         t0 = time.time()
         output_c = MiniMaxH3ImageToVideo.execute(

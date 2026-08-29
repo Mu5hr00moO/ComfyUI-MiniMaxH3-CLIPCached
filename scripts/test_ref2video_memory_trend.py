@@ -294,14 +294,17 @@ def main():
             conns = [c for c in psutil.net_connections(kind="inet")
                      if c.laddr and c.laddr.port == PORT and c.status == psutil.CONN_LISTEN]
             bound_pids = {c.pid for c in conns if c.pid}
-            if bound_pids and server_pid not in bound_pids:
-                print("!!! WARNING: port {} is bound by PID(s) {} but we launched PID {} -- "
-                      "using the bound PID instead !!!".format(PORT, bound_pids, server_pid), flush=True)
-                server_pid = next(iter(bound_pids))
-                _server_pid_for_cleanup = server_pid
         except Exception as e:
-            print("--- Could not cross-check port->PID binding ({}), trusting launched PID {} ---".format(
-                e, server_pid), flush=True)
+            raise RuntimeError(
+                "Could not verify ownership of port {} for launched PID {}; "
+                "refusing to run against or stop an unverified server".format(PORT, server_pid)
+            ) from e
+        if server_proc.poll() is not None or server_pid not in bound_pids:
+            raise RuntimeError(
+                "Port {} is owned by PID(s) {}, not the launched server PID {}. "
+                "Another ComfyUI may already be running; refusing to adopt or stop it.".format(
+                    PORT, sorted(bound_pids), server_pid)
+            )
 
         watchdog = Watchdog(server_pid)
         watchdog.start()

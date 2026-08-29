@@ -177,12 +177,17 @@ def main():
         try:
             bound = {c.pid for c in psutil.net_connections(kind="inet")
                      if c.laddr and c.laddr.port == PORT and c.status == psutil.CONN_LISTEN and c.pid}
-            if bound and pid not in bound:
-                pid = next(iter(bound))
-                _server_pid_for_cleanup = pid
-                print("=== using bound PID {} ===".format(pid), flush=True)
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                "Could not verify ownership of port {} for launched PID {}; "
+                "refusing to run against or stop an unverified server".format(PORT, pid)
+            ) from e
+        if proc.poll() is not None or pid not in bound:
+            raise RuntimeError(
+                "Port {} is owned by PID(s) {}, not the launched server PID {}. "
+                "Another ComfyUI may already be running; refusing to adopt or stop it.".format(
+                    PORT, sorted(bound), pid)
+            )
 
         vram_before = vram_used_mib()
         print("=== VRAM before prompt: {} MiB ===".format(vram_before), flush=True)

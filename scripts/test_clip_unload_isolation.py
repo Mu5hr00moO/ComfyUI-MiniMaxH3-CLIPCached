@@ -212,7 +212,7 @@ def run_variant_b(rows):
         shutil.rmtree(CACHE_DIR)
     CACHE_DIR.mkdir(parents=True)
 
-    clip_file_size, clip_mtime_ns = resolve_clip_stat(CLIP_NAME)
+    clip_file_size, clip_mtime_ns, clip_ctime_ns = resolve_clip_stat(CLIP_NAME)
 
     print()
     print("=== VARIANT B: CachedClipProxy, force_refresh=True (real MISS every time), {} iterations ===".format(
@@ -222,7 +222,7 @@ def run_variant_b(rows):
         t0 = time.time()
         proxy = CachedClipProxy(
             build_clip_loader_fn(CLIP_NAME), CLIP_NAME, clip_file_size, clip_mtime_ns, CACHE_DIR,
-            force_refresh=True,
+            force_refresh=True, clip_ctime_ns=clip_ctime_ns,
         )
         tokens = proxy.tokenize(PROMPT, images=[])
         cond = proxy.encode_from_tokens_scheduled(tokens)
