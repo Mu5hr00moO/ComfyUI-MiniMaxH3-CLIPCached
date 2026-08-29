@@ -5,6 +5,7 @@ Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 
 import logging
 import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -83,11 +84,15 @@ def test_b_no_leftover_tmp_files_after_save(tmp_path):
 
 
 def test_b_failed_save_leaves_nothing_behind_and_reraises(tmp_path, monkeypatch):
-    # Fail the second os.replace() -- the .json move -- after the
-    # .safetensors is already in place and the .json temp is already
-    # written. save_conditioning() must undo everything it created (temp
-    # files *and* the .safetensors it already moved into place) and let the
-    # original exception propagate, not swallow it.
+    # Fail the second os.replace() -- the .json move -- on a fresh write,
+    # after the .safetensors has already been published and the .json temp
+    # is already written. Under the two-phase contract the exception
+    # propagates untouched, save_conditioning() removes only its own
+    # never-consumed temp file(s), and it deliberately does NOT undo the
+    # .safetensors replace that already succeeded. That leaves a
+    # self-healable orphan .safetensors with no .json -- cleaned up by
+    # load_conditioning()'s own self-heal or gc_orphaned_cache_files(), see
+    # store.py's Phase 2 comment.
     real_replace = os.replace
     calls = {"n": 0}
 
@@ -104,7 +109,7 @@ def test_b_failed_save_leaves_nothing_behind_and_reraises(tmp_path, monkeypatch)
 
     assert calls["n"] == 2  # the second replace really was reached
     assert list(tmp_path.glob("*.tmp-*")) == []
-    assert not (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
+    assert (tmp_path / "{}.safetensors".format(FINGERPRINT_A)).exists()
     assert not (tmp_path / "{}.json".format(FINGERPRINT_A)).exists()
 
 
@@ -210,3 +215,69 @@ def test_g_gc_removes_only_orphaned_safetensors(tmp_path):
 def test_g_gc_on_empty_or_missing_dir_returns_empty_list(tmp_path):
     assert gc_orphaned_cache_files(tmp_path) == []
     assert gc_orphaned_cache_files(tmp_path / "does-not-exist") == []
+
+
+# ---------------------------------------------------------------------------
+# Refresh safety: a failed save_conditioning() over an ALREADY-CACHED
+# fingerprint (the cache_mode="refresh" path) must never destroy or corrupt
+# the entry it was refreshing. The old entry stays readable, its on-disk
+# bytes stay byte-identical, and no temp litter is left behind.
+# ---------------------------------------------------------------------------
+
+
+def _read_entry_bytes(tmp_path, fingerprint):
+    return (
+        (tmp_path / "{}.safetensors".format(fingerprint)).read_bytes(),
+        (tmp_path / "{}.json".format(fingerprint)).read_bytes(),
+    )
+
+
+def test_refresh_failure_preserves_old_entry_when_tensor_write_fails(tmp_path, monkeypatch):
+    old_cond = _cond_variant_a()
+    save_conditioning(FINGERPRINT_A, old_cond, tmp_path)
+    st_before, js_before = _read_entry_bytes(tmp_path, FINGERPRINT_A)
+
+    # A real safetensors write that dies partway through (disk full, killed
+    # thread) can leave a partial temp file behind before it raises --
+    # simulate that, so cleanup of our own temp files is actually exercised.
+    def failing_save_file(tensors, path):
+        Path(path).write_bytes(b"partial-safetensors-garbage")
+        raise RuntimeError("simulated safetensors write failure")
+
+    monkeypatch.setattr(store, "save_file", failing_save_file)
+
+    with pytest.raises(RuntimeError, match="simulated safetensors write failure"):
+        save_conditioning(FINGERPRINT_A, _cond_variant_b(), tmp_path)
+
+    _assert_cond_equal(old_cond, load_conditioning(FINGERPRINT_A, tmp_path))
+    st_after, js_after = _read_entry_bytes(tmp_path, FINGERPRINT_A)
+    assert st_after == st_before
+    assert js_after == js_before
+    assert list(tmp_path.glob("*.tmp-*")) == []
+
+
+def test_refresh_failure_preserves_old_entry_when_skeleton_write_fails(tmp_path, monkeypatch):
+    old_cond = _cond_variant_a()
+    save_conditioning(FINGERPRINT_A, old_cond, tmp_path)
+    st_before, js_before = _read_entry_bytes(tmp_path, FINGERPRINT_A)
+
+    # Exactly the audit scenario: the .safetensors temp write has already
+    # succeeded and then writing the .json skeleton fails -- Phase 1 dies
+    # after the first of its two writes, before anything is published.
+    real_write_bytes = store.Path.write_bytes
+
+    def flaky_write_bytes(self, data):
+        if ".json.tmp-" in self.name:
+            raise OSError("simulated failure writing .json skeleton")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(store.Path, "write_bytes", flaky_write_bytes)
+
+    with pytest.raises(OSError, match="simulated failure writing .json skeleton"):
+        save_conditioning(FINGERPRINT_A, _cond_variant_b(), tmp_path)
+
+    _assert_cond_equal(old_cond, load_conditioning(FINGERPRINT_A, tmp_path))
+    st_after, js_after = _read_entry_bytes(tmp_path, FINGERPRINT_A)
+    assert st_after == st_before
+    assert js_after == js_before
+    assert list(tmp_path.glob("*.tmp-*")) == []

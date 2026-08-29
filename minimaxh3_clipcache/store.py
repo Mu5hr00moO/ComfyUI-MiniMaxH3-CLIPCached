@@ -7,13 +7,21 @@ os.replace(), which is atomic on the same filesystem.
 
 Write order is deliberate: tensors first, then the skeleton. The skeleton is
 the file whose mere presence load_conditioning() trusts as "this entry was
-written"; writing it last means a fully-visible .json always has a matching,
-fully-written .safetensors behind it. Any state where .json exists without a
-usable .safetensors could only happen from something after our write (manual
-tampering, a killed process mid-.safetensors-write followed by an
-independently created .json, disk corruption) -- not from a failure inside
-save_conditioning() itself, since os.replace() only makes .safetensors
-visible once fully written.
+written"; publishing it last means a fully-visible .json always has a
+matching, fully-written .safetensors behind it.
+
+save_conditioning() runs in two phases. Phase 1 writes both files to temp
+names in cache_dir; on failure it removes its own temp files and never
+touches an existing entry for this fingerprint -- that is what makes a
+failed cache_mode="refresh" safe. Phase 2 publishes the two temp files with
+os.replace() (safetensors first). The pair cannot be made atomic across two
+separate files: if either replace raises, Phase 2 removes only its own
+never-consumed temp file(s) by name and re-raises -- it never undoes a
+replace that already happened. A failed .json publish therefore leaves a
+fresh write as an orphan .safetensors with no .json (self-healed by
+load_conditioning(), or swept by gc_orphaned_cache_files()), and a refresh
+with new tensors under the previous skeleton -- a narrow window that
+degrades to an ordinary MISS via unflatten_tensors(), never a crash.
 """
 
 import json
@@ -45,33 +53,42 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
 
     safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
     json_path = cache_dir / "{}.json".format(fingerprint)
+    tmp_safetensors_path = _tmp_name(safetensors_path)
+    tmp_json_path = _tmp_name(json_path)
 
-    # Every path this call has brought into existence, in creation order: the
-    # .safetensors temp, then (once os.replace() moves it into place) the
-    # final .safetensors, then the .json temp, then the final .json. If any
-    # step raises -- classically the .json write failing after the
-    # .safetensors is already in place -- we delete all of them so a failed
-    # save leaves nothing behind: no stray .tmp-*, and no .safetensors
-    # without a matching .json. The exception is then re-raised untouched;
-    # it is proxy.py, not store.py, that decides whether a cache-write
-    # failure after a costly encode should be swallowed with a WARNING.
-    created = []
+    # Write BOTH temp files completely before replacing either final path.
+    # A failure up to this point never touches an existing, valid pair at
+    # all -- this is what makes a failed cache_mode="refresh" of an already-
+    # cached fingerprint safe: the old entry is untouched until both new
+    # files are fully written and ready to publish. Cleanup here only ever
+    # removes our own temp files, never a final path that predates this call.
     try:
-        tmp_safetensors_path = _tmp_name(safetensors_path)
         save_file({k: v.detach().cpu().contiguous() for k, v in tensors.items()}, str(tmp_safetensors_path))
-        created.append(tmp_safetensors_path)
-
-        os.replace(tmp_safetensors_path, safetensors_path)
-        created[-1] = safetensors_path
-
-        tmp_json_path = _tmp_name(json_path)
         tmp_json_path.write_bytes(json.dumps(skeleton).encode("utf-8"))
-        created.append(tmp_json_path)
-
-        os.replace(tmp_json_path, json_path)
-        created[-1] = json_path
     except BaseException:
-        for path in created:
+        for path in (tmp_safetensors_path, tmp_json_path):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+
+    # Phase 2: publish. safetensors first (module write-order invariant).
+    # If EITHER os.replace() raises, clean up only our own leftover temp
+    # file(s) -- by name, so this can never touch safetensors_path/
+    # json_path themselves, whether or not the first replace already
+    # succeeded. We deliberately do NOT undo a replace that already
+    # happened: for a refresh of an existing entry that would destroy it
+    # outright (old skeleton, no tensors -- guaranteed broken); for a fresh
+    # write it just leaves a self-healable orphan .safetensors
+    # (load_conditioning()'s own self-heal, or gc_orphaned_cache_files(),
+    # already clean these up). Only the never-consumed temp file(s) are
+    # ours to remove here.
+    try:
+        os.replace(tmp_safetensors_path, safetensors_path)
+        os.replace(tmp_json_path, json_path)
+    except BaseException:
+        for path in (tmp_safetensors_path, tmp_json_path):
             try:
                 path.unlink()
             except OSError:
