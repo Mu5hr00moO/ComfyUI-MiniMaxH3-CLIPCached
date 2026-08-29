@@ -165,8 +165,15 @@ class CachedClipProxy:
                     # never enters this block) and a proxy built without
                     # unload_fn (every proxy-level test) are unaffected.
                     if self.unload_fn is not None and self._real_clip is not None:
-                        self.unload_fn(self._real_clip.patcher)
-                        self._real_clip = None
+                        try:
+                            self.unload_fn(self._real_clip.patcher)
+                        except Exception as e:
+                            logger.warning(
+                                "[ENCODER UNLOAD FAILED] could not unload the real encoder "
+                                "after encode_from_tokens_scheduled(): %s", e,
+                            )
+                        finally:
+                            self._real_clip = None
             return cond
 
     def _validate_output_hidden_dim(self, cond, fingerprint):

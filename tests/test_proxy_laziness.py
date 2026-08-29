@@ -4,6 +4,7 @@ __init__ or tokenize(), and never more than once per proxy instance even
 across multiple MISSes. No GPU, no ComfyUI, no real clip.
 """
 
+import pytest
 import torch
 
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
@@ -140,3 +141,34 @@ def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
     reloaded = load_conditioning(fingerprint, tmp_path)
     assert torch.equal(reloaded[0][0], cond[0][0])
     assert not torch.equal(reloaded[0][0], old_value)
+
+
+def test_g_failed_unload_does_not_mask_the_original_encode_exception(tmp_path):
+    """If the real encode raises AND the unload_fn then also raises in the
+    finally, the exception that propagates must be the original one from the
+    encode, not the one from the failed unload -- and the proxy must still
+    drop its reference to the real clip so the outer safety net in nodes.py
+    does not try to unload it a second time."""
+
+    class ExplodingEncodeClip:
+        patcher = object()
+
+        def tokenize(self, prompt, **kwargs):
+            return ("real_tokens", prompt, kwargs)
+
+        def encode_from_tokens_scheduled(self, tokens):
+            raise ValueError("the real encode blew up")
+
+    def exploding_unload(patcher):
+        raise RuntimeError("and then the unload blew up too")
+
+    proxy = CachedClipProxy(
+        lambda: ExplodingEncodeClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS,
+        tmp_path, unload_fn=exploding_unload,
+    )
+
+    tokens = proxy.tokenize("a prompt whose encode and unload both fail", images=[])
+    with pytest.raises(ValueError, match="the real encode blew up"):
+        proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.real_clip is None

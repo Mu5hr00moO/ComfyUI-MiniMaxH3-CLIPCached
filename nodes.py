@@ -230,7 +230,13 @@ class MiniMaxH3CLIPCachedFL2VA:
             # nothing to return.
             if proxy.did_load_real_clip:
                 if proxy.real_clip is not None:
-                    comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                    try:
+                        comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                    except Exception as e:
+                        logger.warning(
+                            "[ENCODER UNLOAD FAILED] could not unload after execute() "
+                            "(safety-net path): %s", e,
+                        )
                 del proxy
                 gc.collect()
                 comfy.model_management.soft_empty_cache()
@@ -445,7 +451,13 @@ class MiniMaxH3CLIPCachedRef2VA:
             # resident as ballast.
             if proxy.did_load_real_clip:
                 if proxy.real_clip is not None:
-                    comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                    try:
+                        comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+                    except Exception as e:
+                        logger.warning(
+                            "[ENCODER UNLOAD FAILED] could not unload after execute() "
+                            "(safety-net path): %s", e,
+                        )
                 del proxy
                 gc.collect()
                 comfy.model_management.soft_empty_cache()

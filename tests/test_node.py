@@ -373,6 +373,50 @@ def test_k_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
 
 
+def test_q_outer_finally_failed_unload_does_not_mask_original_exception(monkeypatch, tmp_path):
+    """If the stock execute() raises with the real encoder still resident AND
+    nodes.py's outer safety-net unload then also raises, the exception that
+    propagates out of execute() must be the original one, not the unload
+    failure."""
+    node_module = _load_node_module()
+
+    class RaisingProxy(CachedClipProxy):
+        def encode_from_tokens_scheduled(self, tokens):
+            # Simulate a failure that leaves the real clip resident before the
+            # proxy's own finally could release it, so nodes.py's outer
+            # safety-net branch (proxy.real_clip is not None) is the one that
+            # runs the unload.
+            self.did_load_real_clip = True
+            self._real_clip = FakeRealClip()
+            raise RuntimeError("original failure")
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat",
+                         lambda clip_name: (FAKE_FILE_SIZE, FAKE_MTIME_NS))
+    monkeypatch.setattr(node_module, "build_clip_loader_fn",
+                         lambda clip_name: (lambda: FakeRealClip()))
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(node_module, "CachedClipProxy", RaisingProxy)
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        return clip.encode_from_tokens_scheduled(tokens)
+
+    monkeypatch.setattr(MiniMaxH3ImageToVideo, "execute", classmethod(fake_execute))
+
+    def exploding_unload(*args, **kwargs):
+        raise RuntimeError("unload also failed")
+
+    monkeypatch.setattr(comfy.model_management, "unload_model_and_clones", exploding_unload)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    with pytest.raises(RuntimeError, match="original failure"):
+        node.execute(
+            clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+            width=1344, height=768, length=124,
+        )
+
+
 class _FakeProxy:
     """Stand-in for CachedClipProxy carrying only the three fields
     _sync_verbose_metadata() reads back after a run."""
