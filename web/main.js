@@ -474,7 +474,10 @@ function reattachOpenDetailAfterRender(filtered) {
   const entry = findNormalEntry(openDetailFingerprint);
   const stillListed = filtered.some((e) => e.fingerprint === openDetailFingerprint);
   if (entry && stillListed) {
-    populateDetail(entry);
+    // Background re-render: keep any unsaved name / notes / tags / favorite
+    // edit the user has in progress -- only openDetail() (an explicit click)
+    // resets those.
+    populateDetail(entry, { preserveEditableFields: true });
     attachDetailAfterRow(openDetailFingerprint);
   } else {
     closeDetail();
@@ -647,7 +650,17 @@ function renderDetailRefs(container, fingerprint, variant, references) {
   container.appendChild(grid);
 }
 
-function populateDetail(entry) {
+// preserveEditableFields: when true, the name / notes / tags / favorite
+// inputs are left exactly as the user has them and only the read-only parts
+// (title, prompt, references) are refreshed from server data. Every
+// background re-render funnels through reattachOpenDetailAfterRender() ->
+// populateDetail(), for reasons unrelated to the detail panel's own data
+// (a search keystroke, a tag-filter change, the favorites toggle, the
+// runCheck() after Save or a favorite toggle) -- without this guard each of
+// those silently discards an in-progress, unsaved edit. openDetail() (an
+// explicit click onto a row, possibly a different entry) passes it false so
+// everything resets from scratch.
+function populateDetail(entry, { preserveEditableFields = false } = {}) {
   const { detailEl } = panel;
   const user = (entry.verbose && entry.verbose.user) || {};
   const system = (entry.verbose && entry.verbose.system) || {};
@@ -660,10 +673,12 @@ function populateDetail(entry) {
     system.node_variant || "fl2va",
     Array.isArray(system.references) ? system.references : [],
   );
-  detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
-  detailEl.querySelector("[data-h3cm-edit-notes]").value = user.notes || "";
-  detailEl.querySelector("[data-h3cm-edit-tags]").value = (Array.isArray(user.tags) ? user.tags : []).join(", ");
-  detailEl.querySelector("[data-h3cm-edit-favorite]").checked = user.favorite === true;
+  if (!preserveEditableFields) {
+    detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
+    detailEl.querySelector("[data-h3cm-edit-notes]").value = user.notes || "";
+    detailEl.querySelector("[data-h3cm-edit-tags]").value = (Array.isArray(user.tags) ? user.tags : []).join(", ");
+    detailEl.querySelector("[data-h3cm-edit-favorite]").checked = user.favorite === true;
+  }
   detailEl.querySelector("[data-h3cm-detail-status]").textContent = "";
   detailEl.hidden = false;
 }
