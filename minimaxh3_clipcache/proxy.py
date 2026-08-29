@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 # finds the freshly written result. Distinct fingerprints get distinct locks,
 # so unrelated LOOKUPS still run in parallel -- but see _encoder_load_lock
 # right below, which serializes the actual load+encode step across ALL
-# fingerprints regardless of this lock. That lock now lives in its own
-# module because nodes.py and routes.py hold it too.
+# fingerprints regardless of this lock. This per-fingerprint lock now lives
+# in its own module (minimaxh3_clipcache.locking) because nodes.py and
+# routes.py hold it too -- the separate, global _encoder_load_lock right
+# below stays here in proxy.py.
 
 # A single process-wide lock around the actual "load the real ~27 GB encoder
 # and run it" step, independent of fingerprint. The per-fingerprint lock

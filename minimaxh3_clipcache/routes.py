@@ -51,10 +51,14 @@ CACHE_DIR = os.path.join(REPO_ROOT, "cache")
 ROUTE_PREFIX = "/h3_cache_manager"
 
 # How long /update and /delete wait for the per-fingerprint writer lock
-# before giving up with 409. A running generation only holds it for the
-# duration of one verbose/core save (well under a second), so 5s is
-# generous; the point is to never block the request indefinitely behind a
-# stuck writer.
+# before giving up with 409. A running generation on a MISS holds this lock
+# for its ENTIRE load + encode + save (tens of seconds to a few minutes,
+# not just the final save), so 5s is not "generous" -- it is deliberately
+# short. A Delete or /update that lands mid-generation will usually just
+# time out and get a 409, and that is the correct, safe outcome: the client
+# retries once the encode has finished and released the lock. Raising this
+# timeout to "wait it out" would only freeze the Cache Manager request for
+# minutes; it would not make the operation any safer.
 #
 # The wait itself is pushed onto an executor thread (run_in_executor):
 # threading.Lock.acquire() is a blocking call, and running it directly in

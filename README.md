@@ -321,6 +321,10 @@ by hand and re-running **Check** is always safe.
   drop-in replacement for the *node*, not for an arbitrary upstream
   CLIP socket.
 - `.safetensors` checkpoints only; GGUF encoders are untested.
+- Assumes a **single ComfyUI process per `cache/` directory.** All the
+  write synchronisation (per-fingerprint locks, the encoder load lock) is
+  in-process `threading.Lock` state, so it does not coordinate two separate
+  ComfyUI servers (e.g. two ports) pointed at the same `cache/` folder.
 
 ## Testing
 
