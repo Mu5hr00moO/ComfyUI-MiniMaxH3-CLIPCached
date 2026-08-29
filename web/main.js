@@ -743,7 +743,7 @@ function referenceSummaryLines(variant, references) {
   if (counts.image) parts.push(`${counts.image} image${counts.image > 1 ? "s" : ""}`);
   if (counts.video) parts.push(`${counts.video} video${counts.video > 1 ? "s" : ""}`);
   if (counts.audio) parts.push(`${counts.audio} audio`);
-  return [parts.join(", ") + ` reference${references.length > 1 ? "s" : ""}.`];
+  return [parts.join(", ") + "."];
 }
 
 function renderCopyResult(fingerprint, verbose, headline) {
