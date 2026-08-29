@@ -14,7 +14,7 @@ import json
 
 import torch
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 
 def _hash_tensor(h, tensor):
