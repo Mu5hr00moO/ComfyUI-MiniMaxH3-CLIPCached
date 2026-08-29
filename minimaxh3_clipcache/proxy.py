@@ -130,6 +130,7 @@ class CachedClipProxy:
             # Past the early HIT return: this run is a MISS or a REFRESH.
             self.last_hit = False
 
+            unload_failed = False
             with _encoder_load_lock:
                 try:
                     if self._real_clip is None:
@@ -147,22 +148,48 @@ class CachedClipProxy:
                     # Release the real encoder BEFORE releasing the lock above,
                     # not after -- otherwise a second thread queued on
                     # _encoder_load_lock could start loading its own ~27 GB
-                    # encoder while ours is still resident (e.g. because
-                    # _validate_output_hidden_dim() just raised), briefly
-                    # recreating the exact two-encoders-at-once situation this
-                    # lock exists to prevent. Guarded so a HIT-only call (which
-                    # never enters this block) and a proxy built without
-                    # unload_fn (every proxy-level test) are unaffected.
+                    # encoder while ours is still resident. Guarded so a
+                    # HIT-only call and a proxy without unload_fn are unaffected.
                     if self.unload_fn is not None and self._real_clip is not None:
                         try:
                             self.unload_fn(self._real_clip.patcher)
-                        except Exception as e:
-                            logger.warning(
-                                "[ENCODER UNLOAD FAILED] could not unload the real encoder "
-                                "after encode_from_tokens_scheduled(): %s", e,
-                            )
-                        finally:
                             self._real_clip = None
+                        except Exception as e:
+                            # Deliberately do NOT clear self._real_clip here:
+                            # if an exception is ALSO propagating from the try
+                            # block above (encode/validate failed), we must not
+                            # mask it with a new one - this warning is all we
+                            # log, and code after this "with" block never runs
+                            # because the original exception is still
+                            # unwinding. If encode SUCCEEDED and only unload
+                            # failed, the check right after this "with" block
+                            # turns this into a hard failure instead of a
+                            # silent one - either way, leaving self._real_clip
+                            # set gives the outer safety net in nodes.py a
+                            # chance to retry the unload.
+                            unload_failed = True
+                            logger.warning(
+                                "[ENCODER UNLOAD FAILED] could not unload the real "
+                                "encoder after encode_from_tokens_scheduled(): %s - "
+                                "the ~27 GB encoder may still be resident in VRAM",
+                                e,
+                            )
+
+            # _encoder_load_lock released here. Reached ONLY on the normal
+            # path (encode/validate succeeded) - if they raised, the
+            # exception already propagated past the "with" block above and
+            # none of this runs. So this is specifically the "encode SUCCEEDED
+            # but unload FAILED" case - the most dangerous failure mode on a
+            # project whose whole point is freeing ~27 GB promptly. Treat it
+            # as a hard failure rather than silently returning a "successful"
+            # result while the encoder may still be resident.
+            if unload_failed:
+                raise RuntimeError(
+                    "Encode succeeded but the real MiniMax H3 encoder could "
+                    "not be unloaded afterward - it may still be resident in "
+                    "VRAM (~27 GB). Restart ComfyUI or manually free VRAM "
+                    "before continuing."
+                )
 
             # _encoder_load_lock is released now -- the encoder is already
             # unloaded, so a second thread waiting on that lock for a DIFFERENT

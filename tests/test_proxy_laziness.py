@@ -146,9 +146,14 @@ def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
 def test_g_failed_unload_does_not_mask_the_original_encode_exception(tmp_path):
     """If the real encode raises AND the unload_fn then also raises in the
     finally, the exception that propagates must be the original one from the
-    encode, not the one from the failed unload -- and the proxy must still
-    drop its reference to the real clip so the outer safety net in nodes.py
-    does not try to unload it a second time."""
+    encode, not the one from the failed unload.
+
+    The proxy must NOT clear its reference to the real clip on any unload
+    failure (deliberate contract, same as test_h): a still-set real_clip is
+    what lets the outer safety net in nodes.py retry the unload. The ~27 GB
+    encoder possibly still being resident is worse than a second unload
+    attempt that turns into a cheap no-op if the first one somehow did land.
+    """
 
     class ExplodingEncodeClip:
         patcher = object()
@@ -171,4 +176,40 @@ def test_g_failed_unload_does_not_mask_the_original_encode_exception(tmp_path):
     with pytest.raises(ValueError, match="the real encode blew up"):
         proxy.encode_from_tokens_scheduled(tokens)
 
-    assert proxy.real_clip is None
+    assert proxy.real_clip is not None, (
+        "must NOT be cleared on an unload failure - the outer safety net needs "
+        "a chance to retry"
+    )
+
+
+def test_h_unload_fails_after_successful_encode_raises_and_keeps_real_clip(tmp_path):
+    """encode SUCCESS + unload FAIL is a different, more dangerous case than
+    encode FAIL + unload FAIL: the ~27 GB encoder may still be resident with
+    no exception ever surfacing today. This must now raise (not just warn),
+    and must NOT clear self._real_clip, so the outer safety net in nodes.py
+    gets a chance to retry the unload."""
+
+    class WorkingClip:
+        patcher = object()
+
+        def tokenize(self, prompt, **kwargs):
+            return ("real_tokens", prompt, kwargs)
+
+        def encode_from_tokens_scheduled(self, tokens):
+            return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
+
+    def exploding_unload(patcher):
+        raise RuntimeError("unload blew up even though encode succeeded")
+
+    proxy = CachedClipProxy(
+        lambda: WorkingClip(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS,
+        tmp_path, unload_fn=exploding_unload,
+    )
+    tokens = proxy.tokenize("a prompt where only unload fails", images=[])
+
+    with pytest.raises(RuntimeError, match="[Ee]ncode succeeded"):
+        proxy.encode_from_tokens_scheduled(tokens)
+
+    assert proxy.real_clip is not None, (
+        "must NOT be cleared - the outer safety net needs a chance to retry"
+    )
