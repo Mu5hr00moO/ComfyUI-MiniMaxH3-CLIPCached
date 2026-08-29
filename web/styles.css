@@ -219,6 +219,12 @@
   font-size: 11px;
   font-style: italic;
 }
+.h3cm-inconsistent-hint {
+  flex: 1;
+  min-width: 160px;
+  color: #ef9a9a;
+  font-size: 11px;
+}
 .h3cm-chips {
   display: inline-flex;
   flex-wrap: wrap;
@@ -310,6 +316,10 @@
 .h3cm-badge-legacy {
   background: rgba(240, 189, 105, 0.16);
   color: #f0bd69;
+}
+.h3cm-badge-inconsistent {
+  background: rgba(239, 83, 80, 0.16);
+  color: #ef9a9a;
 }
 
 /* --- detail + edit panel --- */

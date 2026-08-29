@@ -33,6 +33,7 @@ let detailRefObjectUrls = []; // detail-panel reference thumbnail blob URLs, rev
 // only when renderDetailRefs() rebuilds -- kept apart from objectUrls so a
 // list re-render (search/tag/favorite typing) never revokes a live detail thumb
 let renderGeneration = 0; // bumped each render so stale async thumbnails bail
+let checkGeneration = 0; // only the newest overlapping /check may update UI state
 let copyResultObjectUrls = []; // thumbnail blob URLs shown in the "Copy prompt" result box
 
 // --- styles -----------------------------------------------------------------
@@ -421,6 +422,43 @@ function buildLegacyRow(entry) {
   return row;
 }
 
+function buildInconsistentRow(entry) {
+  const row = document.createElement("div");
+  row.className = "h3cm-row is-inconsistent";
+
+  const fp = document.createElement("span");
+  fp.className = "h3cm-fp";
+  fp.textContent = `${String(entry.fingerprint || "").slice(0, 12)}…`;
+
+  const badge = document.createElement("span");
+  badge.className = "h3cm-badge h3cm-badge-inconsistent";
+  badge.textContent = "inconsistent";
+
+  const reasonText = {
+    missing_json: "Core JSON is missing",
+    json_unreadable: "Core JSON cannot be read",
+    invalid_json_envelope: "Core JSON has an invalid envelope",
+    missing_safetensors: "Tensor file is missing",
+    safetensors_unreadable: "Tensor header cannot be read",
+    generation_mismatch: "Interrupted refresh: generation IDs do not match",
+  }[entry.reason] || "Core cache files are inconsistent";
+  const hint = document.createElement("span");
+  hint.className = "h3cm-inconsistent-hint";
+  hint.textContent = reasonText;
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "h3cm-button h3cm-danger h3cm-row-delete";
+  del.textContent = "Delete";
+  del.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteEntry(entry.fingerprint, null);
+  });
+
+  row.append(fp, badge, hint, del);
+  return row;
+}
+
 function buildNormalRow(entry, generation) {
   const user = (entry.verbose && entry.verbose.user) || {};
   const system = (entry.verbose && entry.verbose.system) || {};
@@ -513,6 +551,10 @@ function renderList() {
   }
 
   for (const entry of filtered) {
+    if (entry.classification === "inconsistent") {
+      panel.listEl.appendChild(buildInconsistentRow(entry));
+      continue;
+    }
     // No verbose block -> the simplified row. That covers a real legacy
     // entry (predates the sidecar) AND a "normal" entry whose verbose.json
     // is unreadable (load_verbose() returned null): buildNormalRow() would
@@ -533,10 +575,12 @@ function renderList() {
 
 async function runCheck() {
   if (!panel) return;
+  const generation = ++checkGeneration;
   panel.statusEl.textContent = "Cache: checking…";
 
   try {
     const data = await fetchJson(`${API_PREFIX}/check`);
+    if (generation !== checkGeneration) return;
     lastCheckResult = data;
     const count = typeof data.total_count === "number" ? data.total_count : "—";
     panel.statusEl.textContent = `Cache: ${count} entries / ${formatBytes(data.total_size_bytes)}`;
@@ -545,6 +589,7 @@ async function runCheck() {
     renderList(); // also re-attaches the open detail panel, or closes it if
     // that entry is gone / now filtered out -- see reattachOpenDetailAfterRender()
   } catch (err) {
+    if (generation !== checkGeneration) return;
     lastCheckResult = null;
     panel.statusEl.textContent = `Cache: check failed (${err && err.message ? err.message : err})`;
     panel.listEl.innerHTML = "";
