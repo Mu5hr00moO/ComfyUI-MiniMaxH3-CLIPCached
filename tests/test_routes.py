@@ -265,3 +265,24 @@ def test_thumbnail_bad_input_is_400(_cache_dir):
     assert _run(thumbnail(_Req(query={"fingerprint": BAD_FP, "index": "0"}))).status == 400
     assert _run(thumbnail(_Req(query={"fingerprint": FP, "index": "notint"}))).status == 400
     assert _run(thumbnail(_Req(query={"fingerprint": FP}))).status == 400
+
+
+def test_thumbnail_deleted_between_is_file_and_read_bytes_is_404(_cache_dir, monkeypatch):
+    # The file passes is_file() and is then deleted before read_bytes() -- a
+    # Cache Manager Delete racing a thumbnail fetch. The handler must degrade
+    # to the same 404 it would give if is_file() had lost the race, not a 500.
+    _make_thumbnail(_cache_dir, FP, 0)
+
+    from pathlib import Path
+
+    real_read_bytes = Path.read_bytes
+
+    def vanishing_read_bytes(self):
+        if self.name == "{}_0.jpg".format(FP):
+            raise FileNotFoundError(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", vanishing_read_bytes)
+
+    response = _run(thumbnail(_Req(query={"fingerprint": FP, "index": "0"})))
+    assert response.status == 404

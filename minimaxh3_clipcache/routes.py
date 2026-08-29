@@ -188,4 +188,11 @@ async def thumbnail(request) -> web.Response:
     path = Path(CACHE_DIR) / THUMBNAILS_SUBDIR / "{}_{}.jpg".format(fingerprint, int(index))
     if not path.is_file():
         return _error("thumbnail not found", 404)
-    return web.Response(body=path.read_bytes(), content_type="image/jpeg")
+    try:
+        body = path.read_bytes()
+    except FileNotFoundError:
+        # Delete won the race between is_file() and read_bytes() above -
+        # the same outcome as if is_file() had returned False a moment
+        # later. Not worth locking for: a stale 404 here is harmless.
+        return _error("thumbnail not found", 404)
+    return web.Response(body=body, content_type="image/jpeg")
