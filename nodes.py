@@ -172,7 +172,16 @@ class MiniMaxH3CLIPCachedFL2VA:
             return float("nan")
         if clip_name is None:
             return cache_mode
-        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        try:
+            file_size, mtime_ns = resolve_clip_stat(clip_name)
+        except FileNotFoundError:
+            # The checkpoint named in the graph no longer exists on disk. Return
+            # NaN (same trick as cache_mode == "refresh" above) to force a real
+            # execution rather than let this propagate here, in ComfyUI's own
+            # scheduling layer, as a confusing failure before the node even
+            # runs -- execute() will raise the same FileNotFoundError, but from
+            # inside the node, where ComfyUI reports it as this node's error.
+            return float("nan")
         return (cache_mode, clip_name, file_size, mtime_ns)
 
     def execute(self, clip_name, vae, prompt, width, height, length,
@@ -366,7 +375,16 @@ class MiniMaxH3CLIPCachedRef2VA:
             return float("nan")
         if clip_name is None:
             return cache_mode
-        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        try:
+            file_size, mtime_ns = resolve_clip_stat(clip_name)
+        except FileNotFoundError:
+            # The checkpoint named in the graph no longer exists on disk. Return
+            # NaN (same trick as cache_mode == "refresh" above) to force a real
+            # execution rather than let this propagate here, in ComfyUI's own
+            # scheduling layer, as a confusing failure before the node even
+            # runs -- execute() will raise the same FileNotFoundError, but from
+            # inside the node, where ComfyUI reports it as this node's error.
+            return float("nan")
         return (cache_mode, clip_name, file_size, mtime_ns)
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,

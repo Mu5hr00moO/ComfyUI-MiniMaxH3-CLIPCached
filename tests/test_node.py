@@ -288,6 +288,24 @@ def test_i_is_changed_auto_reflects_checkpoint_file_identity(monkeypatch):
     assert after != before
 
 
+def test_i_is_changed_returns_nan_when_checkpoint_file_missing(monkeypatch):
+    """If the checkpoint named in the graph is gone from disk, IS_CHANGED must
+    not raise from inside ComfyUI's scheduling layer -- it returns NaN (same
+    as cache_mode="refresh") so execute() runs and surfaces the real
+    FileNotFoundError as this node's own error."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedFL2VA
+
+    def _missing(clip_name):
+        raise FileNotFoundError("text_encoders file {!r} not found".format(clip_name))
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", _missing)
+
+    result = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert isinstance(result, float) and math.isnan(result)
+    assert result != result  # NaN != NaN -- forces re-execution instead of raising
+
+
 def test_j_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp_path):
     """The real encoder must be released as soon as encode_from_tokens_scheduled()
     returns, before any work the stock node still does afterwards (e.g. FL2VA's
