@@ -104,6 +104,28 @@ def test_e_no_leftover_tmp_files_after_save(tmp_path):
     assert list(tmp_path.glob("*.tmp-*")) == []
 
 
+def test_e_failed_write_leaves_no_tmp_file_behind(tmp_path, monkeypatch):
+    """If the temp-file write blows up (disk full, permission), the exception
+    must propagate AND the half-written ".tmp-*" must be cleaned up."""
+    import minimaxh3_clipcache.verbose_store as vs
+
+    real_write_bytes = vs.Path.write_bytes
+
+    def boom(self, data):
+        # Let the temp file come into existence, then fail -- the harder case
+        # for cleanup than failing before any bytes hit the disk.
+        real_write_bytes(self, data)
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(vs.Path, "write_bytes", boom)
+
+    with pytest.raises(OSError, match="simulated disk full"):
+        save_verbose(FINGERPRINT_A, _system(), tmp_path)
+
+    assert list(tmp_path.glob("*.tmp-*")) == []
+    assert not _verbose_file(tmp_path, FINGERPRINT_A).exists()
+
+
 # --- Phase 5: update_user_metadata / delete_verbose ---
 
 def test_f_update_user_metadata_partial_update_leaves_other_fields_and_system(tmp_path):

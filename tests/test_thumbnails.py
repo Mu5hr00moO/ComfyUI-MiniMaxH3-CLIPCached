@@ -78,6 +78,26 @@ def test_c_no_leftover_tmp_files_after_save(tmp_path):
     assert list((tmp_path / "thumbnails").glob("*.tmp-*")) == []
 
 
+def test_c_failed_write_leaves_no_tmp_file_behind(tmp_path, monkeypatch):
+    """A failed JPEG encode/write must propagate AND clean up the ".tmp-*"
+    file it may have already created."""
+    import minimaxh3_clipcache.thumbnails as th
+
+    real_write_bytes = th.Path.write_bytes
+
+    def boom(self, data):
+        real_write_bytes(self, data)  # temp file now exists on disk...
+        raise OSError("simulated disk full")  # ...then the write "fails"
+
+    monkeypatch.setattr(th.Path, "write_bytes", boom)
+
+    with pytest.raises(OSError, match="simulated disk full"):
+        save_thumbnail(_image(64, 64), FINGERPRINT, 0, tmp_path)
+
+    assert list((tmp_path / "thumbnails").glob("*.tmp-*")) == []
+    assert not (tmp_path / "thumbnails" / "{}_0.jpg".format(FINGERPRINT)).exists()
+
+
 def test_d_batch_larger_than_one_uses_frame_zero(tmp_path):
     batch = torch.empty(2, 16, 16, 3, dtype=torch.float32)
     batch[0] = 0.0  # frame 0 is black

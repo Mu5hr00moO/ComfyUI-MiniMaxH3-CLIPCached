@@ -66,9 +66,19 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     # Single file: a fully formed temp file os.replace()-d onto the final
     # path is atomic on its own, so there is nothing to roll back if this
     # raises (see the module docstring for why this differs from store.py).
+    # The one thing still worth cleaning up is the temp file itself if the
+    # write (or the replace) fails partway -- otherwise a disk-full or
+    # permission error leaves a ".tmp-<pid>-<uuid>" turd in the cache dir.
     tmp_path = _tmp_name(path)
-    tmp_path.write_bytes(json.dumps(payload).encode("utf-8"))
-    os.replace(tmp_path, path)
+    try:
+        tmp_path.write_bytes(json.dumps(payload).encode("utf-8"))
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def load_verbose(fingerprint: str, cache_dir: Path):

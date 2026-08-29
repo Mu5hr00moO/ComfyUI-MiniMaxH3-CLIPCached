@@ -78,8 +78,18 @@ def save_thumbnail(image_tensor, fingerprint, index, cache_dir, max_size=256) ->
     final_path = thumb_dir / filename
 
     tmp_path = _tmp_name(final_path)
-    tmp_path.write_bytes(tensor_to_jpeg_bytes(image_tensor, max_size=max_size))
-    os.replace(tmp_path, final_path)
+    try:
+        tmp_path.write_bytes(tensor_to_jpeg_bytes(image_tensor, max_size=max_size))
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        # A failed encode/write must not leave a ".tmp-<pid>-<uuid>" file
+        # behind in the thumbnails dir. The temp path is unique per call, so
+        # unlinking it here can only ever remove our own partial file.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
     # Forward slash, not os.sep: this string is stored in JSON and read back
     # on any platform.
