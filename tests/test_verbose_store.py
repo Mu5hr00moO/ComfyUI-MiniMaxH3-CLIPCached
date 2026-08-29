@@ -142,6 +142,49 @@ def test_f_update_user_metadata_missing_sidecar_raises_file_not_found(tmp_path):
         update_user_metadata("f" * 64, {"name": "x"}, tmp_path)
 
 
+def test_f_update_user_metadata_wrong_field_types_raise_value_error(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+
+    with pytest.raises(ValueError, match="field 'favorite' must be bool"):
+        update_user_metadata(FINGERPRINT_A, {"favorite": "true"}, tmp_path)
+    # bool is a subclass of int, so favorite=1 must still be rejected as
+    # "not exactly bool" rather than sneaking through an isinstance(_, int).
+    with pytest.raises(ValueError, match="field 'favorite' must be bool"):
+        update_user_metadata(FINGERPRINT_A, {"favorite": 1}, tmp_path)
+    with pytest.raises(ValueError, match="field 'tags' must be list"):
+        update_user_metadata(FINGERPRINT_A, {"tags": "night"}, tmp_path)
+    with pytest.raises(ValueError, match="all tags must be strings"):
+        update_user_metadata(FINGERPRINT_A, {"tags": ["night", 7]}, tmp_path)
+    with pytest.raises(ValueError, match="field 'name' must be str"):
+        update_user_metadata(FINGERPRINT_A, {"name": 123}, tmp_path)
+
+    # nothing above was written -- the sidecar still has default user block
+    assert load_verbose(FINGERPRINT_A, tmp_path)["user"] == dict(DEFAULT_USER_METADATA)
+
+
+def test_f_update_user_metadata_over_long_text_and_too_many_tags_raise_value_error(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+
+    with pytest.raises(ValueError, match="field 'name' exceeds max length"):
+        update_user_metadata(FINGERPRINT_A, {"name": "x" * 501}, tmp_path)
+    with pytest.raises(ValueError, match="field 'notes' exceeds max length"):
+        update_user_metadata(FINGERPRINT_A, {"notes": "y" * 501}, tmp_path)
+    with pytest.raises(ValueError, match="too many tags"):
+        update_user_metadata(FINGERPRINT_A, {"tags": ["t{}".format(i) for i in range(51)]}, tmp_path)
+
+
+def test_f_update_user_metadata_valid_types_still_pass(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+
+    returned = update_user_metadata(
+        FINGERPRINT_A,
+        {"name": "n" * 500, "notes": "keeper", "tags": ["a", "b"], "favorite": True},
+        tmp_path,
+    )
+    assert returned["user"] == {"name": "n" * 500, "notes": "keeper", "tags": ["a", "b"], "favorite": True}
+    assert load_verbose(FINGERPRINT_A, tmp_path)["user"] == returned["user"]
+
+
 def test_f_update_user_metadata_no_leftover_tmp_files(tmp_path):
     save_verbose(FINGERPRINT_A, _system(), tmp_path)
     update_user_metadata(FINGERPRINT_A, {"name": "x"}, tmp_path)

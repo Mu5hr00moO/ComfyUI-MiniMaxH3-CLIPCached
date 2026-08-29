@@ -133,6 +133,12 @@ def test_update_missing_sidecar_is_404(_cache_dir):
     assert response.status == 404
 
 
+def test_update_wrong_field_type_is_400(_cache_dir):
+    save_verbose(FP, _system(), _cache_dir)
+    response = _run(update(_Req(json_body={"fingerprint": FP, "favorite": "true"})))
+    assert response.status == 400
+
+
 def test_update_non_object_body_is_400(_cache_dir):
     assert _run(update(_Req(json_raises=True))).status == 400
     assert _run(update(_Req(json_body=["not", "an", "object"]))).status == 400

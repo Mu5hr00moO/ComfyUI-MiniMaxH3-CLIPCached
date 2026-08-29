@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USER_METADATA = {"name": "", "notes": "", "tags": [], "favorite": False}
 
+_FIELD_TYPES = {"name": str, "notes": str, "tags": list, "favorite": bool}
+_MAX_TEXT_LENGTH = 500
+_MAX_TAGS = 50
+
 
 def _verbose_path(fingerprint: str, cache_dir: Path) -> Path:
     return Path(cache_dir) / "{}.verbose.json".format(fingerprint)
@@ -129,14 +133,31 @@ def update_user_metadata(fingerprint: str, updates: dict, cache_dir: Path) -> di
     sidecar and return the full updated object.
 
     Only keys present in DEFAULT_USER_METADATA may be updated; any other key
-    is a ValueError. "system" is left exactly as it was -- the Cache Manager
-    never edits it (plan sections 5.1/6). Raises FileNotFoundError when there
-    is no readable verbose sidecar for this fingerprint: the manager only
-    edits entries that already exist (plan section 16 -> 404 in the handler).
+    is a ValueError. Each given value is also type-checked (name/notes: str,
+    tags: list of str, favorite: exactly bool) and bounded (name/notes <=
+    500 chars, tags <= 50 entries); a violation is a ValueError too. "system"
+    is left exactly as it was -- the Cache Manager never edits it (plan
+    sections 5.1/6). Raises FileNotFoundError when there is no readable
+    verbose sidecar for this fingerprint: the manager only edits entries that
+    already exist (plan section 16 -> 404 in the handler).
     """
     unknown = set(updates) - set(DEFAULT_USER_METADATA)
     if unknown:
         raise ValueError("unknown user metadata field(s): {}".format(sorted(unknown)))
+
+    for key, value in updates.items():
+        expected_type = _FIELD_TYPES[key]
+        if not isinstance(value, expected_type) or isinstance(value, bool) and expected_type is not bool:
+            raise ValueError(
+                "field '{}' must be {}, got {}".format(key, expected_type.__name__, type(value).__name__))
+    if "tags" in updates:
+        if not all(isinstance(t, str) for t in updates["tags"]):
+            raise ValueError("all tags must be strings")
+        if len(updates["tags"]) > _MAX_TAGS:
+            raise ValueError("too many tags (max {})".format(_MAX_TAGS))
+    for key in ("name", "notes"):
+        if key in updates and len(updates[key]) > _MAX_TEXT_LENGTH:
+            raise ValueError("field '{}' exceeds max length {}".format(key, _MAX_TEXT_LENGTH))
 
     existing = load_verbose(fingerprint, cache_dir)
     if existing is None:
