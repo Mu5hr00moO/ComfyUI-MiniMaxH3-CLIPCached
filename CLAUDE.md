@@ -396,3 +396,15 @@ zaliczyć):
 - ZNANY BRAK do M3 (świadomie nietknięty): "Copy prompt" / renderCopyResult
   wciąż używa `ref.label` i mówi "image references" - dla wpisu ref2va
   pokaże "- undefined" i mylący tekst. Naprawa w Fazie M3.
+
+### Domknięcie
+
+Integracja Ref2VA z Cache Managerem (Fazy M1-M5) zakończona i
+zweryfikowana end-to-end na żywym ComfyUI+GPU (unifikacja schematu
+references z polami type/node_variant, jednorazowy skrypt migracyjny
+odpalony i usunięty, wspólne hooki Managera dla FL2VA+Ref2VA, przełącznik
+FL2VA/Ref2VA w UI, rekonstrukcja kolejności Picture N/Video N/Audio N
+potwierdzona na żywych danych, generalizacja Copy prompt pod N
+heterogenicznych referencji). master promowany z feature/ref2video
+(55f0f9a) 29.08.2026 - poprzedni stan czysto-FL2VA zamrożony jako branch
+FL2V_master (613d234).
