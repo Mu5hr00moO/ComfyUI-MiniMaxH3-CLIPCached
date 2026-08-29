@@ -32,6 +32,7 @@ from pathlib import Path
 from aiohttp import web
 from server import PromptServer
 
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.scanner import scan_cache
 from minimaxh3_clipcache.store import delete_conditioning
 from minimaxh3_clipcache.thumbnails import THUMBNAILS_SUBDIR, delete_thumbnails
@@ -47,6 +48,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
 
 ROUTE_PREFIX = "/h3_cache_manager"
+
+# How long /update and /delete wait for the per-fingerprint writer lock
+# before giving up with 409. A running generation only holds it for the
+# duration of one verbose/core save (well under a second), so 5s is
+# generous; the point is to never block the request indefinitely behind a
+# stuck writer.
+_LOCK_TIMEOUT_SECONDS = 5.0
 
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -101,12 +109,25 @@ async def update(request) -> web.Response:
     if not updates:
         return _error("no user metadata fields to update", 400)
 
+    # Serialise against the writer's per-fingerprint lock (proxy save /
+    # nodes.py backfill): update_user_metadata does a read-modify-write on
+    # the same verbose.json, so a racing system write could otherwise clobber
+    # this edit. Non-blocking with a timeout -- a stuck writer must surface as
+    # 409, never hang the request.
+    lock = get_lock(fingerprint)
+    if not lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+        return _error(
+            "this cache entry is currently being written by a running "
+            "generation - try again in a moment", 409,
+        )
     try:
         updated = update_user_metadata(fingerprint, updates, CACHE_DIR)
     except FileNotFoundError:
         return _error("no verbose metadata for fingerprint {}".format(fingerprint), 404)
     except ValueError as e:
         return _error(str(e), 400)
+    finally:
+        lock.release()
     return web.json_response(updated)
 
 
@@ -120,13 +141,25 @@ async def delete(request) -> web.Response:
     if not _is_fingerprint(fingerprint):
         return _error("invalid or missing fingerprint", 400)
 
+    # Serialise against the writer's per-fingerprint lock so a Delete cannot
+    # land in the middle of an in-flight encode save. Non-blocking with a
+    # timeout -- a stuck writer surfaces as 409 rather than hanging the request.
+    lock = get_lock(fingerprint)
+    if not lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+        return _error(
+            "this cache entry is currently being written by a running "
+            "generation - try again in a moment", 409,
+        )
     # Order per plan sections 15/20: core ".json" first (entry stops being a
     # HIT immediately), then ".safetensors", then the manager-only sidecar,
     # then thumbnails. Each step is idempotent, so a partial previous delete
     # is simply completed.
-    delete_conditioning(fingerprint, CACHE_DIR)
-    delete_verbose(fingerprint, CACHE_DIR)
-    delete_thumbnails(fingerprint, CACHE_DIR)
+    try:
+        delete_conditioning(fingerprint, CACHE_DIR)
+        delete_verbose(fingerprint, CACHE_DIR)
+        delete_thumbnails(fingerprint, CACHE_DIR)
+    finally:
+        lock.release()
     return web.json_response({"deleted": fingerprint})
 
 

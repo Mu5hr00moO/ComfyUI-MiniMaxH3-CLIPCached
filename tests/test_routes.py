@@ -17,6 +17,7 @@ import json
 import pytest
 
 from minimaxh3_clipcache import routes as routes_module
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.routes import check, delete, get, thumbnail, update
 from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
@@ -184,6 +185,59 @@ def test_delete_is_idempotent(_cache_dir):
 def test_delete_bad_input(_cache_dir):
     assert _run(delete(_Req(json_body={"fingerprint": BAD_FP}))).status == 400
     assert _run(delete(_Req(json_raises=True))).status == 400
+
+
+# --- delete / update vs. the writer's per-fingerprint lock ---
+#
+# get_lock() hands out a process-wide lock per fingerprint; acquiring it by
+# hand here stands in for a running generation that is mid-save. Each test
+# releases it in a finally so the shared lock never leaks into another test.
+
+def test_delete_is_409_and_a_no_op_while_the_entry_is_being_written(_cache_dir, monkeypatch):
+    monkeypatch.setattr(routes_module, "_LOCK_TIMEOUT_SECONDS", 0.05)
+    _make_core_entry(_cache_dir, FP)
+    save_verbose(FP, _system(), _cache_dir)
+    _make_thumbnail(_cache_dir, FP, 0)
+
+    lock = get_lock(FP)
+    assert lock.acquire(timeout=1)
+    try:
+        response = _run(delete(_Req(json_body={"fingerprint": FP})))
+        assert response.status == 409
+        # every artefact is still on disk -- delete did not run at all
+        assert (_cache_dir / "{}.json".format(FP)).exists()
+        assert (_cache_dir / "{}.safetensors".format(FP)).exists()
+        assert (_cache_dir / "{}.verbose.json".format(FP)).exists()
+        assert (_cache_dir / "thumbnails" / "{}_0.jpg".format(FP)).exists()
+    finally:
+        lock.release()
+
+
+def test_update_is_409_and_a_no_op_while_the_entry_is_being_written(_cache_dir, monkeypatch):
+    monkeypatch.setattr(routes_module, "_LOCK_TIMEOUT_SECONDS", 0.05)
+    save_verbose(FP, _system(), _cache_dir)
+    user_before = load_verbose(FP, _cache_dir)["user"]
+
+    lock = get_lock(FP)
+    assert lock.acquire(timeout=1)
+    try:
+        response = _run(update(_Req(json_body={"fingerprint": FP, "name": "Keeper"})))
+        assert response.status == 409
+        assert load_verbose(FP, _cache_dir)["user"] == user_before
+    finally:
+        lock.release()
+
+
+def test_delete_and_update_work_and_release_the_lock_when_it_is_free(_cache_dir):
+    _make_core_entry(_cache_dir, FP)
+    save_verbose(FP, _system(), _cache_dir)
+
+    assert _run(update(_Req(json_body={"fingerprint": FP, "name": "x"}))).status == 200
+    assert _run(delete(_Req(json_body={"fingerprint": FP}))).status == 200
+
+    lock = get_lock(FP)
+    assert lock.acquire(blocking=False), "a handler left the fingerprint lock held"
+    lock.release()
 
 
 # --- thumbnail ---
