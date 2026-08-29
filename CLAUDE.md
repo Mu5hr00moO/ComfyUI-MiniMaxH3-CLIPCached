@@ -432,3 +432,22 @@ legacy (widoczny tylko bez filtrów). NIE zweryfikowane (do sprawdzenia
 przez użytkownika w ComfyUI): realny render wiersza uszkodzonego wpisu
 przez buildLegacyRow, faktyczne przełączenie wariantu w dropdownie tagów
 na żywym DOM, brak błędów w konsoli.
+
+### Rozważone i ODŁOŻONE (nie odrzucone na stałe): nazwy plików referencji
+
+Rozważone i ODŁOŻONE (nie odrzucone na stałe): śledzenie nazwy pliku
+źródłowego dla referencji first_frame/last_frame. Prosta wersja (ukryte
+inputy PROMPT/EXTRA_PNGINFO w węźle H3-cached, prześledzenie wstecz przez
+graf czy bezpośrednim źródłem jest LoadImage) byłaby krucha i sięgałaby
+poza własny kontrakt węzła - ten sam powód co analogiczna decyzja przy
+Ref2VA (MANAGER_TODO_ref2video.md punkt 10: węzeł ma zostać zgodny z
+oryginalnym kontraktem stockowego węzła, żadnych dodatkowych pól).
+
+Poprawna implementacja wymagałaby zamiast tego osobnych, dedykowanych
+wrapperów na węzły ładujące (LoadImage/LoadVideo/LoadAudio i pochodne),
+analogicznych do MiniMaxH3CLIPCached* - takie węzły przekazywałyby nazwę
+pliku jawnie, jako część własnego kontraktu wyjścia, zamiast węzeł
+H3-cached zgadywał to z grafu przez introspekcję. To realny, ale znacznie
+większy projekt niż drobna poprawka (osobna rodzina wrapperów, nie jedna
+linijka) - może zostać podjęty kiedyś, jeśli okaże się wystarczająco
+wartościowy, nie jest odrzucony na stałe.
