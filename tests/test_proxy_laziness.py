@@ -15,6 +15,11 @@ CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345
 CLIP_MTIME_NS = 67890
 
+# Must match CachedClipProxy.__init__'s default encoder_abi_id: these tests
+# pre-populate a cache entry with compute_fingerprint() and then expect the
+# proxy (which computes its own fingerprint internally) to find it as a HIT.
+PROXY_DEFAULT_ABI_ID = "test-abi-id"
+
 
 class FakeRealClip:
     """Stand-in for a real ComfyUI clip object -- constant return values,
@@ -43,6 +48,7 @@ def test_a_hit_never_calls_loader(tmp_path):
     kwargs = {"images": []}
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+        encoder_abi_id=PROXY_DEFAULT_ABI_ID,
     )
     save_conditioning(
         fingerprint,
@@ -88,6 +94,7 @@ def test_d_hit_leaves_did_load_real_clip_false(tmp_path):
     kwargs = {"images": []}
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+        encoder_abi_id=PROXY_DEFAULT_ABI_ID,
     )
     save_conditioning(
         fingerprint,
@@ -119,6 +126,7 @@ def test_f_force_refresh_calls_loader_and_overwrites_existing_entry(tmp_path):
     kwargs = {"images": []}
     fingerprint = compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+        encoder_abi_id=PROXY_DEFAULT_ABI_ID,
     )
     old_value = torch.ones(1, MINIMAX_H3_HIDDEN_DIM)
     save_conditioning(fingerprint, [[old_value, {"pooled_output": None}]], tmp_path)

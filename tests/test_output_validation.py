@@ -44,8 +44,11 @@ class FakeClipWithHiddenDim:
 
 
 def _fingerprint(prompt, kwargs):
+    # encoder_abi_id must match CachedClipProxy.__init__'s default so the
+    # entry pre-populated here is found by the proxy as a HIT.
     return compute_fingerprint(
         prompt, kwargs, CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS, CACHE_SCHEMA_VERSION,
+        encoder_abi_id="test-abi-id",
     )
 
 

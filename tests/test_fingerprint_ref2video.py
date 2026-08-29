@@ -25,11 +25,15 @@ FILE_SIZE = 27141342152
 MTIME_NS = 1712345678000000000
 
 
+ABI_ID = "test-abi-id"
+
+
 def _fp(ref_items=None, kwargs=None, prompt="a ref2va prompt",
-        clip_name=CLIP_NAME, file_size=FILE_SIZE, mtime_ns=MTIME_NS):
+        clip_name=CLIP_NAME, file_size=FILE_SIZE, mtime_ns=MTIME_NS, encoder_abi_id=ABI_ID):
     if kwargs is None:
         kwargs = {"minimax_ref_items": ref_items}
-    return compute_fingerprint(prompt, kwargs, clip_name, file_size, mtime_ns, 1)
+    return compute_fingerprint(prompt, kwargs, clip_name, file_size, mtime_ns, 1,
+                               encoder_abi_id=encoder_abi_id)
 
 
 def _image_item(seed):
@@ -198,11 +202,13 @@ def test_m_compute_fingerprint_has_no_sampling_parameters():
     # of the CONDITIONING output -- neither node threads them into the proxy,
     # and compute_fingerprint() has no parameter to receive them. This is the
     # structural reason changing them is always a HIT (same as FL2VA). Guard
-    # the signature so a future refactor can't quietly add one.
+    # the signature so a future refactor can't quietly add one. encoder_abi_id
+    # (plan audit point 1) is a legitimate, deliberate addition -- an encoder
+    # identity component, not a sampling parameter.
     import inspect
 
     params = list(inspect.signature(compute_fingerprint).parameters)
     assert params == [
         "prompt", "tokenize_kwargs", "clip_name", "clip_file_size",
-        "clip_mtime_ns", "cache_schema_version",
+        "clip_mtime_ns", "cache_schema_version", "encoder_abi_id",
     ]

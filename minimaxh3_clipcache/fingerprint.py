@@ -59,14 +59,23 @@ def _hash_value(h, value):
 
 
 def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
-                         cache_schema_version=CACHE_SCHEMA_VERSION):
+                         cache_schema_version=CACHE_SCHEMA_VERSION, *, encoder_abi_id):
     """Deterministic sha256 hex digest identifying one cacheable encode request.
 
     Two calls with equal arguments always produce the same digest (tensors
     compared by shape/dtype/bytes, not object identity); any semantically
     relevant difference -- prompt, tokenize() kwargs (including list order),
-    which kwargs keys are present, clip identity, or schema version --
-    changes the digest.
+    which kwargs keys are present, clip identity, schema version, or the
+    encoder ABI identity -- changes the digest.
+
+    encoder_abi_id is required and keyword-only (no default) so a caller can
+    never silently forget it: it is the identity of the MiniMax H3 encoder
+    *implementation* currently importable from ComfyUI
+    (minimaxh3_clipcache.encoder_abi.get_encoder_abi_id -- comfyui_version
+    plus a hash of comfy/text_encoders/minimax.py), folded in as plan audit
+    point 1 so an upstream tokenizer/preprocessing change (e.g. PR #15808)
+    invalidates old entries instead of being served as a stale HIT computed
+    under different tokenization.
 
     Design decision: an empty list (e.g. tokenize_kwargs={"images": []}) and
     a missing key (tokenize_kwargs={}) hash DIFFERENTLY. The stock
@@ -83,6 +92,7 @@ def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip
         "clip_name": clip_name,
         "clip_file_size": clip_file_size,
         "clip_mtime_ns": clip_mtime_ns,
+        "encoder_abi_id": encoder_abi_id,
         "prompt": prompt,
         "kwargs_keys": sorted(tokenize_kwargs.keys()),
     }

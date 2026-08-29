@@ -8,19 +8,23 @@ import json
 
 import torch
 
+import pytest
+
 from minimaxh3_clipcache.fingerprint import _hash_tensor, compute_fingerprint
 
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
 MTIME_NS = 1712345678000000000
+ABI_ID = "test-abi-id"
 
 
 def _fp(prompt="a test prompt", tokenize_kwargs=None, clip_name=CLIP_NAME,
-        clip_file_size=FILE_SIZE, clip_mtime_ns=MTIME_NS, cache_schema_version=1):
+        clip_file_size=FILE_SIZE, clip_mtime_ns=MTIME_NS, cache_schema_version=1,
+        encoder_abi_id=ABI_ID):
     if tokenize_kwargs is None:
         tokenize_kwargs = {}
     return compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
-                                cache_schema_version)
+                                cache_schema_version, encoder_abi_id=encoder_abi_id)
 
 
 def test_a_identical_inputs_same_hash():
@@ -113,6 +117,24 @@ def test_i_different_schema_version_different_hash():
     fp1 = _fp(tokenize_kwargs={"images": [img]}, cache_schema_version=1)
     fp2 = _fp(tokenize_kwargs={"images": [img.clone()]}, cache_schema_version=2)
     assert fp1 != fp2
+
+
+def test_i_different_encoder_abi_id_different_hash():
+    # Plan audit point 1: the encoder ABI identity (comfyui_version + a hash of
+    # comfy/text_encoders/minimax.py) is folded into the digest, so an upstream
+    # tokenizer/preprocessing change invalidates old entries instead of being
+    # served as a stale HIT.
+    img = torch.rand(1, 64, 64, 3)
+    fp1 = _fp(tokenize_kwargs={"images": [img]}, encoder_abi_id="0.34.2:aaaa")
+    fp2 = _fp(tokenize_kwargs={"images": [img.clone()]}, encoder_abi_id="0.34.2:bbbb")
+    assert fp1 != fp2
+
+
+def test_i_encoder_abi_id_is_required_keyword_only():
+    # No default: a caller can never silently omit it and fall back to a
+    # weaker key. Positional call with every other argument still raises.
+    with pytest.raises(TypeError):
+        compute_fingerprint("a prompt", {"images": []}, CLIP_NAME, FILE_SIZE, MTIME_NS, 1)
 
 
 def test_j_changing_only_first_frame_slot_different_hash():
