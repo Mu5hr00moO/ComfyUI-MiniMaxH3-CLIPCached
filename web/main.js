@@ -726,10 +726,31 @@ async function loadCopyResultThumbnail(imgEl, linkEl, dimsEl, fingerprint, index
   }
 }
 
+// The lines shown under the reference hint in the Copy-prompt result box.
+// FL2VA keeps its concrete per-reference labels ("first_frame" / "last_frame")
+// -- still the most useful form with 0-2 references. Ref2VA has no meaningful
+// per-slot label, so it gets one line counted per type over the whole list.
+function referenceSummaryLines(variant, references) {
+  if (variant !== "ref2va") {
+    return references.map((ref) => `- ${ref.label || `reference ${ref.index}`}`);
+  }
+  const counts = { image: 0, video: 0, audio: 0 };
+  for (const ref of references) {
+    const t = ref.type || "image";
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  const parts = [];
+  if (counts.image) parts.push(`${counts.image} image${counts.image > 1 ? "s" : ""}`);
+  if (counts.video) parts.push(`${counts.video} video${counts.video > 1 ? "s" : ""}`);
+  if (counts.audio) parts.push(`${counts.audio} audio`);
+  return [parts.join(", ") + ` reference${references.length > 1 ? "s" : ""}.`];
+}
+
 function renderCopyResult(fingerprint, verbose, headline) {
   const resultEl = panel.detailEl.querySelector("[data-h3cm-copy-result]");
   const references =
     (verbose.system && Array.isArray(verbose.system.references) && verbose.system.references) || [];
+  const isRef2va = currentVariant === "ref2va";
 
   revokeCopyResultUrls();
   resultEl.innerHTML = "";
@@ -741,54 +762,62 @@ function renderCopyResult(fingerprint, verbose, headline) {
   }
 
   const heading = document.createElement("div");
-  heading.textContent = `${headline} This cache entry was created with image references:`;
+  heading.textContent = isRef2va
+    ? `${headline} This cache entry was created with these references:`
+    : `${headline} This cache entry was created with image references:`;
   resultEl.appendChild(heading);
 
   const list = document.createElement("ul");
   list.className = "h3cm-ref-list";
-  for (const ref of references) {
+  for (const line of referenceSummaryLines(currentVariant, references)) {
     const item = document.createElement("li");
-    item.textContent = `- ${ref.label}`;
+    item.textContent = line;
     list.appendChild(item);
   }
   resultEl.appendChild(list);
 
   const limitNote = document.createElement("div");
   limitNote.className = "h3cm-copy-note";
-  limitNote.textContent =
-    "This is the only visual reference this cache entry has — the original image file is never stored.";
+  limitNote.textContent = isRef2va
+    ? "The original reference files are never stored."
+    : "This is the only visual reference this cache entry has — the original image file is never stored.";
   resultEl.appendChild(limitNote);
 
-  const thumbs = document.createElement("div");
-  thumbs.className = "h3cm-thumbs";
-  for (const ref of references) {
-    const cell = document.createElement("div");
-    cell.className = "h3cm-thumb-cell";
+  // Ref2VA's per-type breakdown with thumbnails already lives in the
+  // persistent renderDetailRefs() section above, so this box stays text-only
+  // for it -- no point re-fetching the same thumbnail blobs here.
+  if (!isRef2va) {
+    const thumbs = document.createElement("div");
+    thumbs.className = "h3cm-thumbs";
+    for (const ref of references) {
+      const cell = document.createElement("div");
+      cell.className = "h3cm-thumb-cell";
 
-    const link = document.createElement("a");
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.title = "Open this reference thumbnail (max 256px) in a new tab";
+      const link = document.createElement("a");
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.title = "Open this reference thumbnail (max 256px) in a new tab";
 
-    const img = document.createElement("img");
-    img.className = "h3cm-thumb";
-    img.alt = ref.label || `reference ${ref.index}`;
+      const img = document.createElement("img");
+      img.className = "h3cm-thumb";
+      img.alt = ref.label || `reference ${ref.index}`;
 
-    const dims = document.createElement("span");
-    dims.className = "h3cm-thumb-dims";
-    dims.textContent = "—";
+      const dims = document.createElement("span");
+      dims.className = "h3cm-thumb-dims";
+      dims.textContent = "—";
 
-    link.appendChild(img);
-    cell.append(link, dims);
-    thumbs.appendChild(cell);
-    loadCopyResultThumbnail(img, link, dims, fingerprint, ref.index);
+      link.appendChild(img);
+      cell.append(link, dims);
+      thumbs.appendChild(cell);
+      loadCopyResultThumbnail(img, link, dims, fingerprint, ref.index);
+    }
+    resultEl.appendChild(thumbs);
   }
-  resultEl.appendChild(thumbs);
 
   const note = document.createElement("div");
   note.className = "h3cm-copy-note";
   note.textContent =
-    "Load these images manually into the matching first_frame/last_frame inputs on the node.";
+    "Load these references manually into the matching inputs on the node.";
   resultEl.appendChild(note);
 }
 
