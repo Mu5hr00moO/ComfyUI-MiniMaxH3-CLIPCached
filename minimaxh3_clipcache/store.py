@@ -33,6 +33,7 @@ from pathlib import Path
 from safetensors import SafetensorError
 from safetensors.torch import load_file, save_file
 
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 
 logger = logging.getLogger(__name__)
@@ -186,10 +187,10 @@ def gc_orphaned_cache_files(cache_dir: Path) -> list[str]:
     MISSes, but a fingerprint that is never looked up again would
     otherwise accumulate a dead file forever.
 
-    Not called automatically anywhere in this repo today -- it is a
-    reusable primitive for a caller that wants to sweep the whole cache
-    directory (e.g. on demand, or from a future management UI), not
-    something every node execution should pay a directory scan for.
+    Called automatically on every Cache Manager "Check" (scanner.scan_cache()),
+    so this MUST be safe to run concurrently with an in-flight
+    save_conditioning() for a different (or even the same) fingerprint -
+    see the per-fingerprint lock below.
     """
     cache_dir = Path(cache_dir)
     if not cache_dir.is_dir():
@@ -198,10 +199,28 @@ def gc_orphaned_cache_files(cache_dir: Path) -> list[str]:
     for safetensors_path in cache_dir.glob("*.safetensors"):
         fingerprint = safetensors_path.stem
         json_path = cache_dir / "{}.json".format(fingerprint)
-        if not json_path.exists():
-            try:
-                safetensors_path.unlink()
-                removed.append(fingerprint)
-            except OSError as e:
-                logger.warning("Failed to remove orphaned cache file %s: %s", safetensors_path, e)
+        if json_path.exists():
+            continue
+        lock = get_lock(fingerprint)
+        if not lock.acquire(blocking=False):
+            # A writer is actively publishing this exact fingerprint right
+            # now (save_conditioning() holds this same lock for its whole
+            # duration, including the window between its two os.replace()
+            # calls). What looks orphaned this instant may simply be
+            # mid-publish. Skip it this sweep - if it is genuinely
+            # orphaned it will still be here, and unlocked, on the next
+            # Check.
+            continue
+        try:
+            # Re-check under the lock: the writer may have finished and
+            # published .json in the gap between our check above and
+            # acquiring the lock.
+            if json_path.exists():
+                continue
+            safetensors_path.unlink()
+            removed.append(fingerprint)
+        except OSError as e:
+            logger.warning("Failed to remove orphaned cache file %s: %s", safetensors_path, e)
+        finally:
+            lock.release()
     return removed

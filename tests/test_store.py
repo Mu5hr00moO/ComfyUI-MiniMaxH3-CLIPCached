@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from minimaxh3_clipcache import store
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.store import gc_orphaned_cache_files
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
 
@@ -215,6 +216,55 @@ def test_g_gc_removes_only_orphaned_safetensors(tmp_path):
 def test_g_gc_on_empty_or_missing_dir_returns_empty_list(tmp_path):
     assert gc_orphaned_cache_files(tmp_path) == []
     assert gc_orphaned_cache_files(tmp_path / "does-not-exist") == []
+
+
+def _make_orphan(tmp_path, fingerprint):
+    """Leave a "<fp>.safetensors" on disk with no matching "<fp>.json",
+    exactly what save_conditioning() leaves behind if it is killed between
+    its two os.replace() calls."""
+    save_conditioning(fingerprint, _cond_variant_a(), tmp_path)
+    (tmp_path / "{}.json".format(fingerprint)).unlink()
+    assert (tmp_path / "{}.safetensors".format(fingerprint)).exists()
+
+
+def test_g_gc_skips_an_orphan_while_a_writer_holds_its_fingerprint_lock(tmp_path):
+    # A ".safetensors bez .json" state is exactly what save_conditioning()
+    # shows in the window between its two os.replace() calls -- and during
+    # that window it is still holding get_lock(fingerprint). GC must not
+    # mistake a mid-publish entry for an orphan and delete the tensors out
+    # from under the writer, which would then publish a .json pointing at
+    # nothing.
+    fingerprint = "f" * 64
+    _make_orphan(tmp_path, fingerprint)
+
+    lock = get_lock(fingerprint)
+    assert lock.acquire(blocking=False)
+    try:
+        removed = gc_orphaned_cache_files(tmp_path)
+        assert removed == []
+        assert (tmp_path / "{}.safetensors".format(fingerprint)).exists()
+    finally:
+        lock.release()
+
+    # Once the writer is done, the next Check sweeps it as normal.
+    removed = gc_orphaned_cache_files(tmp_path)
+    assert removed == [fingerprint]
+    assert not (tmp_path / "{}.safetensors".format(fingerprint)).exists()
+
+
+def test_g_gc_removes_an_orphan_when_no_writer_holds_the_lock_and_leaves_it_free(tmp_path):
+    # Regression guard for the KROK E behaviour: an orphan whose fingerprint
+    # lock is free is still removed on the spot, and GC must not leave that
+    # lock held afterwards.
+    fingerprint = "1" * 64
+    _make_orphan(tmp_path, fingerprint)
+
+    assert gc_orphaned_cache_files(tmp_path) == [fingerprint]
+    assert not (tmp_path / "{}.safetensors".format(fingerprint)).exists()
+
+    lock = get_lock(fingerprint)
+    assert lock.acquire(blocking=False), "gc_orphaned_cache_files left a fingerprint lock held"
+    lock.release()
 
 
 # ---------------------------------------------------------------------------
