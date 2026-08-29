@@ -72,14 +72,34 @@ def test_c_legacy_entry_has_no_verbose(tmp_path):
     assert entry["verbose"] is None
 
 
-def test_d_orphan_safetensors_not_an_entry_but_counted_in_size(tmp_path):
-    _write(tmp_path / "{}.safetensors".format(FP1), 500)
+def test_d_orphan_safetensors_is_swept_off_disk_by_scan(tmp_path):
+    orphan = tmp_path / "{}.safetensors".format(FP1)
+    _write(orphan, 500)
 
     result = scan_cache(tmp_path)
 
+    assert not orphan.exists()  # gc_orphaned_cache_files() removed it
     assert result["entries"] == []
     assert result["total_count"] == 0
-    assert result["total_size_bytes"] == 500
+    assert result["total_size_bytes"] == 0  # its bytes are gone, not counted
+
+
+def test_d_orphan_safetensors_sweep_leaves_a_real_entry_untouched(tmp_path):
+    _core(tmp_path, FP1, json_bytes=10, st_bytes=100)
+    _verbose(tmp_path, FP1)
+    orphan = tmp_path / "{}.safetensors".format(FP2)
+    _write(orphan, 500)
+
+    result = scan_cache(tmp_path)
+
+    assert not orphan.exists()
+    (entry,) = result["entries"]
+    assert entry["fingerprint"] == FP1
+    assert entry["classification"] == "normal"
+    assert (tmp_path / "{}.json".format(FP1)).exists()
+    assert (tmp_path / "{}.safetensors".format(FP1)).exists()
+    assert result["total_size_bytes"] == _recursive_size(tmp_path)
+    assert result["total_size_bytes"] < 500 + 10 + 100  # orphan's 500 not counted
 
 
 def test_e_orphan_verbose_not_an_entry_but_counted_in_size(tmp_path):

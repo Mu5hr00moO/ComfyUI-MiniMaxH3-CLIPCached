@@ -1,20 +1,26 @@
 """Filesystem-only scan of the cache directory for the Cache Manager's
 "Check" action (plan section 11).
 
-This module never opens a ".safetensors" file and never imports torch or
-safetensors: classification is based *purely on which files exist*, exactly
-the way store.load_conditioning() decides HIT vs MISS (it returns None the
-moment "<fp>.json" is absent, without ever touching the tensors). "Check"
-must stay cheap enough to run on every panel refresh.
+This module never opens a ".safetensors" file and never parses tensors:
+classification is based *purely on which files exist*, exactly the way
+store.load_conditioning() decides HIT vs MISS (it returns None the moment
+"<fp>.json" is absent, without ever touching the tensors). "Check" must stay
+cheap enough to run on every panel refresh. (It does import
+store.gc_orphaned_cache_files, which transitively imports torch/safetensors
+-- a no-op cost inside a running ComfyUI, where both are already loaded.)
 
 Classification (plan section 11.1), by file existence only:
 
   normal  -- "<fp>.json" AND "<fp>.safetensors" AND "<fp>.verbose.json"
   legacy  -- "<fp>.json" AND "<fp>.safetensors", but no "<fp>.verbose.json"
 
-An orphan ".safetensors" (no ".json"), an orphan ".verbose.json" (no core
-cache), and a lone ".json" (no ".safetensors") are NOT entries -- they only
-contribute their bytes to total_size_bytes.
+An orphan ".safetensors" (no ".json") is swept off disk at the start of
+every scan (store.gc_orphaned_cache_files()), so it is neither an entry nor
+part of total_size_bytes. An orphan ".verbose.json" (no core cache) and a
+lone ".json" (no ".safetensors") are NOT entries either, but are only
+counted toward total_size_bytes, never deleted: unlike the orphan
+".safetensors" they have no single safe, unambiguous removal condition, so
+the asymmetry is deliberate.
 
 Edge case, documented on purpose: if "<fp>.verbose.json" EXISTS but is
 corrupt, the entry is still classified "normal" (the file exists) while its
@@ -22,20 +28,25 @@ corrupt, the entry is still classified "normal" (the file exists) while its
 Classification is about file existence, not file validity -- this is
 intentional, not an oversight.
 
-total_size_bytes is the recursive sum of every file under cache_dir --
-entries, orphans, thumbnails, stray temp files, anything -- i.e. the "size"
-figure from plan section 13.6, not just the normal/legacy entries.
+total_size_bytes is the recursive sum of every file left under cache_dir
+after the orphan-".safetensors" sweep -- entries, ".verbose.json"/".json"
+orphans, thumbnails, stray temp files, anything -- i.e. the "size" figure
+from plan section 13.6, not just the normal/legacy entries.
 
 Fingerprints are always 64 lowercase hex chars (sha256). Files are matched
 by anchored regex rather than a bare glob("*.json"), so "<fp>.verbose.json"
 is never mistaken for a core "<fp>.json".
 """
 
+import logging
 import os
 import re
 from pathlib import Path
 
+from minimaxh3_clipcache.store import gc_orphaned_cache_files
 from minimaxh3_clipcache.verbose_store import load_verbose
+
+logger = logging.getLogger(__name__)
 
 _FP = r"[0-9a-f]{64}"
 CORE_JSON_RE = re.compile(r"^({})\.json$".format(_FP))
@@ -58,6 +69,13 @@ def scan_cache(cache_dir) -> dict:
     cache_dir = Path(cache_dir)
     if not cache_dir.exists():
         return {"entries": [], "total_count": 0, "total_size_bytes": 0}
+
+    # Sweep orphaned ".safetensors" (no matching ".json") BEFORE listing
+    # files, so a just-removed file can never be picked up in this same
+    # pass and so its bytes are already gone from the size total below.
+    removed = gc_orphaned_cache_files(cache_dir)
+    if removed:
+        logger.info("[CACHE MANAGER GC] Check swept %d orphaned .safetensors file(s)", len(removed))
 
     core_json = set()
     safetensors = set()
