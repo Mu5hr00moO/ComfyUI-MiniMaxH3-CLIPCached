@@ -503,3 +503,27 @@ minimax.py używa). Zmiana WYŁĄCZNIE w jednym z tych współdzielonych plików
 nietykająca minimax.py, nie zostanie wykryta - zaakceptowany residual risk
 w zamian za brak budowania pełnego trackera zależności ComfyUI i brak
 inwalidacji cache'a przy każdej niezwiązanej zmianie upstream.
+
+### Generation-ID w store.py (audyt punkt 4) + CACHE_SCHEMA_VERSION=2 - dodane 2026-08-29
+
+Każdy wpis cache'a dostaje generation_id (uuid4 hex) generowany raz na
+wywołanie save_conditioning() i zapisywany do OBU artefaktów: do payloadu
+JSON ({"generation_id": ..., "skeleton": ...} zamiast gołego skeletonu)
+oraz do metadanych .safetensors ("cache_generation_id"). load_conditioning()
+porównuje oba - czytając tylko nagłówek safetensors przez safe_open(), przed
+załadowaniem jakichkolwiek tensorów - i każde niedopasowanie traktuje jako
+jednoznaczny MISS. To łapie rozerwaną parę po nieudanym drugim os.replace()
+(nowy .safetensors pod starym .json) nawet gdy oba skeletony są
+strukturalnie identyczne (przy refreshu tych samych wejść prawie zawsze są,
+więc samo unflatten_tensors() by tego nie zauważyło). CACHE_SCHEMA_VERSION
+1 -> 2, bo format na dysku faktycznie się zmienia (w odróżnieniu od encoder
+ABI, gdzie format się NIE zmienił i stąd osobny mechanizm zamiast bumpa).
+
+Połączone z niedawną inwalidacją przez encoder ABI - jedna fala odbudowy
+cache'a zamiast dwóch osobnych.
+
+Znany, świadomie odłożony brak: gc_orphaned_cache_files() nadal sprząta
+tylko .safetensors bez .json - para z niedopasowanym generation_id (oba
+pliki obecne, różne generacje) nie jest przez nią łapana i zostaje na dysku
+jako martwy, nigdy-nietrafiany balast (load_conditioning() ją odrzuca za
+każdym razem, ale jej nie usuwa).
