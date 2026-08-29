@@ -25,6 +25,7 @@ import folder_paths
 
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.proxy import CachedClipProxy
 from minimaxh3_clipcache.thumbnails import save_thumbnail
 from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
@@ -99,7 +100,12 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
         "references": references,
     }
     try:
-        save_verbose(fingerprint, system, CACHE_DIR)
+        # Same per-fingerprint lock the proxy holds around its save and the
+        # Cache Manager holds around delete/update: this backfill also does a
+        # read-modify-write on <fingerprint>.verbose.json, so a concurrent
+        # /update must not be able to interleave with it.
+        with get_lock(fingerprint):
+            save_verbose(fingerprint, system, CACHE_DIR)
     except Exception as e:
         logger.warning(
             "[VERBOSE WRITE FAILED] %s: could not persist Cache Manager "
