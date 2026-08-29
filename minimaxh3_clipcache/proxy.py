@@ -53,13 +53,22 @@ MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
 
 class CachedClipProxy:
     def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir,
-                 force_refresh=False, unload_fn=None):
+                 force_refresh=False, unload_fn=None, encoder_abi_id="test-abi-id"):
         self.clip_loader_fn = clip_loader_fn
         self.clip_name = clip_name
         self.clip_file_size = clip_file_size
         self.clip_mtime_ns = clip_mtime_ns
         self.cache_dir = cache_dir
         self.force_refresh = force_refresh
+        # Identity of the MiniMax H3 encoder implementation (plan audit point
+        # 1), a required component of compute_fingerprint(). Unlike that
+        # function this parameter has a default: CachedClipProxy is built
+        # directly in many tests unrelated to ABI (concurrency, locking,
+        # HIT/MISS), and the constant default spares a mechanical edit in each
+        # of them. The one real production caller, nodes.py, always passes an
+        # explicit value from get_encoder_abi_id() -- this default never
+        # reaches production.
+        self.encoder_abi_id = encoder_abi_id
         # Optional callback(patcher) to release the real encoder as soon as
         # this proxy is done with it, called right after a successful real
         # encode -- before returning control to the stock node, which may
@@ -108,7 +117,7 @@ class CachedClipProxy:
         prompt, kwargs = tokens
         fingerprint = compute_fingerprint(
             prompt, kwargs, self.clip_name, self.clip_file_size, self.clip_mtime_ns,
-            CACHE_SCHEMA_VERSION,
+            CACHE_SCHEMA_VERSION, encoder_abi_id=self.encoder_abi_id,
         )
         self.last_fingerprint = fingerprint
 
