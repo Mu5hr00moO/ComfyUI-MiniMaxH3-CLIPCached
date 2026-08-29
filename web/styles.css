@@ -107,6 +107,33 @@
   background: #30353f;
   border-color: #4c5361;
 }
+.h3cm-variant-toggle {
+  display: inline-flex;
+  border: 1px solid #3a3f4b;
+  border-radius: 7px;
+  overflow: hidden;
+}
+.h3cm-variant-btn {
+  padding: 6px 12px;
+  border: 0;
+  background: #1c1f26;
+  color: #9aa1ad;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.h3cm-variant-btn + .h3cm-variant-btn {
+  border-left: 1px solid #3a3f4b;
+}
+.h3cm-variant-btn:hover {
+  background: #262a33;
+  color: #cfd3da;
+}
+.h3cm-variant-btn.is-active {
+  background: #3457d5;
+  color: #fff;
+}
 .h3cm-search,
 .h3cm-select {
   padding: 5px 8px;
@@ -219,6 +246,26 @@
 }
 .h3cm-thumb.is-loaded {
   opacity: 1;
+}
+.h3cm-audio-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid #3a3f4b;
+  border-radius: 4px;
+  background: #262a33;
+  color: #b9bec8;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.h3cm-thumbs-more {
+  display: inline-flex;
+  align-items: center;
+  color: #9aa1ad;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 /* Reference thumbnails inside the "Copy prompt" result: bigger,
@@ -333,6 +380,37 @@
   font-size: 11.5px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.h3cm-detail-refs {
+  margin: 0 0 10px;
+}
+.h3cm-detail-refs[hidden] {
+  display: none;
+}
+.h3cm-detail-refs-head {
+  margin-bottom: 6px;
+  color: #9aa1ad;
+  font-size: 11px;
+}
+.h3cm-detail-refs-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.h3cm-detail-ref-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.h3cm-detail-ref-cell .h3cm-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+.h3cm-detail-ref-label {
+  color: #b9bec8;
+  font-size: 10px;
 }
 .h3cm-field {
   display: flex;

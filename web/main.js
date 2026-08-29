@@ -26,6 +26,7 @@ const ALL_TAGS = ""; // sentinel select value meaning "no tag filter"
 
 let panel = null; // built once -- see createPanel()
 let lastCheckResult = null; // last /check response, for client-side filtering
+let currentVariant = "fl2va"; // "fl2va" | "ref2va" -- which node's entries the list shows
 let openDetailFingerprint = null; // fingerprint whose detail panel is shown
 let objectUrls = []; // list-row thumbnail blob URLs to revoke on the next list render
 let renderGeneration = 0; // bumped each render so stale async thumbnails bail
@@ -76,12 +77,20 @@ export function entryLabel(entry) {
   return p || "(no prompt)";
 }
 
-// Pure: which entries survive the current toolbar state.
+// Which entries survive the current toolbar state. Reads the module-level
+// currentVariant for the FL2VA/Ref2VA cutoff (there is no per-call variant
+// arg); everything else is a pure function of its arguments.
 export function filterEntries(entries, { search, tag, favoritesOnly }) {
   const q = String(search || "").trim().toLowerCase();
   const unfiltered = q === "" && (tag || ALL_TAGS) === ALL_TAGS && !favoritesOnly;
 
   return (entries || []).filter((entry) => {
+    // Variant cutoff first: an entry written before the schema migration has
+    // no node_variant and is treated as "fl2va" (only that node existed
+    // then). A legacy entry has no verbose at all -> also "fl2va".
+    const sys = (entry.verbose && entry.verbose.system) || {};
+    if ((sys.node_variant || "fl2va") !== currentVariant) return false;
+
     if (entry.classification === "legacy") {
       // Nothing to match a legacy entry on -- show it only in the
       // no-filters view (plan section 11.1 / 7).
@@ -159,6 +168,10 @@ function createPanel() {
       </header>
       <div class="h3cm-toolbar">
         <button type="button" class="h3cm-button" data-h3cm-check>Check</button>
+        <div class="h3cm-variant-toggle" role="group" aria-label="Node variant">
+          <button type="button" data-h3cm-variant="fl2va" class="h3cm-variant-btn is-active">FL2VA</button>
+          <button type="button" data-h3cm-variant="ref2va" class="h3cm-variant-btn">Ref2VA</button>
+        </div>
         <input type="text" class="h3cm-search" data-h3cm-search placeholder="Search…">
         <select class="h3cm-select" data-h3cm-tag-filter aria-label="Filter by tag">
           <option value="">All tags</option>
@@ -187,6 +200,7 @@ function createPanel() {
           </div>
           <pre class="h3cm-prompt" data-h3cm-detail-prompt></pre>
         </div>
+        <div class="h3cm-detail-refs" data-h3cm-detail-refs hidden></div>
         <label class="h3cm-field">Name
           <input type="text" data-h3cm-edit-name>
         </label>
@@ -218,11 +232,13 @@ function createPanel() {
     searchEl: root.querySelector("[data-h3cm-search]"),
     tagFilterEl: root.querySelector("[data-h3cm-tag-filter]"),
     favoritesOnlyEl: root.querySelector("[data-h3cm-favorites-only]"),
+    variantBtns: [...root.querySelectorAll("[data-h3cm-variant]")],
     detailEl: root.querySelector("[data-h3cm-detail]"),
   };
 
   root.querySelectorAll("[data-h3cm-close]").forEach((el) => el.addEventListener("click", closePanel));
   root.querySelector("[data-h3cm-check]").addEventListener("click", () => runCheck());
+  panel.variantBtns.forEach((btn) => btn.addEventListener("click", () => switchVariant(btn.dataset.h3cmVariant)));
   panel.searchEl.addEventListener("input", renderList);
   panel.tagFilterEl.addEventListener("change", renderList);
   panel.favoritesOnlyEl.addEventListener("change", renderList);
@@ -248,6 +264,25 @@ function closePanel() {
   if (!panel) return;
   panel.root.classList.remove("is-open");
   panel.root.setAttribute("aria-hidden", "true");
+}
+
+// Switch which node's entries the list shows. Purely client-side: /check
+// already returned every entry, so this only changes the filter and
+// re-renders. By prior decision the toolbar filters are NOT kept per tab --
+// switching resets search / tag / favorites to their defaults and closes any
+// open detail panel, so each tab always opens on a clean, unfiltered view.
+function switchVariant(variant) {
+  if (variant !== "fl2va" && variant !== "ref2va") return;
+  currentVariant = variant;
+  panel.variantBtns.forEach((btn) =>
+    btn.classList.toggle("is-active", btn.dataset.h3cmVariant === variant));
+
+  panel.searchEl.value = "";
+  panel.tagFilterEl.value = ALL_TAGS;
+  panel.favoritesOnlyEl.checked = false;
+  if (openDetailFingerprint) closeDetail();
+
+  renderList();
 }
 
 // --- list rendering -------------------------------------------------------
@@ -316,6 +351,36 @@ function buildThumbnails(fingerprint, references, generation) {
   return wrap;
 }
 
+// Ref2VA rows can carry up to 15 references, so the row shows only the first
+// three (thumbnail for image/video, a small "audio" pill for audio, which
+// never has a thumbnail) and a "+N more" count for the rest. The full,
+// positionally-labelled breakdown lives in the detail panel.
+function buildRef2vaThumbnails(fingerprint, references, generation) {
+  const wrap = document.createElement("span");
+  wrap.className = "h3cm-thumbs";
+  for (const ref of references.slice(0, 3)) {
+    if ((ref.type || "image") === "audio") {
+      const pill = document.createElement("span");
+      pill.className = "h3cm-audio-pill";
+      pill.textContent = "audio";
+      wrap.appendChild(pill);
+      continue;
+    }
+    const img = document.createElement("img");
+    img.className = "h3cm-thumb";
+    img.alt = `reference ${ref.index}`;
+    wrap.appendChild(img);
+    loadThumbnail(img, fingerprint, ref.index, generation);
+  }
+  if (references.length > 3) {
+    const more = document.createElement("span");
+    more.className = "h3cm-thumbs-more";
+    more.textContent = `+${references.length - 3} more`;
+    wrap.appendChild(more);
+  }
+  return wrap;
+}
+
 function buildLegacyRow(entry) {
   const row = document.createElement("div");
   row.className = "h3cm-row is-legacy";
@@ -376,7 +441,14 @@ function buildNormalRow(entry, generation) {
 
   row.append(star, label);
   if (tags.length) row.appendChild(buildTagChips(tags));
-  if (references.length) row.appendChild(buildThumbnails(entry.fingerprint, references, generation));
+  if (references.length) {
+    const variant = system.node_variant || "fl2va";
+    row.appendChild(
+      variant === "ref2va"
+        ? buildRef2vaThumbnails(entry.fingerprint, references, generation)
+        : buildThumbnails(entry.fingerprint, references, generation),
+    );
+  }
 
   row.addEventListener("click", () => openDetail(entry.fingerprint));
   return row;
@@ -474,6 +546,62 @@ function findNormalEntry(fingerprint) {
   ) || null;
 }
 
+// Ref2VA only: the "<Picture N>" / "<Video N>" / "<Audio N>" tags in the
+// prompt are positional, counted per type over the reference list in order.
+// The count is always derived here in JS, never read from a stored field.
+const REF_TYPE_LABEL = { image: "Picture", video: "Video", audio: "Audio" };
+
+function renderDetailRefs(container, fingerprint, variant, references) {
+  container.innerHTML = "";
+  // FL2VA is unchanged: its first_frame / last_frame already show in the list
+  // row and, on a Copy-prompt click, in the result box below -- no persistent
+  // breakdown here. Only Ref2VA gets one.
+  if (variant !== "ref2va" || references.length === 0) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+
+  const heading = document.createElement("div");
+  heading.className = "h3cm-detail-refs-head";
+  heading.textContent = `${references.length} reference${references.length === 1 ? "" : "s"}`;
+  container.appendChild(heading);
+
+  const grid = document.createElement("div");
+  grid.className = "h3cm-detail-refs-grid";
+
+  const counters = { image: 0, video: 0, audio: 0 };
+  for (const ref of references) {
+    const type = ref.type || "image";
+    counters[type] = (counters[type] || 0) + 1;
+    const posLabel = `${REF_TYPE_LABEL[type] || "Reference"} ${counters[type]}`;
+
+    const cell = document.createElement("div");
+    cell.className = "h3cm-detail-ref-cell";
+
+    if (type === "audio") {
+      const pill = document.createElement("span");
+      pill.className = "h3cm-audio-pill";
+      pill.textContent = "audio";
+      cell.appendChild(pill);
+    } else {
+      const img = document.createElement("img");
+      img.className = "h3cm-thumb";
+      img.alt = posLabel;
+      cell.appendChild(img);
+      loadThumbnail(img, fingerprint, ref.index, renderGeneration);
+    }
+
+    const cap = document.createElement("span");
+    cap.className = "h3cm-detail-ref-label";
+    cap.textContent = posLabel;
+    cell.appendChild(cap);
+
+    grid.appendChild(cell);
+  }
+  container.appendChild(grid);
+}
+
 function populateDetail(entry) {
   const { detailEl } = panel;
   const user = (entry.verbose && entry.verbose.user) || {};
@@ -481,6 +609,12 @@ function populateDetail(entry) {
 
   detailEl.querySelector("[data-h3cm-detail-title]").textContent = entryLabel(entry);
   detailEl.querySelector("[data-h3cm-detail-prompt]").textContent = system.prompt || "(no prompt)";
+  renderDetailRefs(
+    detailEl.querySelector("[data-h3cm-detail-refs]"),
+    entry.fingerprint,
+    system.node_variant || "fl2va",
+    Array.isArray(system.references) ? system.references : [],
+  );
   detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
   detailEl.querySelector("[data-h3cm-edit-notes]").value = user.notes || "";
   detailEl.querySelector("[data-h3cm-edit-tags]").value = (Array.isArray(user.tags) ? user.tags : []).join(", ");
