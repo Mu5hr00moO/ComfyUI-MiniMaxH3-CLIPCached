@@ -287,6 +287,7 @@ function switchVariant(variant) {
   panel.searchEl.value = "";
   panel.tagFilterEl.value = ALL_TAGS;
   panel.favoritesOnlyEl.checked = false;
+  refreshTagFilterOptions(); // rebuild the dropdown from the new variant's tags
   if (openDetailFingerprint) closeDetail();
 
   renderList();
