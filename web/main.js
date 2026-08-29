@@ -250,6 +250,7 @@ function createPanel() {
   panel.favoritesOnlyEl.addEventListener("change", renderList);
   root.querySelector("[data-h3cm-detail-close]").addEventListener("click", closeDetail);
   root.querySelector("[data-h3cm-save]").addEventListener("click", saveDetail);
+  root.querySelector("[data-h3cm-edit-favorite]").addEventListener("change", onDetailFavoriteChange);
   root.querySelector("[data-h3cm-copy-prompt]").addEventListener("click", copyPrompt);
   root.querySelector("[data-h3cm-delete]").addEventListener("click", onDetailDeleteClick);
   root
@@ -554,6 +555,24 @@ async function toggleFavorite(fingerprint, currentlyFavorite) {
     await runCheck(); // re-render from the real state, never patch JS state
   } catch (err) {
     panel.statusEl.textContent = `Update failed (${err && err.message ? err.message : err})`;
+  }
+}
+
+// The "Favorite" checkbox in the detail panel saves the moment it is toggled,
+// the same way the row star does -- it no longer waits for the "Save" button.
+// "Save" still sends favorite along with name / notes / tags, but by then it
+// is only re-sending the value already persisted here, so there is no
+// conflict. On a failed save the checkbox is reverted to match reality.
+async function onDetailFavoriteChange(event) {
+  if (!openDetailFingerprint) return;
+  const checkbox = event.currentTarget;
+  const statusEl = panel.detailEl.querySelector("[data-h3cm-detail-status]");
+  try {
+    await postUpdate({ fingerprint: openDetailFingerprint, favorite: checkbox.checked });
+    await runCheck(); // re-renders the row star + re-populates this same detail panel
+  } catch (err) {
+    checkbox.checked = !checkbox.checked; // revert - the save didn't happen
+    statusEl.textContent = `Update failed (${err && err.message ? err.message : err})`;
   }
 }
 
