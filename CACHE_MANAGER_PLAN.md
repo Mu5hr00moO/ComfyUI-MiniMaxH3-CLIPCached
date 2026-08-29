@@ -100,10 +100,9 @@ Nie dodajemy:
 Jeżeli prompt, referencje albo encoder powodują inny fingerprint, powstaje
 inny wpis cache i tym samym inna pozycja managera.
 
-Potwierdzone w kodzie: `fingerprint.py:54-89`, `compute_fingerprint()` bierze
-wyłącznie `(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
-cache_schema_version)` — żadnego `uuid4` ani osobnej tożsamości nigdzie w
-repo.
+Potwierdzone w kodzie: `compute_fingerprint()` bierze wyłącznie dane żądania,
+tożsamość checkpointu (`clip_name`, size/mtime/ctime), wersję formatu oraz
+encoder ABI — żadnego `uuid4` ani osobnej tożsamości wpisu managera.
 
 ---
 
@@ -1098,7 +1097,7 @@ Trzymając się istniejącej konwencji nazewniczej repo (`fingerprint.py`,
 minimaxh3_clipcache/
 ├── verbose_store.py     # Faza 1: read/write .verbose.json, merge system+user, atomowo
 ├── thumbnails.py         # Faza 3: IMAGE tensor -> PIL -> resize -> .jpg
-├── scanner.py            # Faza 4: klasyfikacja normal/legacy/orphan + size/count
+├── scanner.py            # Faza 4: klasyfikacja normal/legacy/inconsistent + size/count
 └── routes.py             # Faza 5: PromptServer.instance.routes, importowany z __init__.py
 
 web/

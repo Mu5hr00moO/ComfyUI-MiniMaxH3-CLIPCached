@@ -228,7 +228,7 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
 - Zapis cache atomowo: plik tymczasowy + os.replace() na koniec, nigdy
   bezpośredni zapis do docelowej ścieżki.
 - Nie hashować całych plików modeli — identyfikacja encodera przez
-  (clip_name, file_size, mtime_ns) z os.stat().
+  (clip_name, file_size, mtime_ns, ctime_ns) z os.stat().
 - Logowanie: jasno wypisuj, którą ścieżką poszło wykonanie (HIT/MISS),
   zajętość RAM/VRAM przed i po unload.
 - Żadnych `git add .` — jawnie staged pliki. Nie commitować: cache/,
@@ -260,7 +260,7 @@ historyczny procesu, nie lista otwartych zadań.**
    z surowych inputów node'a
 9. Canonical request do fingerprintu: CACHE_SCHEMA_VERSION, clip identity,
    prompt, kwargs przekazane do tokenize(), wszystkie tensory z kwargs
-10. Identyfikacja encodera: clip_name + file_size + mtime_ns
+10. Identyfikacja encodera: clip_name + file_size + mtime_ns + ctime_ns
 11. Hashowanie tensorów: tensor.detach().cpu().contiguous(), deterministyczna
     serializacja struktury (ustalona kolejność kluczy)
 12. Dopiero teraz dokładamy cache do proxy — GOTOWE
@@ -522,8 +522,8 @@ ABI, gdzie format się NIE zmienił i stąd osobny mechanizm zamiast bumpa).
 Połączone z niedawną inwalidacją przez encoder ABI - jedna fala odbudowy
 cache'a zamiast dwóch osobnych.
 
-Znany, świadomie odłożony brak: gc_orphaned_cache_files() nadal sprząta
-tylko .safetensors bez .json - para z niedopasowanym generation_id (oba
-pliki obecne, różne generacje) nie jest przez nią łapana i zostaje na dysku
-jako martwy, nigdy-nietrafiany balast (load_conditioning() ją odrzuca za
-każdym razem, ale jej nie usuwa).
+gc_orphaned_cache_files() nadal automatycznie sprząta tylko .safetensors bez
+.json. Para z niedopasowanym generation_id (oba pliki obecne, różne
+generacje) jest teraz jawnie klasyfikowana przez Cache Manager jako
+`inconsistent` i może zostać usunięta z UI; load_conditioning() nadal
+odrzuca ją jako MISS i kolejne udane użycie tego fingerprintu ją nadpisuje.

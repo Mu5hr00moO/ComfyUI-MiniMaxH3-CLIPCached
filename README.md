@@ -108,7 +108,9 @@ this node targets.
 - a cache schema version (so the on-disk format can evolve without
   silently misinterpreting old entries),
 - the encoder checkpoint's identity — filename + file size + modification
-  time (not a hash of the full 27 GB file),
+  time + filesystem metadata-change time (not a hash of the full 27 GB
+  file; `ctime_ns` catches ordinary replacements even when size and mtime
+  are preserved),
 - the exact prompt text,
 - the exact list of images the stock node's frame-resize step produced
   (i.e. already resized to your requested `width`/`height` — hashing this
@@ -124,13 +126,15 @@ have no bearing on what the encoder produces.
 **On-disk format:** no `pickle`. Each entry is a `<fingerprint>.safetensors`
 file (tensors) plus a `<fingerprint>.json` file (everything else — the
 structure needed to reconstruct the original object, with tensors replaced
-by references into the `.safetensors` file). Both are written atomically
-(temp file + `os.replace()`), tensors written before the skeleton, so a
-process interrupted mid-write always leaves either nothing or a detectably
-incomplete entry — never a plausible-looking but corrupt one. A cache
-entry that fails to load for any reason (missing file, corrupted JSON,
-mismatched tensor references) is treated as a plain cache miss and logged
-as a warning; it never raises and never blocks generation.
+by references into the `.safetensors` file). Each file is published with an
+atomic temp-file + `os.replace()` operation; the two-file pair cannot itself
+be replaced atomically. Tensors are published before the skeleton and both
+files carry the same generation ID, so an interrupted refresh leaves a
+detectably inconsistent entry rather than a plausible-looking mixed pair.
+Known cache read/parse failures (missing files, filesystem/runtime read
+errors, corrupted JSON/safetensors, generation mismatch, mismatched tensor
+references) are treated as a plain cache miss and logged as a warning rather
+than blocking generation.
 
 ## Behavior: hit vs. miss
 
