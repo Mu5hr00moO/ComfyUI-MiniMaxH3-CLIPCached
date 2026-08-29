@@ -129,7 +129,7 @@ def main():
     for r in rows:
         print("{:<28} {:>18.2f} {:>18.2f} {:>14} {:>14}".format(
             r["label"], r["pytorch_allocated_gib"], r["pytorch_reserved_gib"],
-            r["nvidia_smi_used_mib"], r["nvidia_smi_total_mib"]))
+            str(r["nvidia_smi_used_mib"]), str(r["nvidia_smi_total_mib"])))
 
     print()
     print("=== RESULT: data collected, see summary table above (no pass/fail -- this is a measurement) ===")

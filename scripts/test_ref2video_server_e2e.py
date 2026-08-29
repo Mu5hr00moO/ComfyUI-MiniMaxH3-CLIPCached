@@ -243,6 +243,7 @@ def check_nodes_registered():
             ok = r.status_code == 200 and node_id in r.json()
         except Exception as e:
             ok = False
+            all_ok = False  # the `continue` below skips the `all_ok and ok` fold
             print("  {} -> request failed: {}".format(node_id, e), flush=True)
             continue
         print("  {} -> {}".format(node_id, "REGISTERED" if ok else "MISSING (HTTP {})".format(r.status_code)),

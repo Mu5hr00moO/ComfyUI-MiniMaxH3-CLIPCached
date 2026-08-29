@@ -367,7 +367,9 @@ def main():
     print("-" * len(header))
     for r in rows:
         print("{:>10} {:>10} {:>12.1f} {:>16} {:>18}".format(
-            r["iteration"], r["status"], r["duration_s"], r["server_rss_kb"], r["mem_available_kb"]))
+            r["iteration"], r["status"], r["duration_s"],
+            "n/a" if r["server_rss_kb"] is None else r["server_rss_kb"],
+            "n/a" if r["mem_available_kb"] is None else r["mem_available_kb"]))
 
     print()
     print("=== Watchdog triggered: {} ===".format(watchdog.triggered if watchdog else "N/A (never started)"))

@@ -272,8 +272,8 @@ def main():
         label = "{}/iter{}/{}".format(r["variant"], r["iteration"], r["checkpoint"])
         print("{:<28} {:>18.2f} {:>18.2f} {:>14} {:>14} {:>16} {:>12}".format(
             label, r["pytorch_allocated_gib"], r["pytorch_reserved_gib"],
-            r["nvidia_smi_used_mib"], r["nvidia_smi_total_mib"],
-            r["mem_available_kb"], r["own_rss_kb"]))
+            str(r["nvidia_smi_used_mib"]), str(r["nvidia_smi_total_mib"]),
+            str(r["mem_available_kb"]), str(r["own_rss_kb"])))
 
     print()
     print("=== RESULT: data collected, see summary table above (no pass/fail -- this is a measurement) ===")

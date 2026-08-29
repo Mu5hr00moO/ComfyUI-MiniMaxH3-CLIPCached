@@ -281,7 +281,8 @@ def main():
     print("proxy.last_call: kwargs keys={}".format(list(kwargs_seen.keys())))
     ref_items = kwargs_seen.get("minimax_ref_items")
     print("proxy.last_call: minimax_ref_items len={} types={}".format(
-        len(ref_items), [it.get("type") for it in ref_items]))
+        len(ref_items) if ref_items is not None else None,
+        [it.get("type") for it in ref_items] if ref_items else None))
 
     print("=== Step 5: field-by-field equivalence (_tensors_equal / torch.equal) ===")
     compare(output_stock, output_proxy)
