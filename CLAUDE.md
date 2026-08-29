@@ -346,3 +346,53 @@ odpalonym nvitop), nie coś do zautomatyzowania w kodzie/testach.
 Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
 source of truth, manager jest warstwą indeksującą, fingerprint = ID
 wpisu, prompt jest read-only w managerze.
+
+### Faza M2: przełącznik FL2VA/Ref2VA w web/main.js
+
+Dodane w `web/main.js` + `web/styles.css` (Python bez zmian, pełny pytest
+172 passed przed i po):
+- moduł-level `currentVariant` ("fl2va"|"ref2va"), dwa przyciski
+  `data-h3cm-variant` w toolbarze, `switchVariant()` - klient-side, BEZ
+  nowego fetcha do /check, resetuje search/tag/favorites i zamyka detail
+  przy przełączeniu (świadoma decyzja: brak osobnego stanu filtrów per
+  zakładka)
+- `filterEntries()` czyta `currentVariant` (moduł-level, nie argument) i
+  odcina wpisy po `verbose.system.node_variant || "fl2va"` PRZED
+  pozostałymi warunkami; legacy i wpisy bez verbose = "fl2va"
+- nagłówek "Cache: N entries / size" NIEzmieniony - dalej całościowy z
+  lastCheckResult, nie przeliczany po wariancie
+- wiersz listy Ref2VA: pierwsze 3 referencje (miniatura dla image/video,
+  pill "audio" dla audio bez fetcha thumbnaila), "+N more" dla reszty
+- panel szczegółów Ref2VA (`renderDetailRefs()`): WSZYSTKIE referencje z
+  etykietą pozycyjną liczoną per typ w locie w JS ("Picture 1/2…",
+  "Video 1…", "Audio 1…"), NIGDY z zapisanego pola; FL2VA detail bez
+  zmian (nowy kontener `data-h3cm-detail-refs` zostaje `hidden`)
+- WSZĘDZIE gdzie JS czyta `reference.type` / `node_variant` jest fallback
+  `|| "image"` / `|| "fl2va"` - działa też na cache sprzed migracji
+  (migrate_verbose_schema_v2.py jeszcze NIE odpalony na realnym cache/)
+
+Zweryfikowane BEZ przeglądarki:
+- `node --check` (kopia .mjs): składnia OK dla main.js
+- brace-balance styles.css: OK
+- harness Node w scratchpadzie (loader hook stubuje /scripts/app.js i
+  /scripts/api.js, minimalny document): moduł importuje się bez wyjątku
+  na top-level; `filterEntries` z domyślnym `currentVariant="fl2va"`
+  przepuszcza tylko fl2va + legacy + wpisy bez verbose, odcina ref2va
+- osobny mikro-test algorytmu liczników pozycyjnych: kolejność
+  image/video/audio -> "Picture 1","Picture 2","Audio 1","Video 1",… ,
+  wpis bez `type` -> "Picture N" (fallback), zgodne z oczekiwaniem
+
+CZEKA na wizualne sprawdzenie użytkownika w ComfyUI (CC nie może tego
+zaliczyć):
+- czy oba przyciski renderują się w toolbarze i `is-active` wygląda OK
+- realne przełączenie na "Ref2VA" i z powrotem (wymaga interakcji DOM -
+  harness nie może ustawić `currentVariant`), czy lista faktycznie
+  pokazuje wpisy ref2va i chowa fl2va
+- reset filtrów i zamknięcie detala przy przełączeniu
+- wygląd wiersza Ref2VA: 3 miniatury + pill "audio" + "+N more"
+- panel szczegółów Ref2VA: miniatury + etykiety pozycyjne, brak sekcji
+  refs dla FL2VA
+- brak błędów w konsoli przeglądarki
+- ZNANY BRAK do M3 (świadomie nietknięty): "Copy prompt" / renderCopyResult
+  wciąż używa `ref.label` i mówi "image references" - dla wpisu ref2va
+  pokaże "- undefined" i mylący tekst. Naprawa w Fazie M3.
