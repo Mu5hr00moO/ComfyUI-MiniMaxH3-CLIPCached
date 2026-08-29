@@ -53,11 +53,13 @@ MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
 
 class CachedClipProxy:
     def __init__(self, clip_loader_fn, clip_name, clip_file_size, clip_mtime_ns, cache_dir,
-                 force_refresh=False, unload_fn=None, encoder_abi_id="test-abi-id"):
+                 force_refresh=False, unload_fn=None, encoder_abi_id="test-abi-id",
+                 clip_ctime_ns=None):
         self.clip_loader_fn = clip_loader_fn
         self.clip_name = clip_name
         self.clip_file_size = clip_file_size
         self.clip_mtime_ns = clip_mtime_ns
+        self.clip_ctime_ns = clip_ctime_ns
         self.cache_dir = cache_dir
         self.force_refresh = force_refresh
         # Identity of the MiniMax H3 encoder implementation (plan audit point
@@ -118,6 +120,7 @@ class CachedClipProxy:
         fingerprint = compute_fingerprint(
             prompt, kwargs, self.clip_name, self.clip_file_size, self.clip_mtime_ns,
             CACHE_SCHEMA_VERSION, encoder_abi_id=self.encoder_abi_id,
+            clip_ctime_ns=self.clip_ctime_ns,
         )
         self.last_fingerprint = fingerprint
 

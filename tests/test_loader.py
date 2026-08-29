@@ -26,10 +26,11 @@ requires_real_clip = pytest.mark.skipif(
 
 @requires_real_clip
 def test_a_resolve_clip_stat_real_file():
-    file_size, mtime_ns = resolve_clip_stat(REAL_CLIP_NAME)
+    file_size, mtime_ns, ctime_ns = resolve_clip_stat(REAL_CLIP_NAME)
 
     assert file_size == EXPECTED_FILE_SIZE
     assert mtime_ns > 0
+    assert ctime_ns > 0
 
 
 def test_b_resolve_clip_stat_missing_file_raises():

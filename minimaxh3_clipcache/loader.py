@@ -14,11 +14,14 @@ import folder_paths
 
 
 def resolve_clip_stat(clip_name):
-    """Return (file_size, mtime_ns) for a text_encoders file, used as the
-    encoder-identity part of the cache fingerprint. Pure os.stat() -- never
-    loads the file. Raises FileNotFoundError if clip_name isn't a real
-    registered text_encoders file, since a cache key must never silently
-    identify an encoder that doesn't exist.
+    """Return (file_size, mtime_ns, ctime_ns) for a text_encoders file.
+
+    These values form the filesystem part of the encoder identity in the
+    cache fingerprint. ``ctime_ns`` detects an ordinary replacement or
+    in-place rewrite even if the replacement preserves size and mtime. Pure
+    os.stat() -- never loads the ~27 GB file. Raises FileNotFoundError if
+    clip_name isn't a real registered text_encoders file, since a cache key
+    must never silently identify an encoder that doesn't exist.
     """
     clip_path = folder_paths.get_full_path("text_encoders", clip_name)
     if clip_path is None:
@@ -27,7 +30,7 @@ def resolve_clip_stat(clip_name):
             "-- cannot compute a cache fingerprint for a clip that doesn't exist.".format(clip_name)
         )
     st = os.stat(clip_path)
-    return st.st_size, st.st_mtime_ns
+    return st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
 
 def build_clip_loader_fn(clip_name):

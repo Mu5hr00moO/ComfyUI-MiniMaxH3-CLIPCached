@@ -70,7 +70,8 @@ def _build_references(fingerprint, items, labels=None):
 
 
 def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
-                           clip_file_size, clip_mtime_ns, items, labels=None):
+                           clip_file_size, clip_mtime_ns, items, labels=None,
+                           clip_ctime_ns=None):
     """Write or backfill this run's ``<fingerprint>.verbose.json`` for the
     Cache Manager (plan sections 7 and 8), for either node variant.
 
@@ -116,6 +117,8 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                 "node_variant": node_variant,
                 "references": references,
             }
+            if clip_ctime_ns is not None:
+                system["clip_ctime_ns"] = clip_ctime_ns
             # Informational only: which ComfyUI version produced this cache
             # entry, to help diagnose why an older entry's encode looks
             # different after an upstream update. NOT part of
@@ -158,7 +161,7 @@ class MiniMaxH3CLIPCachedFL2VA:
                 "last_frame": ("IMAGE",),
                 "cache_mode": (["auto", "refresh"], {"default": "auto",
                     "tooltip": "auto: reuse the cached encode for an identical prompt+first_frame+"
-                               "last_frame+clip_name (checkpoint identity = filename+size+mtime) if "
+                               "last_frame+clip_name (checkpoint identity = filename+size+mtime+ctime) if "
                                "one exists, otherwise encode and save it. refresh: ignore any cached "
                                "encode, always re-encode and overwrite the cache.",
                 }),
@@ -185,7 +188,7 @@ class MiniMaxH3CLIPCachedFL2VA:
         # replaced under the same filename, the literal input is unchanged,
         # so a constant IS_CHANGED would let ComfyUI skip re-executing this
         # node entirely -- serving a stale CONDITIONING without our own
-        # fingerprint (which already includes file_size/mtime_ns) ever being
+        # fingerprint (which already includes file_size/mtime_ns/ctime_ns) ever being
         # computed. Folding the same stat into IS_CHANGED closes that gap: a
         # swapped file changes this return value, forcing a real
         # re-execution, at which point our own on-disk cache does its normal
@@ -202,7 +205,7 @@ class MiniMaxH3CLIPCachedFL2VA:
         if clip_name is None:
             return cache_mode
         try:
-            file_size, mtime_ns = resolve_clip_stat(clip_name)
+            file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
         except FileNotFoundError:
             # The checkpoint named in the graph no longer exists on disk. Return
             # NaN (same trick as cache_mode == "refresh" above) to force a real
@@ -211,11 +214,11 @@ class MiniMaxH3CLIPCachedFL2VA:
             # runs -- execute() will raise the same FileNotFoundError, but from
             # inside the node, where ComfyUI reports it as this node's error.
             return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns, abi_id)
+        return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
-        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
         loader_fn = build_clip_loader_fn(clip_name)
         # When the encoder ABI identity is unavailable, force a real encode
         # regardless of cache_mode (never serve or write a HIT under an
@@ -227,6 +230,7 @@ class MiniMaxH3CLIPCachedFL2VA:
             force_refresh=(cache_mode == "refresh") or not abi_available,
             unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
             encoder_abi_id=abi_id if abi_available else "unavailable",
+            clip_ctime_ns=ctime_ns,
         )
 
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
@@ -245,7 +249,10 @@ class MiniMaxH3CLIPCachedFL2VA:
             if last_frame is not None:
                 items.append(("image", last_frame))
                 labels.append("last_frame")
-            _sync_verbose_metadata(proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items, labels)
+            _sync_verbose_metadata(
+                proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
+                labels, clip_ctime_ns=ctime_ns,
+            )
         finally:
             # The proxy already released the ~27 GB encoder itself right
             # after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
@@ -376,7 +383,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
             "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
                        "images/videos/audio + clip_name (checkpoint identity = "
-                       "filename+size+mtime) if one exists, otherwise encode and save it. "
+                       "filename+size+mtime+ctime) if one exists, otherwise encode and save it. "
                        "refresh: ignore any cached encode, always re-encode and overwrite "
                        "the cache.",
         })
@@ -407,7 +414,7 @@ class MiniMaxH3CLIPCachedRef2VA:
     def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # Same contract as MiniMaxH3CLIPCachedFL2VA.IS_CHANGED: a fresh NaN
         # whenever cache_mode == "refresh" (forces re-execution on every
-        # Queue), and otherwise (file_size, mtime_ns) folded in alongside
+        # Queue), and otherwise (file_size, mtime_ns, ctime_ns) folded in alongside
         # clip_name so a checkpoint swapped under the same filename still
         # forces re-execution instead of being skipped by ComfyUI's own
         # execution cache.
@@ -422,7 +429,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         if clip_name is None:
             return cache_mode
         try:
-            file_size, mtime_ns = resolve_clip_stat(clip_name)
+            file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
         except FileNotFoundError:
             # The checkpoint named in the graph no longer exists on disk. Return
             # NaN (same trick as cache_mode == "refresh" above) to force a real
@@ -431,7 +438,7 @@ class MiniMaxH3CLIPCachedRef2VA:
             # runs -- execute() will raise the same FileNotFoundError, but from
             # inside the node, where ComfyUI reports it as this node's error.
             return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns, abi_id)
+        return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
                 ref_image_size="match",
@@ -442,7 +449,7 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
                 cache_mode="auto"):
-        file_size, mtime_ns = resolve_clip_stat(clip_name)
+        file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
         loader_fn = build_clip_loader_fn(clip_name)
         # When the encoder ABI identity is unavailable, force a real encode
         # regardless of cache_mode (never serve or write a HIT under an
@@ -454,6 +461,7 @@ class MiniMaxH3CLIPCachedRef2VA:
             force_refresh=(cache_mode == "refresh") or not abi_available,
             unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
             encoder_abi_id=abi_id if abi_available else "unavailable",
+            clip_ctime_ns=ctime_ns,
         )
 
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
@@ -477,7 +485,10 @@ class MiniMaxH3CLIPCachedRef2VA:
             # actually produced a conditioning. If the stock execute() raised,
             # there is no successful operation to record.
             items = _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
-            _sync_verbose_metadata(proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items)
+            _sync_verbose_metadata(
+                proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
+                clip_ctime_ns=ctime_ns,
+            )
         finally:
             # Same contract as MiniMaxH3CLIPCachedFL2VA: the proxy already
             # released the encoder itself right after its own real encode,

@@ -23,17 +23,19 @@ from minimaxh3_clipcache.fingerprint import compute_fingerprint
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
 MTIME_NS = 1712345678000000000
+CTIME_NS = 1712345678999999999
 
 
 ABI_ID = "test-abi-id"
 
 
 def _fp(ref_items=None, kwargs=None, prompt="a ref2va prompt",
-        clip_name=CLIP_NAME, file_size=FILE_SIZE, mtime_ns=MTIME_NS, encoder_abi_id=ABI_ID):
+        clip_name=CLIP_NAME, file_size=FILE_SIZE, mtime_ns=MTIME_NS,
+        ctime_ns=CTIME_NS, encoder_abi_id=ABI_ID):
     if kwargs is None:
         kwargs = {"minimax_ref_items": ref_items}
     return compute_fingerprint(prompt, kwargs, clip_name, file_size, mtime_ns, 1,
-                               encoder_abi_id=encoder_abi_id)
+                               encoder_abi_id=encoder_abi_id, clip_ctime_ns=ctime_ns)
 
 
 def _image_item(seed):
@@ -193,6 +195,7 @@ def test_l_clip_identity_changes_fingerprint_on_the_ref_items_path():
     assert _fp(items, clip_name="a_different_encoder.safetensors") != base
     assert _fp(items, file_size=FILE_SIZE + 1) != base
     assert _fp(items, mtime_ns=MTIME_NS + 1) != base
+    assert _fp(items, ctime_ns=CTIME_NS + 1) != base
 
 
 # --- m) control: seed / sampler / steps / scheduler cannot reach the key -
@@ -210,5 +213,5 @@ def test_m_compute_fingerprint_has_no_sampling_parameters():
     params = list(inspect.signature(compute_fingerprint).parameters)
     assert params == [
         "prompt", "tokenize_kwargs", "clip_name", "clip_file_size",
-        "clip_mtime_ns", "cache_schema_version", "encoder_abi_id",
+        "clip_mtime_ns", "cache_schema_version", "encoder_abi_id", "clip_ctime_ns",
     ]

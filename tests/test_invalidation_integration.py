@@ -16,6 +16,7 @@ from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 CLIP_NAME = "fake_clip.safetensors"
 CLIP_FILE_SIZE = 12345
 CLIP_MTIME_NS = 67890
+CLIP_CTIME_NS = 98765
 
 
 class FakeRealClip:
@@ -41,12 +42,15 @@ def _make_counting_loader():
 
 
 def _run(tmp_path, prompt, images, clip_name=CLIP_NAME, clip_file_size=CLIP_FILE_SIZE,
-         clip_mtime_ns=CLIP_MTIME_NS):
+         clip_mtime_ns=CLIP_MTIME_NS, clip_ctime_ns=CLIP_CTIME_NS):
     """One fresh CachedClipProxy instance (own loader, own call counter) --
     same as nodes.py creating a new proxy on every node execution. Returns
     how many times this instance's loader was called (0 = HIT, 1 = MISS)."""
     loader, calls = _make_counting_loader()
-    proxy = CachedClipProxy(loader, clip_name, clip_file_size, clip_mtime_ns, tmp_path)
+    proxy = CachedClipProxy(
+        loader, clip_name, clip_file_size, clip_mtime_ns, tmp_path,
+        clip_ctime_ns=clip_ctime_ns,
+    )
     tokens = proxy.tokenize(prompt, images=images)
     proxy.encode_from_tokens_scheduled(tokens)
     return calls["count"]
@@ -78,3 +82,8 @@ def test_invalidation_scenario_through_full_proxy(tmp_path):
     #    clip_file_size (simulated model file swap) -> MISS
     assert _run(tmp_path, "A", [first_frame.clone(), last_frame.clone()],
                 clip_file_size=CLIP_FILE_SIZE + 1) == 1
+
+    # g) same name/size/mtime, but metadata-change time moved after a
+    # replacement that restored the original mtime -> MISS
+    assert _run(tmp_path, "A", [first_frame.clone(), last_frame.clone()],
+                clip_ctime_ns=CLIP_CTIME_NS + 1) == 1

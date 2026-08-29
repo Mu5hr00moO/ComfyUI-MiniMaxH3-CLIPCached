@@ -28,6 +28,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLIP_NAME = "fake_clip.safetensors"
 FAKE_FILE_SIZE = 111
 FAKE_MTIME_NS = 222
+FAKE_CTIME_NS = 333
 
 
 def _load_node_module():
@@ -67,7 +68,7 @@ def _make_unload_counter():
 def _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip):
     monkeypatch.setattr(MiniMaxH3ImageToVideo, "execute", classmethod(fake_execute))
     monkeypatch.setattr(node_module, "resolve_clip_stat",
-                         lambda clip_name: (FAKE_FILE_SIZE, FAKE_MTIME_NS))
+                         lambda clip_name: (FAKE_FILE_SIZE, FAKE_MTIME_NS, FAKE_CTIME_NS))
     monkeypatch.setattr(node_module, "build_clip_loader_fn",
                          lambda clip_name: (lambda: real_clip))
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
@@ -197,6 +198,7 @@ def test_d_cache_mode_auto_builds_proxy_with_force_refresh_false(monkeypatch, tm
     assert len(construction_calls) == 1
     _, kwargs = construction_calls[0]
     assert kwargs["force_refresh"] is False
+    assert kwargs["clip_ctime_ns"] == FAKE_CTIME_NS
     # rest of execute() still works exactly as with the real proxy
     assert real_clip.tokenize_calls == 1
     assert real_clip.encode_calls == 1
@@ -340,12 +342,14 @@ def test_i_is_changed_auto_reflects_checkpoint_file_identity(monkeypatch):
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedFL2VA
 
-    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222))
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222, 333))
     before = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
     before_again = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
     assert before == before_again
 
-    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (333, 444))
+    # Same filename, size and mtime; only ctime changes after an in-place
+    # rewrite or replacement whose original mtime was restored.
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222, 444))
     after = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
     assert after != before
 
@@ -390,7 +394,7 @@ def test_i_is_changed_auto_folds_in_abi_id_and_stays_stable(monkeypatch):
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedFL2VA
 
-    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222))
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222, 333))
     monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:deadbeef", True))
 
     first = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
@@ -488,7 +492,7 @@ def test_q_outer_finally_failed_unload_does_not_mask_original_exception(monkeypa
             raise RuntimeError("original failure")
 
     monkeypatch.setattr(node_module, "resolve_clip_stat",
-                         lambda clip_name: (FAKE_FILE_SIZE, FAKE_MTIME_NS))
+                         lambda clip_name: (FAKE_FILE_SIZE, FAKE_MTIME_NS, FAKE_CTIME_NS))
     monkeypatch.setattr(node_module, "build_clip_loader_fn",
                          lambda clip_name: (lambda: FakeRealClip()))
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)

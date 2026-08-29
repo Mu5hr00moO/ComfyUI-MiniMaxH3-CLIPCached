@@ -15,16 +15,18 @@ from minimaxh3_clipcache.fingerprint import _hash_tensor, compute_fingerprint
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
 MTIME_NS = 1712345678000000000
+CTIME_NS = 1712345678999999999
 ABI_ID = "test-abi-id"
 
 
 def _fp(prompt="a test prompt", tokenize_kwargs=None, clip_name=CLIP_NAME,
         clip_file_size=FILE_SIZE, clip_mtime_ns=MTIME_NS, cache_schema_version=1,
-        encoder_abi_id=ABI_ID):
+        encoder_abi_id=ABI_ID, clip_ctime_ns=CTIME_NS):
     if tokenize_kwargs is None:
         tokenize_kwargs = {}
     return compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
-                                cache_schema_version, encoder_abi_id=encoder_abi_id)
+                                cache_schema_version, encoder_abi_id=encoder_abi_id,
+                                clip_ctime_ns=clip_ctime_ns)
 
 
 def test_a_identical_inputs_same_hash():
@@ -84,6 +86,20 @@ def test_f_different_mtime_ns_different_hash():
     fp1 = _fp(tokenize_kwargs={"images": [img]}, clip_mtime_ns=111)
     fp2 = _fp(tokenize_kwargs={"images": [img.clone()]}, clip_mtime_ns=222)
     assert fp1 != fp2
+
+
+def test_f_same_name_size_mtime_but_different_ctime_different_hash():
+    img = torch.rand(1, 64, 64, 3)
+    fp1 = _fp(tokenize_kwargs={"images": [img]}, clip_ctime_ns=111)
+    fp2 = _fp(tokenize_kwargs={"images": [img.clone()]}, clip_ctime_ns=222)
+    assert fp1 != fp2
+
+
+def test_f_scalar_sequence_boundaries_prevent_known_collision():
+    # Before scalar values were length-delimited, both sequences fed the
+    # literal bytes b"1.023.0" into SHA-256.
+    assert _fp(tokenize_kwargs={"x": [1.0, 23.0]}) != \
+           _fp(tokenize_kwargs={"x": [1.02, 3.0]})
 
 
 def test_g_same_image_list_order_same_hash():
@@ -167,10 +183,10 @@ def test_hash_is_full_sha256_hex_digest():
     int(fp, 16)  # raises ValueError if not valid hex
 
 
-def test_l_hash_tensor_float32_byte_identical_to_legacy_numpy_path():
-    # Regression guard: for a numpy-representable dtype the new flat-uint8
-    # byte view must produce exactly the same digest as the old
-    # t.numpy().tobytes() implementation, so existing cache entries stay valid.
+def test_l_hash_tensor_float32_memoryview_matches_numpy_bytes_with_new_framing():
+    # Regression guard: the allocation-free memoryview path must feed the
+    # same tensor bytes as numpy.tobytes(); only the deliberate framing bytes
+    # around metadata/payload are added by the new fingerprint algorithm.
     t = torch.arange(60, dtype=torch.float32).reshape(3, 4, 5)
 
     h_new = hashlib.sha256()
@@ -178,9 +194,14 @@ def test_l_hash_tensor_float32_byte_identical_to_legacy_numpy_path():
 
     tt = t.detach().cpu().contiguous()
     h_legacy = hashlib.sha256()
-    h_legacy.update(json.dumps(
-        {"shape": list(tt.shape), "dtype": str(tt.dtype)}, sort_keys=True).encode("utf-8"))
-    h_legacy.update(tt.numpy().tobytes())
+    metadata = json.dumps(
+        {"shape": list(tt.shape), "dtype": str(tt.dtype)}, sort_keys=True,
+    ).encode("utf-8")
+    h_legacy.update(len(metadata).to_bytes(8, "big"))
+    h_legacy.update(metadata)
+    raw = tt.reshape(-1).view(torch.uint8).numpy().tobytes()
+    h_legacy.update(len(raw).to_bytes(8, "big"))
+    h_legacy.update(raw)
 
     assert h_new.hexdigest() == h_legacy.hexdigest()
 
