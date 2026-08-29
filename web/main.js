@@ -459,7 +459,7 @@ function buildInconsistentRow(entry) {
   return row;
 }
 
-function buildNormalRow(entry, generation) {
+function buildNormalRow(entry, generation, lastUsedFingerprint) {
   const user = (entry.verbose && entry.verbose.user) || {};
   const system = (entry.verbose && entry.verbose.system) || {};
   const tags = Array.isArray(user.tags) ? user.tags : [];
@@ -468,6 +468,9 @@ function buildNormalRow(entry, generation) {
   const row = document.createElement("div");
   row.className = "h3cm-row is-normal";
   row.dataset.fingerprint = entry.fingerprint; // so attachDetailAfterRow() can find this row
+  if (lastUsedFingerprint && entry.fingerprint === lastUsedFingerprint) {
+    row.classList.add("is-last-used");
+  }
 
   const star = document.createElement("button");
   star.type = "button";
@@ -535,6 +538,7 @@ function renderList() {
     favoritesOnly: panel.favoritesOnlyEl.checked,
   };
   const entries = lastCheckResult.entries || [];
+  const lastUsedFingerprint = (lastCheckResult.last_used || {})[currentVariant] || null;
   const filtered = filterEntries(entries, state);
 
   panel.listEl.innerHTML = "";
@@ -564,7 +568,7 @@ function renderList() {
     panel.listEl.appendChild(
       !entry.verbose
         ? buildLegacyRow(entry)
-        : buildNormalRow(entry, generation),
+        : buildNormalRow(entry, generation, lastUsedFingerprint),
     );
   }
 

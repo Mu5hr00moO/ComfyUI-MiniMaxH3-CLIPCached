@@ -189,6 +189,14 @@
 .h3cm-row.is-normal:hover {
   background: #1c1f26;
 }
+.h3cm-row.is-last-used {
+  border-left: 3px solid #3457d5;
+  padding-left: 3px;
+  background: rgba(52, 87, 213, 0.08);
+}
+.h3cm-row.is-last-used:hover {
+  background: rgba(52, 87, 213, 0.14);
+}
 .h3cm-fp {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
