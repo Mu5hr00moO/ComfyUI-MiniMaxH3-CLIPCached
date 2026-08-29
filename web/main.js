@@ -94,9 +94,10 @@ export function filterEntries(entries, { search, tag, favoritesOnly }) {
     const sys = (entry.verbose && entry.verbose.system) || {};
     if ((sys.node_variant || "fl2va") !== currentVariant) return false;
 
-    if (entry.classification === "legacy") {
-      // Nothing to match a legacy entry on -- show it only in the
-      // no-filters view (plan section 11.1 / 7).
+    if (!entry.verbose) {
+      // Nothing to match on when there is no verbose block -- a real legacy
+      // entry, or a "normal" entry whose verbose.json is unreadable. Either
+      // way show it only in the no-filters view (plan section 11.1 / 7).
       return unfiltered;
     }
 
@@ -507,8 +508,14 @@ function renderList() {
   }
 
   for (const entry of filtered) {
+    // No verbose block -> the simplified row. That covers a real legacy
+    // entry (predates the sidecar) AND a "normal" entry whose verbose.json
+    // is unreadable (load_verbose() returned null): buildNormalRow() would
+    // give it a detail panel / favorite / save that all 404, so render it
+    // the same stripped-down way. _sync_verbose_metadata() backfills both
+    // cases identically the next time the entry is used.
     panel.listEl.appendChild(
-      entry.classification === "legacy"
+      !entry.verbose
         ? buildLegacyRow(entry)
         : buildNormalRow(entry, generation),
     );
