@@ -24,6 +24,7 @@ directly with a fake request; see tests/conftest.py for the `server` stub
 that lets this module import without a running ComfyUI.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -54,6 +55,13 @@ ROUTE_PREFIX = "/h3_cache_manager"
 # duration of one verbose/core save (well under a second), so 5s is
 # generous; the point is to never block the request indefinitely behind a
 # stuck writer.
+#
+# The wait itself is pushed onto an executor thread (run_in_executor):
+# threading.Lock.acquire() is a blocking call, and running it directly in
+# an `async def` would freeze the whole aiohttp event loop (i.e. all of
+# ComfyUI, not just this request) for the duration of the wait, timeout or
+# not. run_in_executor moves only the waiting onto a worker thread, leaving
+# the event loop free to serve other requests.
 _LOCK_TIMEOUT_SECONDS = 5.0
 
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -113,9 +121,12 @@ async def update(request) -> web.Response:
     # nodes.py backfill): update_user_metadata does a read-modify-write on
     # the same verbose.json, so a racing system write could otherwise clobber
     # this edit. Non-blocking with a timeout -- a stuck writer must surface as
-    # 409, never hang the request.
+    # 409, never hang the request -- and the wait runs on an executor thread
+    # so it never freezes the event loop (see _LOCK_TIMEOUT_SECONDS).
     lock = get_lock(fingerprint)
-    if not lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+    loop = asyncio.get_running_loop()
+    acquired = await loop.run_in_executor(None, lock.acquire, True, _LOCK_TIMEOUT_SECONDS)
+    if not acquired:
         return _error(
             "this cache entry is currently being written by a running "
             "generation - try again in a moment", 409,
@@ -143,9 +154,13 @@ async def delete(request) -> web.Response:
 
     # Serialise against the writer's per-fingerprint lock so a Delete cannot
     # land in the middle of an in-flight encode save. Non-blocking with a
-    # timeout -- a stuck writer surfaces as 409 rather than hanging the request.
+    # timeout -- a stuck writer surfaces as 409 rather than hanging the request
+    # -- and the wait runs on an executor thread so it never freezes the event
+    # loop (see _LOCK_TIMEOUT_SECONDS).
     lock = get_lock(fingerprint)
-    if not lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+    loop = asyncio.get_running_loop()
+    acquired = await loop.run_in_executor(None, lock.acquire, True, _LOCK_TIMEOUT_SECONDS)
+    if not acquired:
         return _error(
             "this cache entry is currently being written by a running "
             "generation - try again in a moment", 409,
