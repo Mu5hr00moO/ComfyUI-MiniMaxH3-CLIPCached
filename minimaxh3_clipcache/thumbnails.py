@@ -50,7 +50,11 @@ def tensor_to_jpeg_bytes(image_tensor, max_size=256, quality=85) -> bytes:
     (Image.thumbnail only shrinks).
     """
     frame = (image_tensor[0].clamp(0, 1) * 255).byte().cpu().numpy()
-    img = Image.fromarray(frame, mode="RGB")
+    channels = frame.shape[-1] if frame.ndim == 3 else 1
+    mode = {1: "L", 3: "RGB", 4: "RGBA"}.get(channels)
+    if mode is None:
+        raise ValueError("unsupported IMAGE tensor with {} channels".format(channels))
+    img = Image.fromarray(frame.squeeze(-1) if channels == 1 else frame, mode=mode).convert("RGB")
     img.thumbnail((max_size, max_size))
 
     buf = io.BytesIO()

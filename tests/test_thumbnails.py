@@ -5,6 +5,7 @@ Synthetic torch.rand IMAGE tensors -- no GPU, no ComfyUI. Pillow only.
 
 import io
 
+import pytest
 import torch
 from PIL import Image
 
@@ -86,6 +87,28 @@ def test_d_batch_larger_than_one_uses_frame_zero(tmp_path):
     raw = img.tobytes()  # flat R,G,B,R,G,B,...
     avg = sum(raw) / len(raw)
     assert avg < 30  # near-black -> frame 0 was used, not frame 1
+
+
+def test_d_single_channel_grayscale_tensor_becomes_rgb_jpeg():
+    gray = torch.rand(1, 48, 64, 1, dtype=torch.float32)
+    img = _open(tensor_to_jpeg_bytes(gray, max_size=256))
+    assert img.format == "JPEG"
+    assert img.convert("RGB").mode == "RGB"
+    assert img.size == (64, 48)
+
+
+def test_d_four_channel_rgba_tensor_becomes_rgb_jpeg():
+    rgba = torch.rand(1, 48, 64, 4, dtype=torch.float32)
+    img = _open(tensor_to_jpeg_bytes(rgba, max_size=256))
+    assert img.format == "JPEG"
+    assert img.convert("RGB").mode == "RGB"
+    assert img.size == (64, 48)
+
+
+def test_d_unusual_channel_count_still_rejected():
+    two_channel = torch.rand(1, 16, 16, 2, dtype=torch.float32)
+    with pytest.raises(ValueError):
+        tensor_to_jpeg_bytes(two_channel)
 
 
 # --- Phase 5: delete_thumbnails ---
