@@ -38,6 +38,7 @@ notice).
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -48,6 +49,9 @@ from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 
 logger = logging.getLogger(__name__)
+
+_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError, RuntimeError)
 
 
 def _tmp_name(path: Path) -> Path:
@@ -138,6 +142,41 @@ def delete_conditioning(fingerprint: str, cache_dir: Path) -> None:
             pass
 
 
+def inspect_conditioning_pair(fingerprint: str, cache_dir: Path):
+    """Check core-envelope/header consistency without loading tensor data.
+
+    Returns ``(True, None)`` for a generation-matched pair, otherwise
+    ``(False, reason_code)``. This deliberately duplicates the small
+    generation-id gate in ``load_conditioning()`` instead of refactoring that
+    critical, heavily-tested load path merely to support Cache Manager
+    diagnostics. It never mutates either file and never calls ``load_file``.
+    """
+    cache_dir = Path(cache_dir)
+    json_path = cache_dir / "{}.json".format(fingerprint)
+    safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
+
+    if not json_path.exists():
+        return False, "missing_json"
+    try:
+        payload = json.loads(json_path.read_bytes())
+    except (OSError, ValueError):
+        return False, "json_unreadable"
+    if not isinstance(payload, dict) or "generation_id" not in payload or "skeleton" not in payload:
+        return False, "invalid_json_envelope"
+
+    if not safetensors_path.exists():
+        return False, "missing_safetensors"
+    try:
+        with safe_open(str(safetensors_path), framework="pt") as f:
+            st_metadata = f.metadata() or {}
+    except _SAFETENSOR_READ_ERRORS:
+        return False, "safetensors_unreadable"
+
+    if st_metadata.get("cache_generation_id") != payload["generation_id"]:
+        return False, "generation_mismatch"
+    return True, None
+
+
 def load_conditioning(fingerprint: str, cache_dir: Path):
     cache_dir = Path(cache_dir)
     json_path = cache_dir / "{}.json".format(fingerprint)
@@ -202,7 +241,7 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
     try:
         with safe_open(str(safetensors_path), framework="pt") as f:
             st_metadata = f.metadata() or {}
-    except SafetensorError as e:
+    except _SAFETENSOR_READ_ERRORS as e:
         logger.warning("Cache MISS for fingerprint %s: failed to read metadata from %s: %s",
                         fingerprint, safetensors_path, e)
         return None
@@ -218,7 +257,7 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
 
     try:
         tensors = load_file(str(safetensors_path))
-    except SafetensorError as e:
+    except _SAFETENSOR_READ_ERRORS as e:
         logger.warning("Cache MISS for fingerprint %s: failed to load %s: %s",
                         fingerprint, safetensors_path, e)
         return None
@@ -256,6 +295,10 @@ def gc_orphaned_cache_files(cache_dir: Path) -> list[str]:
     removed = []
     for safetensors_path in cache_dir.glob("*.safetensors"):
         fingerprint = safetensors_path.stem
+        # This directory may contain user-managed files as well as cache
+        # entries. Only canonical SHA-256 cache filenames are ours to sweep.
+        if _FINGERPRINT_RE.fullmatch(fingerprint) is None:
+            continue
         json_path = cache_dir / "{}.json".format(fingerprint)
         if json_path.exists():
             continue

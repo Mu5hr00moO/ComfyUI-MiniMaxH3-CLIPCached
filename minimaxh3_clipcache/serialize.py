@@ -28,6 +28,13 @@ def flatten_tensors(obj):
             return {_TENSOR_REF_KEY: path}
         if isinstance(node, dict):
             for key in node:
+                if key in (_TENSOR_REF_KEY, _TYPE_KEY):
+                    raise ValueError(
+                        "minimaxh3_clipcache.serialize cannot serialize the "
+                        "reserved dict key {!r} (at path {!r}). That key is "
+                        "used internally by the cache format and would be "
+                        "misinterpreted while loading.".format(
+                            key, path or "<root>"))
                 # Flat tensor keys are built by joining path components with
                 # ".", so a "." inside a dict key makes the resulting path
                 # ambiguous: {"a.b": t} and {"a": {"b": t}} would both flatten

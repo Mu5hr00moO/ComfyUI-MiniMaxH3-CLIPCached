@@ -13,12 +13,14 @@ and query-string routing, and HTTP-level transfer of the thumbnail bytes.
 
 import asyncio
 import json
+import threading
 
 import pytest
 
 from minimaxh3_clipcache import routes as routes_module
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.routes import check, delete, get, thumbnail, update
+from minimaxh3_clipcache.store import save_conditioning
 from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
 FP = "a" * 64
@@ -58,8 +60,9 @@ def _system(prompt="a prompt"):
 
 
 def _make_core_entry(cache_dir, fp):
-    (cache_dir / "{}.json".format(fp)).write_bytes(b"{}")
-    (cache_dir / "{}.safetensors".format(fp)).write_bytes(b"tensorbytes")
+    import torch
+
+    save_conditioning(fp, [torch.zeros(1)], cache_dir)
 
 
 def _make_thumbnail(cache_dir, fp, index, data=b"\xff\xd8fakejpeg\xff\xd9"):
@@ -244,6 +247,50 @@ def test_delete_and_update_work_and_release_the_lock_when_it_is_free(_cache_dir)
     lock = get_lock(FP)
     assert lock.acquire(blocking=False), "a handler left the fingerprint lock held"
     lock.release()
+
+
+def test_abandoned_update_worker_cannot_leak_the_fingerprint_lock(_cache_dir, monkeypatch):
+    monkeypatch.setattr(routes_module, "_LOCK_TIMEOUT_SECONDS", 1.0)
+    save_verbose(FP, _system(), _cache_dir)
+
+    worker_started = threading.Event()
+    worker_finished = threading.Event()
+    errors = []
+    lock = get_lock(FP)
+    assert lock.acquire(timeout=1)
+
+    def abandoned_worker():
+        worker_started.set()
+        try:
+            routes_module._run_under_fingerprint_lock(
+                FP,
+                lambda: routes_module.update_user_metadata(
+                    FP, {"name": "completed safely in worker"}, _cache_dir,
+                ),
+            )
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            worker_finished.set()
+
+    worker = threading.Thread(target=abandoned_worker)
+    worker.start()
+    try:
+        assert worker_started.wait(timeout=1)
+        # At this point an aiohttp task may be cancelled and abandon its
+        # Future. The executor worker remains responsible for both the
+        # operation and release; nothing in the caller has to clean it up.
+        lock.release()
+        assert worker_finished.wait(timeout=1)
+        worker.join(timeout=1)
+
+        assert errors == []
+        assert load_verbose(FP, _cache_dir)["user"]["name"] == "completed safely in worker"
+        assert lock.acquire(blocking=False), "abandoned worker left the fingerprint lock held"
+        lock.release()
+    finally:
+        if lock.locked():
+            lock.release()
 
 
 # --- thumbnail ---

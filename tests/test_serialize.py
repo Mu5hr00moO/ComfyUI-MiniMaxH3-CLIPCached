@@ -32,3 +32,14 @@ def test_dotted_dict_key_raises_value_error():
 def test_dotted_dict_key_nested_raises_value_error():
     with pytest.raises(ValueError, match=r"dict key containing '\.'"):
         flatten_tensors([{"ok": {"also.bad": torch.rand(2)}}])
+
+
+@pytest.mark.parametrize("reserved_key", ["__tensor_ref__", "__type__"])
+def test_reserved_dict_key_raises_value_error(reserved_key):
+    with pytest.raises(ValueError, match="reserved dict key"):
+        flatten_tensors({reserved_key: "real user value"})
+
+
+def test_reserved_dict_key_nested_raises_value_error():
+    with pytest.raises(ValueError, match="__tensor_ref__"):
+        flatten_tensors([{"safe": {"__tensor_ref__": "not an internal marker"}}])

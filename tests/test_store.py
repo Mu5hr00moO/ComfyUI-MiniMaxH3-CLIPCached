@@ -14,7 +14,11 @@ import torch
 from minimaxh3_clipcache import store
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.store import gc_orphaned_cache_files
-from minimaxh3_clipcache.store import load_conditioning, save_conditioning
+from minimaxh3_clipcache.store import (
+    inspect_conditioning_pair,
+    load_conditioning,
+    save_conditioning,
+)
 
 FINGERPRINT_A = "a" * 64
 FINGERPRINT_B = "b" * 64
@@ -169,6 +173,48 @@ def test_d_safetensors_from_a_different_entry_returns_none(tmp_path, caplog):
     assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
 
 
+def test_d_safe_open_oserror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def unreadable_header(*args, **kwargs):
+        raise OSError("simulated filesystem read failure")
+
+    monkeypatch.setattr(store, "safe_open", unreadable_header)
+    with caplog.at_level(logging.WARNING):
+        assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert any("failed to read metadata" in r.getMessage() for r in caplog.records)
+
+
+def test_d_load_file_runtimeerror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_load(*args, **kwargs):
+        raise RuntimeError("simulated torch/safetensors runtime failure")
+
+    monkeypatch.setattr(store, "load_file", failing_load)
+    with caplog.at_level(logging.WARNING):
+        assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert any("failed to load" in r.getMessage() for r in caplog.records)
+
+
+def test_d_pair_inspection_checks_generation_without_loading_tensors(tmp_path, monkeypatch):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def must_not_load(*args, **kwargs):
+        raise AssertionError("inspection must not load tensor payloads")
+
+    monkeypatch.setattr(store, "load_file", must_not_load)
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (True, None)
+
+    payload_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(payload_path.read_bytes())
+    payload["generation_id"] = "different-generation"
+    payload_path.write_bytes(json.dumps(payload).encode("utf-8"))
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
+        False, "generation_mismatch",
+    )
+
+
 def test_d_skeleton_references_missing_tensor_key_returns_none(tmp_path, caplog):
     # Last line of defense, after the generation-id gate: the .json envelope is
     # valid and its generation id matches the .safetensors, but the skeleton
@@ -275,6 +321,17 @@ def test_g_gc_removes_only_orphaned_safetensors(tmp_path):
     assert not (tmp_path / "{}.safetensors".format(orphan_fp)).exists()
     _assert_cond_equal(cond_a, load_conditioning(FINGERPRINT_A, tmp_path))
     _assert_cond_equal(cond_b, load_conditioning(FINGERPRINT_B, tmp_path))
+
+
+def test_g_gc_never_deletes_non_cache_safetensors_files(tmp_path):
+    user_file = tmp_path / "user-model.safetensors"
+    user_file.write_bytes(b"not owned by this cache")
+    uppercase_hash_file = tmp_path / (("A" * 64) + ".safetensors")
+    uppercase_hash_file.write_bytes(b"also not a canonical cache filename")
+
+    assert gc_orphaned_cache_files(tmp_path) == []
+    assert user_file.read_bytes() == b"not owned by this cache"
+    assert uppercase_hash_file.exists()
 
 
 def test_g_gc_on_empty_or_missing_dir_returns_empty_list(tmp_path):

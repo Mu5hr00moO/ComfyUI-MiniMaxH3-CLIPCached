@@ -1,18 +1,19 @@
 """Filesystem-only scan of the cache directory for the Cache Manager's
 "Check" action (plan section 11).
 
-This module never opens a ".safetensors" file and never parses tensors:
-classification is based *purely on which files exist*, exactly the way
-store.load_conditioning() decides HIT vs MISS (it returns None the moment
-"<fp>.json" is absent, without ever touching the tensors). "Check" must stay
-cheap enough to run on every panel refresh. (It does import
-store.gc_orphaned_cache_files, which transitively imports torch/safetensors
--- a no-op cost inside a running ComfyUI, where both are already loaded.)
+This module never loads tensor data. For a pair of core files it does parse
+the small JSON envelope and open only the safetensors header so the Cache
+Manager reports the same generation-id mismatch that store.load_conditioning()
+would treat as a MISS. "Check" stays cheap enough to run on every panel
+refresh; the route runs it outside the aiohttp event loop.
 
-Classification (plan section 11.1), by file existence only:
+Classification (plan section 11.1), by core-pair consistency and sidecar
+existence:
 
   normal  -- "<fp>.json" AND "<fp>.safetensors" AND "<fp>.verbose.json"
   legacy  -- "<fp>.json" AND "<fp>.safetensors", but no "<fp>.verbose.json"
+  inconsistent -- both core files exist, but their envelope/header cannot be
+                  read or their generation ids do not match
 
 An orphan ".safetensors" (no ".json") is swept off disk at the start of
 every scan (store.gc_orphaned_cache_files()), so it is neither an entry nor
@@ -25,8 +26,8 @@ the asymmetry is deliberate.
 Edge case, documented on purpose: if "<fp>.verbose.json" EXISTS but is
 corrupt, the entry is still classified "normal" (the file exists) while its
 "verbose" value is None (load_verbose() returns None on corruption).
-Classification is about file existence, not file validity -- this is
-intentional, not an oversight.
+Verbose classification is about sidecar existence, not sidecar validity --
+this is intentional, not an oversight.
 
 total_size_bytes is the recursive sum of every file left under cache_dir
 after the orphan-".safetensors" sweep -- entries, ".verbose.json"/".json"
@@ -43,7 +44,8 @@ import os
 import re
 from pathlib import Path
 
-from minimaxh3_clipcache.store import gc_orphaned_cache_files
+from minimaxh3_clipcache.locking import get_lock
+from minimaxh3_clipcache.store import gc_orphaned_cache_files, inspect_conditioning_pair
 from minimaxh3_clipcache.verbose_store import load_verbose
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,29 @@ def _dir_size_bytes(root: Path) -> int:
             except OSError:
                 pass  # file vanished between listing and stat -- ignore
     return total
+
+
+def _stable_pair_issue(fingerprint, cache_dir):
+    """Return a stable inconsistency reason, or None.
+
+    A successful save briefly exposes new safetensors under old JSON between
+    its two atomic replacements. If an optimistic inspection sees a problem,
+    re-check under the writer's per-fingerprint lock. A busy lock means the
+    state is actively changing, so defer the warning until the next Check
+    instead of showing a false persistent-inconsistency alert.
+    """
+    valid, reason = inspect_conditioning_pair(fingerprint, cache_dir)
+    if valid:
+        return None
+
+    lock = get_lock(fingerprint)
+    if not lock.acquire(blocking=False):
+        return None
+    try:
+        valid, reason = inspect_conditioning_pair(fingerprint, cache_dir)
+        return None if valid else reason
+    finally:
+        lock.release()
 
 
 def scan_cache(cache_dir) -> dict:
@@ -93,6 +118,15 @@ def scan_cache(cache_dir) -> dict:
 
     entries = []
     for fp in sorted(core_json & safetensors):
+        issue = _stable_pair_issue(fp, cache_dir)
+        if issue is not None:
+            entries.append({
+                "fingerprint": fp,
+                "classification": "inconsistent",
+                "reason": issue,
+                "verbose": load_verbose(fp, cache_dir) if fp in verbose else None,
+            })
+            continue
         if fp in verbose:
             entries.append({
                 "fingerprint": fp,

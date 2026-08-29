@@ -13,9 +13,10 @@ konwencja PromptServer routes"):
   POST /h3_cache_manager/delete     {fingerprint}      -> delete the whole cache entry
   GET  /h3_cache_manager/thumbnail  ?fingerprint=&index= -> image/jpeg bytes, 404 if none
 
-None of these load a CLIP, encode anything, or open a ".safetensors" file.
-"check" is a pure filesystem scan; the rest are small metadata / file
-operations. All heavy lifting stays in the per-concern modules
+None of these load a CLIP, encode anything, or load tensor payload data.
+"check" is a filesystem scan that reads core JSON and safetensors headers;
+the rest are small metadata / file operations. All heavy lifting stays in
+the per-concern modules
 (scanner / verbose_store / store / thumbnails) -- routes.py never becomes a
 second store.
 
@@ -25,6 +26,7 @@ that lets this module import without a running ComfyUI.
 """
 
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -60,15 +62,15 @@ ROUTE_PREFIX = "/h3_cache_manager"
 # timeout to "wait it out" would only freeze the Cache Manager request for
 # minutes; it would not make the operation any safer.
 #
-# The wait itself is pushed onto an executor thread (run_in_executor):
-# threading.Lock.acquire() is a blocking call, and running it directly in
-# an `async def` would freeze the whole aiohttp event loop (i.e. all of
-# ComfyUI, not just this request) for the duration of the wait, timeout or
-# not. run_in_executor moves only the waiting onto a worker thread, leaving
-# the event loop free to serve other requests.
+# The wait and the small operation protected by it both run in one executor
+# worker. threading.Lock.acquire() must not freeze aiohttp's event loop, and
+# keeping acquire -> operation -> release in the same synchronous callable
+# also guarantees that request cancellation can never strand an acquired
+# lock in a worker with no coroutine left to release it.
 _LOCK_TIMEOUT_SECONDS = 5.0
 
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+_LOCK_BUSY = object()
 
 
 def _is_fingerprint(value) -> bool:
@@ -77,6 +79,30 @@ def _is_fingerprint(value) -> bool:
 
 def _error(message: str, status: int) -> web.Response:
     return web.json_response({"error": message}, status=status)
+
+
+def _run_under_fingerprint_lock(fingerprint, operation):
+    """Acquire, run and release entirely inside one executor worker.
+
+    An aiohttp handler can be cancelled while it awaits ``run_in_executor``.
+    If only ``lock.acquire`` ran in the worker, that worker could acquire the
+    lock after cancellation with no coroutine left to release it. Keeping the
+    critical section in the same synchronous callable makes release
+    unconditional even when the awaiting request disappears.
+    """
+    lock = get_lock(fingerprint)
+    if not lock.acquire(True, _LOCK_TIMEOUT_SECONDS):
+        return _LOCK_BUSY
+    try:
+        return operation()
+    finally:
+        lock.release()
+
+
+def _delete_entry_files(fingerprint, cache_dir):
+    delete_conditioning(fingerprint, cache_dir)
+    delete_verbose(fingerprint, cache_dir)
+    delete_thumbnails(fingerprint, cache_dir)
 
 
 async def _json_object_body(request):
@@ -134,22 +160,21 @@ async def update(request) -> web.Response:
     # this edit. Non-blocking with a timeout -- a stuck writer must surface as
     # 409, never hang the request -- and the wait runs on an executor thread
     # so it never freezes the event loop (see _LOCK_TIMEOUT_SECONDS).
-    lock = get_lock(fingerprint)
     loop = asyncio.get_running_loop()
-    acquired = await loop.run_in_executor(None, lock.acquire, True, _LOCK_TIMEOUT_SECONDS)
-    if not acquired:
-        return _error(
-            "this cache entry is currently being written by a running "
-            "generation - try again in a moment", 409,
-        )
+    operation = functools.partial(update_user_metadata, fingerprint, updates, CACHE_DIR)
     try:
-        updated = update_user_metadata(fingerprint, updates, CACHE_DIR)
+        updated = await loop.run_in_executor(
+            None, _run_under_fingerprint_lock, fingerprint, operation,
+        )
     except FileNotFoundError:
         return _error("no verbose metadata for fingerprint {}".format(fingerprint), 404)
     except ValueError as e:
         return _error(str(e), 400)
-    finally:
-        lock.release()
+    if updated is _LOCK_BUSY:
+        return _error(
+            "this cache entry is currently being written by a running "
+            "generation - try again in a moment", 409,
+        )
     return web.json_response(updated)
 
 
@@ -168,10 +193,12 @@ async def delete(request) -> web.Response:
     # timeout -- a stuck writer surfaces as 409 rather than hanging the request
     # -- and the wait runs on an executor thread so it never freezes the event
     # loop (see _LOCK_TIMEOUT_SECONDS).
-    lock = get_lock(fingerprint)
     loop = asyncio.get_running_loop()
-    acquired = await loop.run_in_executor(None, lock.acquire, True, _LOCK_TIMEOUT_SECONDS)
-    if not acquired:
+    result = await loop.run_in_executor(
+        None, _run_under_fingerprint_lock, fingerprint,
+        functools.partial(_delete_entry_files, fingerprint, CACHE_DIR),
+    )
+    if result is _LOCK_BUSY:
         return _error(
             "this cache entry is currently being written by a running "
             "generation - try again in a moment", 409,
@@ -180,12 +207,6 @@ async def delete(request) -> web.Response:
     # HIT immediately), then ".safetensors", then the manager-only sidecar,
     # then thumbnails. Each step is idempotent, so a partial previous delete
     # is simply completed.
-    try:
-        delete_conditioning(fingerprint, CACHE_DIR)
-        delete_verbose(fingerprint, CACHE_DIR)
-        delete_thumbnails(fingerprint, CACHE_DIR)
-    finally:
-        lock.release()
     return web.json_response({"deleted": fingerprint})
 
 

@@ -1,12 +1,12 @@
-"""Unit tests for minimaxh3_clipcache.scanner.scan_cache.
-
-Pure filesystem -- fake cache files via write_bytes() with known sizes, no
-torch, no safetensors, no real encode cache.
-"""
+"""Unit tests for minimaxh3_clipcache.scanner.scan_cache."""
 
 import json
 
+import torch
+
+from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.scanner import scan_cache
+from minimaxh3_clipcache.store import save_conditioning
 
 FP1 = "1" * 64
 FP2 = "2" * 64
@@ -18,9 +18,8 @@ def _write(path, nbytes):
     path.write_bytes(b"x" * nbytes)
 
 
-def _core(tmp_path, fp, json_bytes=10, st_bytes=100):
-    _write(tmp_path / "{}.json".format(fp), json_bytes)
-    _write(tmp_path / "{}.safetensors".format(fp), st_bytes)
+def _core(tmp_path, fp):
+    save_conditioning(fp, [torch.zeros(1)], tmp_path)
 
 
 def _verbose(tmp_path, fp, obj=None, raw=None):
@@ -85,7 +84,7 @@ def test_d_orphan_safetensors_is_swept_off_disk_by_scan(tmp_path):
 
 
 def test_d_orphan_safetensors_sweep_leaves_a_real_entry_untouched(tmp_path):
-    _core(tmp_path, FP1, json_bytes=10, st_bytes=100)
+    _core(tmp_path, FP1)
     _verbose(tmp_path, FP1)
     orphan = tmp_path / "{}.safetensors".format(FP2)
     _write(orphan, 500)
@@ -99,7 +98,6 @@ def test_d_orphan_safetensors_sweep_leaves_a_real_entry_untouched(tmp_path):
     assert (tmp_path / "{}.json".format(FP1)).exists()
     assert (tmp_path / "{}.safetensors".format(FP1)).exists()
     assert result["total_size_bytes"] == _recursive_size(tmp_path)
-    assert result["total_size_bytes"] < 500 + 10 + 100  # orphan's 500 not counted
 
 
 def test_e_orphan_verbose_not_an_entry_but_counted_in_size(tmp_path):
@@ -122,7 +120,7 @@ def test_e_lone_core_json_without_safetensors_is_not_an_entry(tmp_path):
 
 
 def test_f_thumbnail_bytes_counted_in_size(tmp_path):
-    _core(tmp_path, FP1, json_bytes=10, st_bytes=100)
+    _core(tmp_path, FP1)
     _verbose(tmp_path, FP1)
     thumbs = tmp_path / "thumbnails"
     thumbs.mkdir()
@@ -132,7 +130,7 @@ def test_f_thumbnail_bytes_counted_in_size(tmp_path):
 
     assert result["total_count"] == 1
     assert result["total_size_bytes"] == _recursive_size(tmp_path)
-    assert result["total_size_bytes"] >= 10 + 100 + 321
+    assert result["total_size_bytes"] >= 321
 
 
 def test_g_normal_with_corrupt_verbose_stays_normal_but_verbose_none(tmp_path):
@@ -162,3 +160,48 @@ def test_h_mixed_directory_classifies_and_sizes_correctly(tmp_path):
     assert by_fp == {FP1: "normal", FP2: "legacy"}
     assert result["total_count"] == 2
     assert result["total_size_bytes"] == _recursive_size(tmp_path)
+
+
+def test_i_generation_mismatch_is_reported_as_inconsistent(tmp_path):
+    _core(tmp_path, FP1)
+    _verbose(tmp_path, FP1)
+    json_path = tmp_path / "{}.json".format(FP1)
+    payload = json.loads(json_path.read_bytes())
+    payload["generation_id"] = "torn-refresh-generation"
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    (entry,) = scan_cache(tmp_path)["entries"]
+
+    assert entry["classification"] == "inconsistent"
+    assert entry["reason"] == "generation_mismatch"
+    assert entry["verbose"] is not None
+
+
+def test_i_unreadable_core_json_is_reported_as_inconsistent(tmp_path):
+    _core(tmp_path, FP1)
+    (tmp_path / "{}.json".format(FP1)).write_bytes(b"not json")
+
+    (entry,) = scan_cache(tmp_path)["entries"]
+
+    assert entry["classification"] == "inconsistent"
+    assert entry["reason"] == "json_unreadable"
+
+
+def test_i_transient_mismatch_while_writer_holds_lock_is_not_reported(tmp_path):
+    _core(tmp_path, FP1)
+    _verbose(tmp_path, FP1)
+    json_path = tmp_path / "{}.json".format(FP1)
+    payload = json.loads(json_path.read_bytes())
+    payload["generation_id"] = "temporarily-old-json"
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    lock = get_lock(FP1)
+    assert lock.acquire(blocking=False)
+    try:
+        (entry,) = scan_cache(tmp_path)["entries"]
+        assert entry["classification"] == "normal"
+    finally:
+        lock.release()
+
+    (entry,) = scan_cache(tmp_path)["entries"]
+    assert entry["classification"] == "inconsistent"
