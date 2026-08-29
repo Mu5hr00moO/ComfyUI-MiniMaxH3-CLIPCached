@@ -29,6 +29,9 @@ let lastCheckResult = null; // last /check response, for client-side filtering
 let currentVariant = "fl2va"; // "fl2va" | "ref2va" -- which node's entries the list shows
 let openDetailFingerprint = null; // fingerprint whose detail panel is shown
 let objectUrls = []; // list-row thumbnail blob URLs to revoke on the next list render
+let detailRefObjectUrls = []; // detail-panel reference thumbnail blob URLs, revoked
+// only when renderDetailRefs() rebuilds -- kept apart from objectUrls so a
+// list re-render (search/tag/favorite typing) never revokes a live detail thumb
 let renderGeneration = 0; // bumped each render so stale async thumbnails bail
 let copyResultObjectUrls = []; // thumbnail blob URLs shown in the "Copy prompt" result box
 
@@ -308,7 +311,7 @@ function revokeThumbnailUrls() {
   objectUrls = [];
 }
 
-async function loadThumbnail(imgEl, fingerprint, index, generation) {
+async function loadThumbnail(imgEl, fingerprint, index, generation, bucket = objectUrls) {
   try {
     const response = await api.fetchApi(
       `${API_PREFIX}/thumbnail?fingerprint=${encodeURIComponent(fingerprint)}&index=${encodeURIComponent(index)}`,
@@ -317,7 +320,7 @@ async function loadThumbnail(imgEl, fingerprint, index, generation) {
     const blob = await response.blob();
     if (generation !== renderGeneration) return; // list re-rendered meanwhile
     const url = URL.createObjectURL(blob);
-    objectUrls.push(url);
+    bucket.push(url);
     imgEl.src = url;
     imgEl.classList.add("is-loaded");
   } catch (_) {
@@ -454,6 +457,25 @@ function buildNormalRow(entry, generation) {
   return row;
 }
 
+// renderList() clears panel.listEl, and attachDetailAfterRow() parents the one
+// detail node *inside* a row, so every re-render physically removes the detail
+// panel from the DOM. Any caller that re-renders on its own (the search / tag /
+// favorite listeners go straight to renderList(), not through runCheck()) would
+// otherwise leave the panel orphaned. Re-attach it here, after the rows exist:
+// if its entry survived the current filter, rebuild + re-attach it; if the
+// filter now hides that entry, close it.
+function reattachOpenDetailAfterRender(filtered) {
+  if (!openDetailFingerprint) return;
+  const entry = findNormalEntry(openDetailFingerprint);
+  const stillListed = filtered.some((e) => e.fingerprint === openDetailFingerprint);
+  if (entry && stillListed) {
+    populateDetail(entry);
+    attachDetailAfterRow(openDetailFingerprint);
+  } else {
+    closeDetail();
+  }
+}
+
 function renderList() {
   if (!panel || !lastCheckResult) return;
 
@@ -478,6 +500,7 @@ function renderList() {
       ? "No cache entries found."
       : "No entries match the current search / filters.";
     panel.listEl.appendChild(empty);
+    reattachOpenDetailAfterRender(filtered);
     return;
   }
 
@@ -488,6 +511,8 @@ function renderList() {
         : buildNormalRow(entry, generation),
     );
   }
+
+  reattachOpenDetailAfterRender(filtered);
 }
 
 // --- check ---------------------------------------------------------------
@@ -503,22 +528,8 @@ async function runCheck() {
     panel.statusEl.textContent = `Cache: ${count} entries / ${formatBytes(data.total_size_bytes)}`;
 
     refreshTagFilterOptions();
-    renderList();
-
-    // Keep the detail panel on the same entry across a refresh (e.g. after
-    // a Save or a favorite toggle); close it if that entry is gone.
-    // renderList() above rebuilt every row from scratch, so the detail node
-    // has to be re-attached under the (new) row for its fingerprint --
-    // otherwise it drifts back to the end of the list on each refresh.
-    if (openDetailFingerprint) {
-      const still = findNormalEntry(openDetailFingerprint);
-      if (still) {
-        populateDetail(still);
-        attachDetailAfterRow(openDetailFingerprint);
-      } else {
-        closeDetail();
-      }
-    }
+    renderList(); // also re-attaches the open detail panel, or closes it if
+    // that entry is gone / now filtered out -- see reattachOpenDetailAfterRender()
   } catch (err) {
     lastCheckResult = null;
     panel.statusEl.textContent = `Cache: check failed (${err && err.message ? err.message : err})`;
@@ -553,6 +564,11 @@ const REF_TYPE_LABEL = { image: "Picture", video: "Video", audio: "Audio" };
 
 function renderDetailRefs(container, fingerprint, variant, references) {
   container.innerHTML = "";
+  // Detail thumbnails live in their own blob-URL pool (see the declaration of
+  // detailRefObjectUrls): revoke the previous set here, where the <img>
+  // elements holding them have just been discarded, and nowhere else.
+  for (const url of detailRefObjectUrls) URL.revokeObjectURL(url);
+  detailRefObjectUrls = [];
   // FL2VA is unchanged: its first_frame / last_frame already show in the list
   // row and, on a Copy-prompt click, in the result box below -- no persistent
   // breakdown here. Only Ref2VA gets one.
@@ -589,7 +605,7 @@ function renderDetailRefs(container, fingerprint, variant, references) {
       img.className = "h3cm-thumb";
       img.alt = posLabel;
       cell.appendChild(img);
-      loadThumbnail(img, fingerprint, ref.index, renderGeneration);
+      loadThumbnail(img, fingerprint, ref.index, renderGeneration, detailRefObjectUrls);
     }
 
     const cap = document.createElement("span");
