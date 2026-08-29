@@ -3,11 +3,13 @@
 Pure dict/JSON round-trips -- no GPU, no ComfyUI (mirrors tests/test_store.py).
 """
 
+import copy
 import json
 import logging
 
 import pytest
 
+from minimaxh3_clipcache import verbose_store
 from minimaxh3_clipcache.verbose_store import (
     DEFAULT_USER_METADATA,
     delete_verbose,
@@ -44,10 +46,32 @@ def test_a_round_trip_fresh_entry_gets_default_user(tmp_path):
     assert loaded["system"] == system
     assert loaded["user"] == DEFAULT_USER_METADATA
 
-    # The default must be copied, not shared -- mutating a loaded entry
-    # must not bleed into the module-level DEFAULT_USER_METADATA.
-    loaded["user"]["tags"].append("leaked")
-    assert DEFAULT_USER_METADATA["tags"] == []
+
+def test_save_verbose_actually_deepcopies_the_default_user(tmp_path, monkeypatch):
+    """Prove the implementation copies DEFAULT_USER_METADATA rather than
+    aliasing it. Asserting on a *loaded* entry cannot show this -- load_verbose()
+    parses fresh JSON, so its "user" block is always a new object regardless of
+    what save_verbose() did. Spying on copy.deepcopy is what actually catches
+    the deepcopy() call being dropped from the source.
+    """
+    calls = []
+    original_deepcopy = copy.deepcopy
+
+    def spy_deepcopy(obj):
+        calls.append(obj)
+        return original_deepcopy(obj)
+
+    monkeypatch.setattr(verbose_store.copy, "deepcopy", spy_deepcopy)
+
+    save_verbose(FINGERPRINT_A, {"prompt": "x"}, tmp_path)
+
+    assert any(c == DEFAULT_USER_METADATA for c in calls), (
+        "save_verbose() must call copy.deepcopy(DEFAULT_USER_METADATA) for a "
+        "fresh entry, not use it by reference - otherwise a future mutation "
+        "of one entry's \"user\" block could corrupt the shared module-level "
+        "default for every other fresh entry created afterward in the same "
+        "process."
+    )
 
 
 def test_b_backfill_preserves_user_edits(tmp_path):
