@@ -118,10 +118,12 @@ export function filterEntries(entries, { search, tag, favoritesOnly }) {
   });
 }
 
-export function allNormalTags(entries) {
+export function allNormalTags(entries, variant) {
   const set = new Set();
   for (const entry of entries || []) {
     if (entry.classification !== "normal") continue;
+    const entryVariant = (entry.verbose && entry.verbose.system && entry.verbose.system.node_variant) || "fl2va";
+    if (entryVariant !== variant) continue;
     const tags = (entry.verbose && entry.verbose.user && entry.verbose.user.tags) || [];
     for (const t of tags) set.add(String(t));
   }
@@ -293,7 +295,7 @@ function switchVariant(variant) {
 function refreshTagFilterOptions() {
   const { tagFilterEl } = panel;
   const previous = tagFilterEl.value;
-  const tags = lastCheckResult ? allNormalTags(lastCheckResult.entries) : [];
+  const tags = lastCheckResult ? allNormalTags(lastCheckResult.entries, currentVariant) : [];
 
   tagFilterEl.innerHTML = '<option value="">All tags</option>';
   for (const tag of tags) {
