@@ -3,6 +3,7 @@
 Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 """
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -27,6 +28,15 @@ def _cond_variant_a():
 def _cond_variant_b():
     return [[torch.rand(1, 1019, 5120, dtype=torch.float32),
              {"pooled_output": None, "minimax_token_tags": torch.zeros(1019, dtype=torch.int64)}]]
+
+
+def _cond_variant_a_with_different_values():
+    """Byte-for-byte the same skeleton as _cond_variant_a() -- identical
+    nesting, keys, tensor shapes and dtypes -- but different numeric values in
+    the tensors. This is the realistic shape of a cache_mode="refresh" of the
+    same inputs: the structure never moves, only the encoded values do."""
+    return [[torch.full((1, 3, 5120), 0.5, dtype=torch.float32),
+             {"pooled_output": None, "minimax_token_tags": torch.ones(3, dtype=torch.int64)}]]
 
 
 def _assert_cond_equal(original, loaded):
@@ -138,11 +148,12 @@ def test_d_corrupted_json_returns_none(tmp_path, caplog):
     assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
 
 
-def test_d_skeleton_tensor_mismatch_returns_none(tmp_path, caplog):
-    # Both files individually load fine, but the tensor paths in the A
-    # skeleton ("0.0", "0.1.minimax_token_tags") don't exist in a
-    # differently-shaped cond's tensor dict (just "0") -- a natural key
-    # mismatch to reconstruct from.
+def test_d_safetensors_from_a_different_entry_returns_none(tmp_path, caplog):
+    # A's .safetensors replaced wholesale with another entry's file. Each
+    # save_conditioning() call stamps its own generation id into both
+    # artifacts, so the swapped-in .safetensors carries a different
+    # cache_generation_id than A's .json -- caught by the generation-id gate
+    # before any tensor data is even read.
     save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
     other_fingerprint = "d" * 64
     save_conditioning(other_fingerprint, [torch.rand(2, 2)], tmp_path)
@@ -154,8 +165,61 @@ def test_d_skeleton_tensor_mismatch_returns_none(tmp_path, caplog):
         result = load_conditioning(FINGERPRINT_A, tmp_path)
 
     assert result is None
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert any("generation_id mismatch" in r.getMessage() for r in caplog.records)
     assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
+
+
+def test_d_skeleton_references_missing_tensor_key_returns_none(tmp_path, caplog):
+    # Last line of defense, after the generation-id gate: the .json envelope is
+    # valid and its generation id matches the .safetensors, but the skeleton
+    # references a tensor path that isn't in the file. Keep the entry's real
+    # generation id and swap only the skeleton so unflatten_tensors()' own
+    # KeyError guard is the one that fires.
+    from minimaxh3_clipcache.serialize import flatten_tensors
+
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(json_path.read_bytes())
+    bad_skeleton, _ = flatten_tensors([torch.rand(2, 2)])  # references key "0", absent from A
+    payload["skeleton"] = bad_skeleton
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    with caplog.at_level(logging.WARNING):
+        result = load_conditioning(FINGERPRINT_A, tmp_path)
+
+    assert result is None
+    assert any("reconstructing" in r.getMessage() for r in caplog.records)
+    assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
+
+
+def test_generation_mismatch_with_identical_skeleton_structure_is_still_a_clean_miss(tmp_path, monkeypatch):
+    """Residual gap z audytu: nawet gdy stary i nowy skeleton są
+    strukturalnie identyczne (realistyczny refresh tych samych wejść),
+    awaria DRUGIEGO os.replace (json) po udanym PIERWSZYM (safetensors)
+    nie może zostać po cichu wczytana jako poprawny wpis - musi być
+    jednoznacznym MISS-em, niezależnie od tego czy unflatten_tensors()
+    przypadkiem by się nie wysypał na zgodnej strukturze."""
+    old_cond = _cond_variant_a()
+    save_conditioning(FINGERPRINT_A, old_cond, tmp_path)
+
+    new_cond = _cond_variant_a_with_different_values()
+
+    original_replace = os.replace
+
+    def flaky_replace(src, dst):
+        if str(dst).endswith(".json"):
+            raise OSError("simulated failure on the second (json) replace")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="simulated failure"):
+        save_conditioning(FINGERPRINT_A, new_cond, tmp_path)
+
+    loaded = load_conditioning(FINGERPRINT_A, tmp_path)
+    assert loaded is None, (
+        "generation mismatch must MISS even when skeleton structure matches"
+    )
 
 
 def test_e_missing_fingerprint_returns_none_without_warning(tmp_path, caplog):
@@ -290,7 +354,7 @@ def test_refresh_failure_preserves_old_entry_when_tensor_write_fails(tmp_path, m
     # A real safetensors write that dies partway through (disk full, killed
     # thread) can leave a partial temp file behind before it raises --
     # simulate that, so cleanup of our own temp files is actually exercised.
-    def failing_save_file(tensors, path):
+    def failing_save_file(tensors, path, metadata=None):
         Path(path).write_bytes(b"partial-safetensors-garbage")
         raise RuntimeError("simulated safetensors write failure")
 

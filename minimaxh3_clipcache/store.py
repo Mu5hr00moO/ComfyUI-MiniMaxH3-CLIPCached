@@ -1,7 +1,8 @@
 """Atomic, pickle-free disk cache for CONDITIONING results, keyed by fingerprint.
 
 Two files per entry: "<fingerprint>.safetensors" (tensors) and
-"<fingerprint>.json" (the skeleton from minimaxh3_clipcache.serialize.flatten_tensors).
+"<fingerprint>.json" -- a schema-v2 payload {"generation_id": <uuid4 hex>,
+"skeleton": <the skeleton from minimaxh3_clipcache.serialize.flatten_tensors>}.
 Both are written to a temp file in cache_dir and moved into place with
 os.replace(), which is atomic on the same filesystem.
 
@@ -17,11 +18,21 @@ failed cache_mode="refresh" safe. Phase 2 publishes the two temp files with
 os.replace() (safetensors first). The pair cannot be made atomic across two
 separate files: if either replace raises, Phase 2 removes only its own
 never-consumed temp file(s) by name and re-raises -- it never undoes a
-replace that already happened. A failed .json publish therefore leaves a
-fresh write as an orphan .safetensors with no .json (self-healed by
-load_conditioning(), or swept by gc_orphaned_cache_files()), and a refresh
-with new tensors under the previous skeleton -- a narrow window that
-degrades to an ordinary MISS via unflatten_tensors(), never a crash.
+replace that already happened. A failed .json publish over a *fresh* write
+leaves an orphan .safetensors with no .json (self-healed by
+load_conditioning(), or swept by gc_orphaned_cache_files()); a failed .json
+publish over an *existing* entry leaves the NEW .safetensors paired with the
+OLD .json.
+
+That last case is why every entry carries a generation id: a fresh uuid4 hex
+generated once per save_conditioning() call, written into the .json payload
+("generation_id") AND into the .safetensors metadata ("cache_generation_id").
+load_conditioning() compares the two -- reading only the safetensors header,
+before any tensor data -- and treats any mismatch as an unambiguous MISS.
+This detects a torn refresh pair outright, independent of whether the old
+and new skeletons happen to be structurally identical (on a refresh of the
+same inputs they almost always are, so unflatten_tensors() alone would not
+notice).
 """
 
 import json
@@ -30,7 +41,7 @@ import os
 import uuid
 from pathlib import Path
 
-from safetensors import SafetensorError
+from safetensors import SafetensorError, safe_open
 from safetensors.torch import load_file, save_file
 
 from minimaxh3_clipcache.locking import get_lock
@@ -51,6 +62,10 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     skeleton, tensors = flatten_tensors(cond)
+    # One fresh id per call, written into BOTH artifacts so load_conditioning()
+    # can tell a matched pair from a torn refresh (new .safetensors under old
+    # .json, or vice versa) even when the two skeletons look identical.
+    generation_id = uuid.uuid4().hex
 
     safetensors_path = cache_dir / "{}.safetensors".format(fingerprint)
     json_path = cache_dir / "{}.json".format(fingerprint)
@@ -64,8 +79,13 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     # files are fully written and ready to publish. Cleanup here only ever
     # removes our own temp files, never a final path that predates this call.
     try:
-        save_file({k: v.detach().cpu().contiguous() for k, v in tensors.items()}, str(tmp_safetensors_path))
-        tmp_json_path.write_bytes(json.dumps(skeleton).encode("utf-8"))
+        save_file(
+            {k: v.detach().cpu().contiguous() for k, v in tensors.items()},
+            str(tmp_safetensors_path),
+            metadata={"cache_generation_id": generation_id},
+        )
+        payload = {"generation_id": generation_id, "skeleton": skeleton}
+        tmp_json_path.write_bytes(json.dumps(payload).encode("utf-8"))
     except BaseException:
         for path in (tmp_safetensors_path, tmp_json_path):
             try:
@@ -79,12 +99,14 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
     # file(s) -- by name, so this can never touch safetensors_path/
     # json_path themselves, whether or not the first replace already
     # succeeded. We deliberately do NOT undo a replace that already
-    # happened: for a refresh of an existing entry that would destroy it
-    # outright (old skeleton, no tensors -- guaranteed broken); for a fresh
-    # write it just leaves a self-healable orphan .safetensors
-    # (load_conditioning()'s own self-heal, or gc_orphaned_cache_files(),
-    # already clean these up). Only the never-consumed temp file(s) are
-    # ours to remove here.
+    # happened. If only the .safetensors replace landed: a fresh write is
+    # left as a self-healable orphan .safetensors with no .json
+    # (load_conditioning()'s own self-heal, or gc_orphaned_cache_files());
+    # a refresh over an existing entry is left as the NEW .safetensors under
+    # the OLD .json. That pair is mismatched, but its two generation ids no
+    # longer agree, so load_conditioning() returns a clean MISS instead of
+    # reconstructing a hybrid. Only the never-consumed temp file(s) are ours
+    # to remove here.
     try:
         os.replace(tmp_safetensors_path, safetensors_path)
         os.replace(tmp_json_path, json_path)
@@ -144,7 +166,7 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
         return None  # ordinary MISS, not logged
 
     try:
-        skeleton = json.loads(json_path.read_bytes())
+        payload = json.loads(json_path.read_bytes())
     except (OSError, ValueError) as e:
         # ValueError covers both json.JSONDecodeError (malformed JSON) and
         # UnicodeDecodeError (bytes that aren't even valid UTF-8, e.g. a
@@ -153,9 +175,45 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
                         fingerprint, json_path, e)
         return None
 
+    if not isinstance(payload, dict) or "generation_id" not in payload or "skeleton" not in payload:
+        # A schema-v1 bare skeleton, or anything else that isn't the v2
+        # {"generation_id", "skeleton"} envelope. CACHE_SCHEMA_VERSION is part
+        # of the fingerprint, so a genuine v1 entry has a different name and is
+        # simply never looked up here -- this branch only fires on a corrupt or
+        # hand-mangled file.
+        logger.warning(
+            "Cache MISS for fingerprint %s: %s is not a valid schema v2 "
+            "payload (missing generation_id/skeleton)", fingerprint, json_path,
+        )
+        return None
+    json_generation_id = payload["generation_id"]
+    skeleton = payload["skeleton"]
+
     if not safetensors_path.exists():
         logger.warning("Cache MISS for fingerprint %s: %s exists but %s is missing",
                         fingerprint, json_path, safetensors_path)
+        return None
+
+    # Cheap check BEFORE loading the actual tensor data: read only the
+    # safetensors header/metadata. A refresh whose second os.replace() (the
+    # .json) failed leaves a NEW .safetensors under the OLD .json; the two
+    # carry different generation ids, so this is an unambiguous MISS even when
+    # the two skeletons are structurally identical.
+    try:
+        with safe_open(str(safetensors_path), framework="pt") as f:
+            st_metadata = f.metadata() or {}
+    except SafetensorError as e:
+        logger.warning("Cache MISS for fingerprint %s: failed to read metadata from %s: %s",
+                        fingerprint, safetensors_path, e)
+        return None
+
+    if st_metadata.get("cache_generation_id") != json_generation_id:
+        logger.warning(
+            "Cache MISS for fingerprint %s: generation_id mismatch between "
+            "%s (%s) and %s (%s) - likely a partially published refresh, "
+            "not a corrupt entry", fingerprint, json_path, json_generation_id,
+            safetensors_path, st_metadata.get("cache_generation_id"),
+        )
         return None
 
     try:
