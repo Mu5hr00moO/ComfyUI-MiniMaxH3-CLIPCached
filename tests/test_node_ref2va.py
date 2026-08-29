@@ -16,7 +16,7 @@ import torch
 import comfy.model_management
 from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
 
-from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM
+from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -89,6 +89,19 @@ def _execute(node, **overrides):
     )
     kwargs.update(overrides)
     return node.execute(**kwargs)
+
+
+def _make_spy_cached_clip_proxy():
+    """A CachedClipProxy subclass recording every constructor (args, kwargs)
+    before delegating to the real __init__ -- same pattern as test_node.py."""
+    construction_calls = []
+
+    class SpyCachedClipProxy(CachedClipProxy):
+        def __init__(self, *args, **kwargs):
+            construction_calls.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    return SpyCachedClipProxy, construction_calls
 
 
 def test_a_execute_not_touching_clip_never_unloads(monkeypatch, tmp_path):
@@ -186,6 +199,60 @@ def test_d_slot_args_reach_stock_execute_as_named_dicts(monkeypatch, tmp_path):
     assert seen["audio_vae"] == "fake_audio_vae"
 
 
+def test_d2_abi_unavailable_forces_refresh_and_passes_unavailable_marker(monkeypatch, tmp_path):
+    """Same contract as FL2VA (plan audit point 1): an unavailable encoder ABI
+    identity forces force_refresh=True under cache_mode="auto" and passes
+    encoder_abi_id="unavailable" to the proxy."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: (None, False))
+
+    SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
+    monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    _execute(node, cache_mode="auto")
+
+    assert len(construction_calls) == 1
+    _, kwargs = construction_calls[0]
+    assert kwargs["force_refresh"] is True
+    assert kwargs["encoder_abi_id"] == "unavailable"
+
+
+def test_d3_abi_available_passes_real_id_and_respects_cache_mode(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:deadbeef", True))
+
+    SpyCachedClipProxy, construction_calls = _make_spy_cached_clip_proxy()
+    monkeypatch.setattr(node_module, "CachedClipProxy", SpyCachedClipProxy)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    _execute(node, cache_mode="auto")
+
+    _, kwargs = construction_calls[0]
+    assert kwargs["force_refresh"] is False
+    assert kwargs["encoder_abi_id"] == "0.34.2:deadbeef"
+
+
 def test_e_is_changed_refresh_forces_reexecution_every_call():
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedRef2VA
@@ -243,6 +310,38 @@ def test_i_is_changed_returns_nan_when_checkpoint_file_missing(monkeypatch):
     result = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
     assert isinstance(result, float) and math.isnan(result)
     assert result != result  # NaN != NaN -- forces re-execution instead of raising
+
+
+def test_i_is_changed_returns_nan_when_encoder_abi_unavailable(monkeypatch):
+    """Same as FL2VA: an unavailable encoder ABI identity (plan audit point 1)
+    makes IS_CHANGED return NaN so ComfyUI always re-executes."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedRef2VA
+
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: (None, False))
+
+    result = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert isinstance(result, float) and math.isnan(result)
+    assert result != result
+
+
+def test_i_is_changed_auto_folds_in_abi_id_and_stays_stable(monkeypatch):
+    """cache_mode="auto" folds the encoder ABI id in as the last tuple
+    element: stable while the ABI is unchanged, different when it changes."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedRef2VA
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222))
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:deadbeef", True))
+
+    first = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    second = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert first == second
+    assert first[-1] == "0.34.2:deadbeef"
+
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:cafef00d", True))
+    after_abi_change = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p")
+    assert after_abi_change != first
 
 
 def test_h_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp_path):

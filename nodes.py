@@ -24,6 +24,7 @@ import nodes
 import comfy.model_management
 import folder_paths
 
+from minimaxh3_clipcache.encoder_abi import get_encoder_abi_id
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.locking import get_lock
@@ -192,6 +193,12 @@ class MiniMaxH3CLIPCachedFL2VA:
         # calls IS_CHANGED directly without it; real graphs always supply it.
         if cache_mode == "refresh":
             return float("nan")
+        # If the encoder ABI identity can't be determined (plan audit point 1),
+        # disk caching is unsafe this session: return a fresh NaN so ComfyUI
+        # always re-executes, and execute() below forces a real encode too.
+        abi_id, abi_available = get_encoder_abi_id()
+        if not abi_available:
+            return float("nan")
         if clip_name is None:
             return cache_mode
         try:
@@ -204,17 +211,22 @@ class MiniMaxH3CLIPCachedFL2VA:
             # runs -- execute() will raise the same FileNotFoundError, but from
             # inside the node, where ComfyUI reports it as this node's error.
             return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns)
+        return (cache_mode, clip_name, file_size, mtime_ns, abi_id)
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
         file_size, mtime_ns = resolve_clip_stat(clip_name)
         loader_fn = build_clip_loader_fn(clip_name)
+        # When the encoder ABI identity is unavailable, force a real encode
+        # regardless of cache_mode (never serve or write a HIT under an
+        # unverified tokenizer implementation) -- see minimaxh3_clipcache.encoder_abi.
+        abi_id, abi_available = get_encoder_abi_id()
         proxy = CachedClipProxy(
             loader_fn, clip_name, file_size, mtime_ns,
             cache_dir=CACHE_DIR,
-            force_refresh=(cache_mode == "refresh"),
+            force_refresh=(cache_mode == "refresh") or not abi_available,
             unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
+            encoder_abi_id=abi_id if abi_available else "unavailable",
         )
 
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
@@ -401,6 +413,12 @@ class MiniMaxH3CLIPCachedRef2VA:
         # execution cache.
         if cache_mode == "refresh":
             return float("nan")
+        # If the encoder ABI identity can't be determined (plan audit point 1),
+        # disk caching is unsafe this session: return a fresh NaN so ComfyUI
+        # always re-executes, and execute() below forces a real encode too.
+        abi_id, abi_available = get_encoder_abi_id()
+        if not abi_available:
+            return float("nan")
         if clip_name is None:
             return cache_mode
         try:
@@ -413,7 +431,7 @@ class MiniMaxH3CLIPCachedRef2VA:
             # runs -- execute() will raise the same FileNotFoundError, but from
             # inside the node, where ComfyUI reports it as this node's error.
             return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns)
+        return (cache_mode, clip_name, file_size, mtime_ns, abi_id)
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
                 ref_image_size="match",
@@ -426,11 +444,16 @@ class MiniMaxH3CLIPCachedRef2VA:
                 cache_mode="auto"):
         file_size, mtime_ns = resolve_clip_stat(clip_name)
         loader_fn = build_clip_loader_fn(clip_name)
+        # When the encoder ABI identity is unavailable, force a real encode
+        # regardless of cache_mode (never serve or write a HIT under an
+        # unverified tokenizer implementation) -- see minimaxh3_clipcache.encoder_abi.
+        abi_id, abi_available = get_encoder_abi_id()
         proxy = CachedClipProxy(
             loader_fn, clip_name, file_size, mtime_ns,
             cache_dir=CACHE_DIR,
-            force_refresh=(cache_mode == "refresh"),
+            force_refresh=(cache_mode == "refresh") or not abi_available,
             unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
+            encoder_abi_id=abi_id if abi_available else "unavailable",
         )
 
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
