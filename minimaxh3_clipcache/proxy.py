@@ -37,8 +37,11 @@ logger = logging.getLogger(__name__)
 # graph) racing a MISS at the same time would otherwise each call
 # clip_loader_fn() and end up with two ~27 GB encoders resident at once.
 # This lock forces those onto one at a time. Held only around the real
-# load+encode+unload, never around the cache lookup above, so two racing
-# cache HITs (or a HIT racing a MISS) are never blocked by it.
+# load+encode+unload -- NOT around the cache lookup above and NOT around the
+# on-disk save below (that runs after the encoder is already unloaded and
+# this lock is released, so a second MISS on a different fingerprint no
+# longer waits on the first one's disk I/O). Two racing cache HITs (or a HIT
+# racing a MISS) are never blocked by it.
 _encoder_load_lock = threading.Lock()
 
 MINIMAX_H3_HIDDEN_DIM = 5120  # last dim of the real Qwen3-VL/MiniMax H3
@@ -137,23 +140,9 @@ class CachedClipProxy:
                     # Validate the shape BEFORE persisting: a wrong-checkpoint encode
                     # must never be written to the cache, and the error must surface
                     # here rather than as a cryptic matmul failure later in the sampler.
+                    # On a raise here the finally still unloads and the exception
+                    # propagates out, so the save below never runs.
                     self._validate_output_hidden_dim(cond, fingerprint)
-                    # The encode result already exists and was expensive to compute;
-                    # persisting it to disk is pure optimisation, not a source of truth.
-                    # This is the one place in the project where a broad `except` is
-                    # deliberate: a cache-write failure must never discard a completed
-                    # encode. (load_conditioning() on the read path stays strict -- see
-                    # its docstring -- because there the user has not paid the encode
-                    # cost yet and should learn their environment is broken.)
-                    try:
-                        save_conditioning(fingerprint, cond, self.cache_dir)
-                        self.last_core_cache_written = True
-                    except Exception as e:
-                        self.last_core_cache_written = False
-                        logger.warning(
-                            "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
-                            "- continuing without caching this result", fingerprint[:12], e,
-                        )
                 finally:
                     # Release the real encoder BEFORE releasing the lock above,
                     # not after -- otherwise a second thread queued on
@@ -174,6 +163,30 @@ class CachedClipProxy:
                             )
                         finally:
                             self._real_clip = None
+
+            # _encoder_load_lock is released now -- the encoder is already
+            # unloaded, so a second thread waiting on that lock for a DIFFERENT
+            # fingerprint can start loading its own encoder without blocking on
+            # the disk write below. Still inside get_lock(fingerprint), so the
+            # save is still serialised against a concurrent GC/Delete for THIS
+            # fingerprint.
+            #
+            # The encode result already exists and was expensive to compute;
+            # persisting it to disk is pure optimisation, not a source of truth.
+            # This is the one place in the project where a broad `except` is
+            # deliberate: a cache-write failure must never discard a completed
+            # encode. (load_conditioning() on the read path stays strict -- see
+            # its docstring -- because there the user has not paid the encode
+            # cost yet and should learn their environment is broken.)
+            try:
+                save_conditioning(fingerprint, cond, self.cache_dir)
+                self.last_core_cache_written = True
+            except Exception as e:
+                self.last_core_cache_written = False
+                logger.warning(
+                    "[CACHE WRITE FAILED] %s: could not persist encode result (%s) "
+                    "- continuing without caching this result", fingerprint[:12], e,
+                )
             return cond
 
     def _validate_output_hidden_dim(self, cond, fingerprint):

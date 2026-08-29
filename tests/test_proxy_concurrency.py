@@ -15,6 +15,7 @@ import time
 
 import torch
 
+import minimaxh3_clipcache.proxy as proxy_mod
 from minimaxh3_clipcache.proxy import MINIMAX_H3_HIDDEN_DIM, CachedClipProxy
 
 CLIP_NAME = "fake_clip.safetensors"
@@ -84,6 +85,41 @@ def test_distinct_fingerprints_race_encode_independently(tmp_path):
         ["prompt one", "prompt two"], tmp_path)
     assert loader_count == 2
     assert encode_count == 2
+
+
+def test_encoder_unload_happens_before_disk_write(tmp_path, monkeypatch):
+    """On a fresh MISS the encoder must be released (and _encoder_load_lock
+    with it) BEFORE save_conditioning() writes to disk -- otherwise a second
+    MISS on a different fingerprint, queued on _encoder_load_lock, would sit
+    waiting on the first one's disk I/O for no reason."""
+    events = []
+
+    def fake_save_conditioning(fingerprint, cond, cache_dir):
+        events.append("save")
+
+    monkeypatch.setattr(proxy_mod, "save_conditioning", fake_save_conditioning)
+
+    class FakeClipWithPatcher:
+        patcher = "fake_patcher"
+
+        def tokenize(self, prompt, **kwargs):
+            return ("real_tokens", prompt, kwargs)
+
+        def encode_from_tokens_scheduled(self, tokens):
+            return [[torch.zeros(1, MINIMAX_H3_HIDDEN_DIM), {"pooled_output": None}]]
+
+    def recording_unload(patcher):
+        events.append("unload")
+
+    proxy = CachedClipProxy(
+        lambda: FakeClipWithPatcher(), CLIP_NAME, CLIP_FILE_SIZE, CLIP_MTIME_NS,
+        tmp_path, unload_fn=recording_unload,
+    )
+    tokens = proxy.tokenize("a fresh prompt", images=[])
+    proxy.encode_from_tokens_scheduled(tokens)
+
+    assert events == ["unload", "save"]
+    assert proxy.last_core_cache_written is True
 
 
 def test_distinct_fingerprints_never_run_encode_concurrently(tmp_path):
