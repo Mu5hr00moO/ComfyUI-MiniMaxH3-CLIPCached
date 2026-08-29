@@ -17,6 +17,7 @@ import threading
 
 import pytest
 
+from minimaxh3_clipcache import last_used as last_used_module
 from minimaxh3_clipcache import routes as routes_module
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.routes import check, delete, get, thumbnail, update
@@ -54,6 +55,15 @@ def _cache_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _reset_last_used():
+    """minimaxh3_clipcache.last_used is process-wide module state, so without
+    a reset each test would see fingerprints recorded by earlier ones."""
+    last_used_module._reset_for_tests()
+    yield
+    last_used_module._reset_for_tests()
+
+
 def _system(prompt="a prompt"):
     return {"prompt": prompt, "clip_name": "x.safetensors", "clip_file_size": 1,
             "clip_mtime_ns": 2, "cache_schema_version": 1, "references": []}
@@ -77,7 +87,17 @@ def _make_thumbnail(cache_dir, fp, index, data=b"\xff\xd8fakejpeg\xff\xd9"):
 def test_check_empty_cache(_cache_dir):
     response = _run(check(_Req()))
     assert response.status == 200
-    assert _body(response) == {"entries": [], "total_count": 0, "total_size_bytes": 0}
+    assert _body(response) == {
+        "entries": [], "total_count": 0, "total_size_bytes": 0,
+        "last_used": {"fl2va": None, "ref2va": None},
+    }
+
+
+def test_check_reports_recorded_last_used(_cache_dir):
+    last_used_module.record_last_used("fl2va", FP)
+    response = _run(check(_Req()))
+    assert response.status == 200
+    assert _body(response)["last_used"] == {"fl2va": FP, "ref2va": None}
 
 
 def test_check_lists_a_normal_entry(_cache_dir):

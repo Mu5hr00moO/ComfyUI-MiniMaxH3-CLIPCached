@@ -35,6 +35,7 @@ from pathlib import Path
 from aiohttp import web
 from server import PromptServer
 
+from minimaxh3_clipcache.last_used import get_last_used
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.scanner import scan_cache
 from minimaxh3_clipcache.store import delete_conditioning
@@ -126,6 +127,11 @@ async def check(request) -> web.Response:
     # /update and /delete.
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(None, scan_cache, CACHE_DIR)
+    # In-memory, filesystem-free: which fingerprint each node variant most
+    # recently produced in this ComfyUI session, for the Cache Manager's
+    # "active row" highlight. Kept out of scan_cache() on purpose -- it is not
+    # a disk fact.
+    data["last_used"] = get_last_used()
     return web.json_response(data)
 
 
