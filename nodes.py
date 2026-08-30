@@ -18,6 +18,7 @@ reimplements them, it only substitutes what the stock node sees as "clip".
 import gc
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import nodes
@@ -70,6 +71,31 @@ def _build_references(fingerprint, items, labels=None):
     return references
 
 
+def _resolve_created_at(existing_verbose, core_path, is_fresh_miss):
+    """Decide this run's <fingerprint>.verbose.json "system.created_at"
+    (Cache Manager UI, ISO-8601 UTC, seconds precision).
+
+    - An existing sidecar's valid "system.created_at" always wins, so a HIT
+      backfill and a forced refresh of an already-described entry never
+      touch it.
+    - Otherwise, a genuine fresh MISS (a cache entry that did not exist a
+      moment ago) is stamped with the current time.
+    - Otherwise (a HIT backfilling a legacy entry with no verbose sidecar at
+      all, or one with a sidecar missing this field) the core cache file's
+      own mtime is the best available approximation of when the entry was
+      actually created.
+    """
+    existing_system = existing_verbose.get("system") if isinstance(existing_verbose, dict) else None
+    existing_created_at = existing_system.get("created_at") if isinstance(existing_system, dict) else None
+    if isinstance(existing_created_at, str) and existing_created_at:
+        return existing_created_at
+    if is_fresh_miss:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.fromtimestamp(
+        core_path.stat().st_mtime, tz=timezone.utc,
+    ).replace(microsecond=0).isoformat()
+
+
 def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                            clip_file_size, clip_mtime_ns, items, labels=None,
                            clip_ctime_ns=None):
@@ -100,13 +126,21 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
             # Re-verify under the lock: if Delete already ran, the core
             # <fp>.json is gone and writing a verbose sidecar now would
             # resurrect a phantom entry with no core cache behind it.
-            if not (Path(CACHE_DIR) / "{}.json".format(fingerprint)).exists():
+            core_path = Path(CACHE_DIR) / "{}.json".format(fingerprint)
+            if not core_path.exists():
                 return
 
+            existing_verbose = load_verbose(fingerprint, CACHE_DIR)
+            existing_system = existing_verbose.get("system") if isinstance(existing_verbose, dict) else None
+            existing_created_at = existing_system.get("created_at") if isinstance(existing_system, dict) else None
+            has_created_at = isinstance(existing_created_at, str) and bool(existing_created_at)
+
             fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
-            hit_needs_backfill = proxy.last_hit is True and load_verbose(fingerprint, CACHE_DIR) is None
+            hit_needs_backfill = proxy.last_hit is True and (existing_verbose is None or not has_created_at)
             if not (fresh_miss_written or hit_needs_backfill):
                 return
+
+            created_at = _resolve_created_at(existing_verbose, core_path, fresh_miss_written)
 
             references = _build_references(fingerprint, items, labels)
             system = {
@@ -116,6 +150,7 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                 "clip_mtime_ns": clip_mtime_ns,
                 "cache_schema_version": CACHE_SCHEMA_VERSION,
                 "node_variant": node_variant,
+                "created_at": created_at,
                 "references": references,
             }
             if clip_ctime_ns is not None:

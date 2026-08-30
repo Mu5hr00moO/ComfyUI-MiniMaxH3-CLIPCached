@@ -15,6 +15,7 @@ import math
 import os
 import re
 import sys
+from datetime import datetime, timezone
 
 import pytest
 import torch
@@ -633,14 +634,15 @@ def test_n_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
 
 
 def test_o_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, tmp_path):
-    """A HIT of an entry that already has a sidecar is a no-op -- the existing
-    file is left byte-for-byte untouched."""
+    """A HIT of an entry that already has a complete sidecar (system.created_at
+    present) is a no-op -- the existing file is left byte-for-byte untouched."""
     node_module = _load_node_module()
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import save_verbose
 
     _make_core_json(tmp_path)
-    save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va", "references": []}, tmp_path)
+    save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va",
+                            "created_at": "2020-01-01T00:00:00+00:00", "references": []}, tmp_path)
     before = (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes()
 
     proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
@@ -746,3 +748,142 @@ def test_f_node_class_mappings_has_both_node_keys():
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VA"].__name__ == "MiniMaxH3CLIPCachedFL2VA"
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedRef2VA"].__name__ == "MiniMaxH3CLIPCachedRef2VA"
     assert set(package.NODE_DISPLAY_NAME_MAPPINGS.keys()) == set(package.NODE_CLASS_MAPPINGS.keys())
+
+
+# --- created_at (verbose sidecar "system.created_at") -----------------------
+
+
+def test_resolve_created_at_existing_valid_value_always_wins():
+    """A sidecar that already carries a valid system.created_at keeps it,
+    whether this run is a fresh MISS or a backfilling HIT -- core_path is
+    never even consulted in that case."""
+    node_module = _load_node_module()
+    existing = {"system": {"created_at": "2021-06-15T12:34:56+00:00"}}
+    assert node_module._resolve_created_at(existing, None, True) == "2021-06-15T12:34:56+00:00"
+    assert node_module._resolve_created_at(existing, None, False) == "2021-06-15T12:34:56+00:00"
+
+
+def test_resolve_created_at_fresh_miss_without_sidecar_stamps_now():
+    """existing_verbose=None + is_fresh_miss=True -> current time, seconds
+    precision, within a few seconds of now."""
+    node_module = _load_node_module()
+    result = node_module._resolve_created_at(None, None, True)
+    parsed = datetime.fromisoformat(result)
+    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 5
+
+
+def test_resolve_created_at_legacy_backfill_uses_core_file_mtime(tmp_path):
+    """existing_verbose=None + is_fresh_miss=False (a HIT backfilling a legacy
+    entry) -> the core cache file's own mtime, to the second."""
+    node_module = _load_node_module()
+    core_path = tmp_path / "core.json"
+    core_path.write_bytes(b"{}")
+    known_mtime = 1_600_000_000  # 2020-09-13T12:26:40+00:00
+    os.utime(core_path, (known_mtime, known_mtime))
+
+    result = node_module._resolve_created_at(None, core_path, False)
+    expected = datetime.fromtimestamp(known_mtime, tz=timezone.utc).replace(microsecond=0).isoformat()
+    assert result == expected
+
+
+def test_v_sync_verbose_fresh_miss_stamps_created_at_now(monkeypatch, tmp_path):
+    """A fresh MISS records system.created_at as the current time."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    created_at = load_verbose("a" * 64, tmp_path)["system"]["created_at"]
+    parsed = datetime.fromisoformat(created_at)
+    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 5
+
+
+def test_w_sync_verbose_hit_with_created_at_leaves_it_untouched(monkeypatch, tmp_path):
+    """A HIT of an entry whose sidecar already has created_at does not change
+    that timestamp, even when called with a different prompt."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va",
+                            "created_at": "2020-01-01T00:00:00+00:00", "references": []}, tmp_path)
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a different prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    assert load_verbose("a" * 64, tmp_path)["system"]["created_at"] == "2020-01-01T00:00:00+00:00"
+
+
+def test_x_sync_verbose_refresh_keeps_created_at_but_refreshes_rest(monkeypatch, tmp_path):
+    """A forced refresh looks exactly like a fresh MISS at the proxy level
+    (last_hit False, last_core_cache_written True). Of an entry that already
+    has created_at it must keep that timestamp while still refreshing the rest
+    of the system block (e.g. the prompt)."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {"prompt": "original", "node_variant": "fl2va",
+                            "created_at": "2020-01-01T00:00:00+00:00", "references": []}, tmp_path)
+
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "the refreshed prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["created_at"] == "2020-01-01T00:00:00+00:00"
+    assert system["prompt"] == "the refreshed prompt"
+
+
+def test_y_sync_verbose_hit_backfills_created_at_from_core_mtime(monkeypatch, tmp_path):
+    """A HIT of a legacy sidecar that has no created_at backfills it from the
+    core cache file's mtime; a second identical call is then a pure no-op."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {"prompt": "legacy", "node_variant": "fl2va", "references": []}, tmp_path)
+    known_mtime = 1_600_000_000
+    os.utime(tmp_path / ("a" * 64 + ".json"), (known_mtime, known_mtime))
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    expected = datetime.fromtimestamp(known_mtime, tz=timezone.utc).replace(microsecond=0).isoformat()
+    assert load_verbose("a" * 64, tmp_path)["system"]["created_at"] == expected
+
+    after_first = (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes()
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+    assert (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes() == after_first
+
+
+def test_z_sync_verbose_legacy_backfill_preserves_user_metadata(monkeypatch, tmp_path):
+    """Backfilling created_at onto a legacy sidecar that already carries user
+    metadata (name, favorite) must leave that user block untouched."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import (
+        load_verbose, save_verbose, update_user_metadata)
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {"prompt": "legacy", "node_variant": "fl2va", "references": []}, tmp_path)
+    update_user_metadata("a" * 64, {"name": "keep me", "favorite": True}, tmp_path)
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    verbose = load_verbose("a" * 64, tmp_path)
+    assert verbose["system"]["created_at"]
+    assert verbose["user"]["name"] == "keep me"
+    assert verbose["user"]["favorite"] is True

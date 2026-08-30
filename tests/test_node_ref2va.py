@@ -555,7 +555,8 @@ def test_s_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, 
     from minimaxh3_clipcache.verbose_store import save_verbose
 
     _make_core_json(tmp_path)
-    save_verbose("b" * 64, {"prompt": "original", "node_variant": "ref2va", "references": []}, tmp_path)
+    save_verbose("b" * 64, {"prompt": "original", "node_variant": "ref2va",
+                            "created_at": "2020-01-01T00:00:00+00:00", "references": []}, tmp_path)
     before = (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes()
 
     class _FakeProxy:
