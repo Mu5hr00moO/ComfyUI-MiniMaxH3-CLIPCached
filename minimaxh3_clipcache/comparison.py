@@ -1,11 +1,14 @@
 """Structural equality checks for the tensors/dicts/lists that make up a
 MiniMaxH3ImageToVideo conditioning or AV latent output.
 
-Shared between scripts/test_cache_roundtrip.py (stock-CLIP-path vs
-cached-CLIP-path comparison) and the phase 23 stock == cached-MISS ==
-cached-HIT test -- both need to walk the same nested structure, and both
-need torch.equal (not allclose): a cache hit must replay the exact bytes
-read from disk, not merely numerically close values from a fresh encode.
+Shared between scripts/test_stock_vs_cache.py (the phase 23 stock ==
+cached-MISS == cached-HIT comparison) and
+scripts/test_ref2video_equivalence.py (the R4 stock-CLIP vs
+SpyClipProxy equivalence check for MiniMaxH3ReferenceToVideo) -- both
+need to walk the same nested structure, and both need torch.equal (not
+allclose): a cache hit must replay the exact bytes read from disk, and a
+transparent proxy must not perturb the encode at all -- not merely
+produce numerically close values.
 
 comfy.nested_tensor.NestedTensor wraps the (video, audio) tensor pair used
 by the AV latent's "samples" field (see _empty_av_latent in
