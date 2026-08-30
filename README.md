@@ -43,11 +43,10 @@ it loads the real ~27 GB Qwen3-VL encoder and checks
 `stock == cached-MISS == cached-HIT` with exact `torch.equal` (not
 `torch.allclose`). That script is a **manually run, GPU-required diagnostic**,
 not part of the automatic `pytest` suite — the CI tests all use small
-stand-in tensors and never load the real encoder. An earlier proxy-equivalence
-check ([`scripts/test_proxy_equivalence.py`](scripts/test_proxy_equivalence.py))
-used a tolerance (`torch.allclose`, `atol=1e-6`, `rtol=1e-5`) while the
-architecture was still being built; the final proof on real hardware uses
-exact equality.
+stand-in tensors and never load the real encoder. An earlier
+proxy-equivalence check used a tolerance (`torch.allclose`, `atol=1e-6`,
+`rtol=1e-5`) while the architecture was still being built; the final proof
+on real hardware uses exact equality.
 
 Downstream nodes like **MiniMax H3 Add Guide** work completely unchanged,
 since they only ever see a standard ComfyUI `CONDITIONING` object and have no
