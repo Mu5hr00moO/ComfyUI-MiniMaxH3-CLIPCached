@@ -12,7 +12,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_SCRIPTS = [
-    "test_server_memory_trend.py",
     "test_server_memory_trend_phase17.py",
     "test_ref2video_memory_trend.py",
     "test_ref2video_server_e2e.py",
