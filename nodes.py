@@ -98,7 +98,7 @@ def _resolve_created_at(existing_verbose, core_path, is_fresh_miss):
 
 def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                            clip_file_size, clip_mtime_ns, items, labels=None,
-                           clip_ctime_ns=None):
+                           clip_ctime_ns=None, width=None, height=None):
     """Write or backfill this run's ``<fingerprint>.verbose.json`` for the
     Cache Manager (plan sections 7 and 8), for either node variant.
 
@@ -106,6 +106,11 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
     on disk, and a HIT of an entry that has no verbose sidecar yet (a legacy
     entry -- backfill it from the data this HIT already knows). Everything
     else is a no-op.
+
+    width/height are optional and purely informational
+    (system.width/.height/.megapixels) -- diagnostic context for the Cache
+    Manager UI, never part of compute_fingerprint() or the HIT/MISS decision.
+    Omitted entirely (not None) when not supplied.
 
     Never raises. The verbose layer is not the source of truth, so a failure
     here must not disturb the already-valid conditioning / core cache result.
@@ -153,6 +158,10 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                 "created_at": created_at,
                 "references": references,
             }
+            if width is not None and height is not None:
+                system["width"] = width
+                system["height"] = height
+                system["megapixels"] = round(width * height / 1_000_000, 2)
             if clip_ctime_ns is not None:
                 system["clip_ctime_ns"] = clip_ctime_ns
             # Informational only: which ComfyUI version produced this cache
@@ -301,7 +310,7 @@ class MiniMaxH3CLIPCachedFL2VA:
                 labels.append("last_frame")
             _sync_verbose_metadata(
                 proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
-                labels, clip_ctime_ns=ctime_ns,
+                labels, clip_ctime_ns=ctime_ns, width=width, height=height,
             )
             _record_last_used(proxy, "fl2va")
         finally:
@@ -538,7 +547,7 @@ class MiniMaxH3CLIPCachedRef2VA:
             items = _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
             _sync_verbose_metadata(
                 proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
-                clip_ctime_ns=ctime_ns,
+                clip_ctime_ns=ctime_ns, width=width, height=height,
             )
             _record_last_used(proxy, "ref2va")
         finally:

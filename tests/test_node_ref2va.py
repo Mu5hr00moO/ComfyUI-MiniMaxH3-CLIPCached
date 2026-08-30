@@ -570,6 +570,31 @@ def test_s_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, 
     assert (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes() == before
 
 
+def test_s2_sync_verbose_fresh_miss_records_generation_size(monkeypatch, tmp_path):
+    """Generation size recording is variant-agnostic: a fresh MISS on Ref2VA
+    with width/height records system.width/.height/.megapixels the same way
+    FL2VA does."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+
+    class _FakeProxy:
+        last_fingerprint = "b" * 64
+        last_hit = False
+        last_core_cache_written = True
+
+    node_module._sync_verbose_metadata(
+        _FakeProxy(), "ref2va", "a ref2va prompt", CLIP_NAME,
+        FAKE_FILE_SIZE, FAKE_MTIME_NS, [], width=1344, height=768)
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert system["width"] == 1344
+    assert system["height"] == 768
+    assert system["megapixels"] == 1.03
+
+
 def test_t_record_last_used_writes_fingerprint_for_ref2va():
     """_record_last_used() copies the proxy's last fingerprint into the
     process-wide last_used map under the "ref2va" key."""

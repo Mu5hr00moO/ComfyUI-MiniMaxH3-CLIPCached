@@ -887,3 +887,43 @@ def test_z_sync_verbose_legacy_backfill_preserves_user_metadata(monkeypatch, tmp
     assert verbose["system"]["created_at"]
     assert verbose["user"]["name"] == "keep me"
     assert verbose["user"]["favorite"] is True
+
+
+# --- generation size (verbose sidecar system.width/.height/.megapixels) -----
+
+
+def test_aa_sync_verbose_fresh_miss_records_generation_size(monkeypatch, tmp_path):
+    """When width/height are supplied, a fresh MISS records them plus a
+    rounded megapixel count in the system block."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [],
+        width=1344, height=768)
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["width"] == 1344
+    assert system["height"] == 768
+    assert system["megapixels"] == 1.03
+
+
+def test_ab_sync_verbose_omits_generation_size_when_not_supplied(monkeypatch, tmp_path):
+    """Without width/height (every pre-existing test path), the three size
+    keys are absent from the system block entirely -- not present as None."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert "width" not in system
+    assert "height" not in system
+    assert "megapixels" not in system
