@@ -294,19 +294,35 @@ def _release_real_clip_safety_net(proxy):
     propagate; we only make sure it doesn't leave the encoder resident as
     ballast. On an exception cond/latent are never assigned and execute()
     exits by propagating, so there is nothing to return.
+
+    Returns True when the real encoder was loaded this run, so the caller
+    must then drop its own reference to the proxy and reclaim memory --
+    ``del proxy; gc.collect(); comfy.model_management.soft_empty_cache()`` in
+    its own finally. Returns False on a cache HIT, where the encoder was
+    never loaded and there is nothing to reclaim.
+
+    Those three cleanup statements deliberately stay in each caller's finally
+    instead of running here: ``proxy`` is a *parameter* of this function,
+    i.e. a second strong reference on top of the one execute() still holds in
+    its own frame while it waits (in finally) for this call to return. A
+    ``del proxy`` here would only drop this local binding, leaving execute()'s
+    reference -- and the real ~27 GB encoder reachable through it -- alive
+    across gc.collect() and soft_empty_cache(). Run in execute()'s own frame,
+    ``del proxy`` drops the last reference, so the proxy (and the encoder
+    under it) is torn down at once, before soft_empty_cache() -- the ordering
+    this had before the finally block was extracted into this shared helper.
     """
-    if proxy.did_load_real_clip:
-        if proxy.real_clip is not None:
-            try:
-                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
-            except Exception as e:
-                logger.warning(
-                    "[ENCODER UNLOAD FAILED] could not unload after execute() "
-                    "(safety-net path): %s", e,
-                )
-        del proxy
-        gc.collect()
-        comfy.model_management.soft_empty_cache()
+    if not proxy.did_load_real_clip:
+        return False
+    if proxy.real_clip is not None:
+        try:
+            comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+        except Exception as e:
+            logger.warning(
+                "[ENCODER UNLOAD FAILED] could not unload after execute() "
+                "(safety-net path): %s", e,
+            )
+    return True
 
 
 class MiniMaxH3CLIPCachedFL2VA:
@@ -376,7 +392,15 @@ class MiniMaxH3CLIPCachedFL2VA:
             )
             _record_last_used(proxy, "fl2va")
         finally:
-            _release_real_clip_safety_net(proxy)
+            # The del/gc/soft_empty_cache stay here, in execute()'s own
+            # frame, on purpose -- see _release_real_clip_safety_net's
+            # docstring: a `del proxy` inside that helper would not be the
+            # last reference (this frame still holds `proxy` until the helper
+            # returns), so the encoder would survive the reclaim.
+            if _release_real_clip_safety_net(proxy):
+                del proxy
+                gc.collect()
+                comfy.model_management.soft_empty_cache()
 
         return (cond, latent)
 
@@ -551,6 +575,14 @@ class MiniMaxH3CLIPCachedRef2VA:
             )
             _record_last_used(proxy, "ref2va")
         finally:
-            _release_real_clip_safety_net(proxy)
+            # The del/gc/soft_empty_cache stay here, in execute()'s own
+            # frame, on purpose -- see _release_real_clip_safety_net's
+            # docstring: a `del proxy` inside that helper would not be the
+            # last reference (this frame still holds `proxy` until the helper
+            # returns), so the encoder would survive the reclaim.
+            if _release_real_clip_safety_net(proxy):
+                del proxy
+                gc.collect()
+                comfy.model_management.soft_empty_cache()
 
         return (cond, latent)

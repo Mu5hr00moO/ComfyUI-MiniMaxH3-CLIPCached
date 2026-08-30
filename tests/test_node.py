@@ -9,12 +9,14 @@ ComfyUI repo) loads a custom node package in production -- never as a bare
 `import nodes`, which would collide with ComfyUI's own top-level nodes.py.
 """
 
+import gc
 import importlib.util
 import logging
 import math
 import os
 import re
 import sys
+import weakref
 from datetime import datetime, timezone
 
 import pytest
@@ -511,6 +513,64 @@ def test_k_finally_still_unloads_when_real_encode_itself_raises(monkeypatch, tmp
 
     assert unload_calls["count"] == 1
     assert unload_calls["args"][0][0] == (real_clip.patcher,)
+
+
+def test_k2_proxy_unreachable_before_soft_empty_cache_on_miss(monkeypatch, tmp_path):
+    """Regression for the reference-lifetime bug: on a MISS the proxy -- and
+    the real ~27 GB encoder reachable through it -- must already be
+    unreachable by the time comfy.model_management.soft_empty_cache() runs in
+    execute()'s finally. That is the pre-refactor ordering, where `del proxy`
+    in execute()'s own frame was the last reference and the object died at
+    once, before soft_empty_cache().
+
+    The bug: _release_real_clip_safety_net(proxy) takes `proxy` as a
+    parameter, so a `del proxy` INSIDE that helper only drops the helper's
+    binding while execute()'s frame still holds the object -- gc.collect() and
+    soft_empty_cache() then run with the encoder still alive. This test fails
+    against that code and passes once the del/gc/soft_empty_cache move back
+    into execute()'s finally.
+    """
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                      first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    # Only a weakref to the proxy is kept -- a strong reference from the test
+    # would itself keep the object alive and mask the bug.
+    proxy_weakref = {}
+
+    class WeakRefCapturingProxy(CachedClipProxy):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            proxy_weakref["ref"] = weakref.ref(self)
+
+    monkeypatch.setattr(node_module, "CachedClipProxy", WeakRefCapturingProxy)
+
+    observed = {}
+    real_soft_empty_cache = comfy.model_management.soft_empty_cache
+
+    def spy_soft_empty_cache(*args, **kwargs):
+        observed["proxy_alive"] = proxy_weakref["ref"]() is not None
+        return real_soft_empty_cache(*args, **kwargs)
+
+    monkeypatch.setattr(comfy.model_management, "soft_empty_cache", spy_soft_empty_cache)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+    )
+
+    assert observed.get("proxy_alive") is False, (
+        "the proxy (and the real encoder reachable through it) was still "
+        "reachable when soft_empty_cache() ran"
+    )
 
 
 def test_q_outer_finally_failed_unload_does_not_mask_original_exception(monkeypatch, tmp_path):
