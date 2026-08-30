@@ -734,10 +734,13 @@ function renderDetailRefs(container, fingerprint, variant, references) {
   container.appendChild(grid);
 }
 
-// preserveEditableFields: when true, the name / notes / tags / favorite
-// inputs are left exactly as the user has them and only the read-only parts
-// (title, prompt, references) are refreshed from server data. Every
-// background re-render funnels through reattachOpenDetailAfterRender() ->
+// preserveEditableFields: when true, the name / notes / tags inputs are
+// left exactly as the user has them and only the read-only parts
+// (title, prompt, references) are refreshed from server data. The favorite
+// checkbox is deliberately excluded from this protection -- it is not a
+// draft, it saves to the server the instant it is toggled (see
+// onDetailFavoriteChange), so it must always mirror the server state.
+// Every background re-render funnels through reattachOpenDetailAfterRender() ->
 // populateDetail(), for reasons unrelated to the detail panel's own data
 // (a search keystroke, a tag-filter change, the favorites toggle, the
 // runCheck() after Save or a favorite toggle) -- without this guard each of
@@ -762,8 +765,8 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
     detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
     detailEl.querySelector("[data-h3cm-edit-notes]").value = user.notes || "";
     detailEl.querySelector("[data-h3cm-edit-tags]").value = (Array.isArray(user.tags) ? user.tags : []).join(", ");
-    detailEl.querySelector("[data-h3cm-edit-favorite]").checked = user.favorite === true;
   }
+  detailEl.querySelector("[data-h3cm-edit-favorite]").checked = user.favorite === true;
   detailEl.querySelector("[data-h3cm-detail-status]").textContent = "";
   detailEl.hidden = false;
 }
