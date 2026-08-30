@@ -527,3 +527,64 @@ gc_orphaned_cache_files() nadal automatycznie sprząta tylko .safetensors bez
 generacje) jest teraz jawnie klasyfikowana przez Cache Manager jako
 `inconsistent` i może zostać usunięta z UI; load_conditioning() nadal
 odrzuca ją jako MISS i kolejne udane użycie tego fingerprintu ją nadpisuje.
+
+### Floating launcher: przeciąganie + trzyrzędowa etykieta + styl - dodane 2026-08-30
+
+installLauncher() w web/main.js dostał drag-to-move na pointer events
+(pointerdown/move/up/cancel - jedno API dla myszy, dotyku i pióra).
+Próg klik-vs-drag to Math.hypot(dx, dy) >= 5 px liczone od pointerdown;
+poniżej progu gest jest zwykłym kliknięciem i dalej otwiera panel,
+powyżej - przeciąganiem, a wynikowy syntetyczny `click` jest tłumiony
+(flaga suppressClick, zerowana przez setTimeout(0) zaraz po ustawieniu,
+żeby nie połknąć żadnej późniejszej niezwiązanej aktywacji, oraz przez
+każdy kolejny pointerdown). Przy pierwszym realnym ruchu pozycjonowanie
+przełącza się z CSS-owego right/bottom na inline left/top (pinToLeftTop,
+ustawia right/bottom na "auto"). Pozycja jest clampowana do
+window.innerWidth/innerHeight przy każdym pointermove i przy evencie
+resize (clampLauncherPosition, eksportowana - jak reszta czystych
+helperów w tym pliku - razem z readLauncherPosition/writeLauncherPosition).
+
+Persystencja: localStorage, klucz "h3cm-launcher-position", wartość
+{left, top} w px zapisywana na pointerup kończącym drag. Odczyt w
+installLauncher(): pozycja jest przywracana TYLKO gdy po clampie do
+bieżącego viewportu wychodzi identyczna jak zapisana (czyli w całości się
+mieści); brak klucza, zły JSON, nie-skończone liczby albo niedostępny
+localStorage (tryb prywatny) są łykane po cichu - zostajemy przy domyślnym
+rogu right:20/bottom:20, żaden wyjątek nie przerywa setup().
+
+Etykieta: `textContent = "H3 Cache"` zamienione na trzy `<span
+class="h3cm-launcher-line">` ("H3" / "Prompt" / "Cache"); button jest
+teraz `display:flex; flex-direction:column`. title zmieniony na "Open
+MiniMax H3 Prompt Cache Manager". NIE ruszane: h3cm-title w modalu,
+menuCommands ["Extensions", "MiniMax H3 Cache Manager"], command label.
+
+Styl (blok .h3cm-floating-launcher w web/styles.css): subtelny
+liniowy gradient w obecnej ciemnej palecie (#2f333e -> #22252d),
+border-radius 14px, transition na transform/background/box-shadow, hover
+z transform: scale(1.04) i jaśniejszym gradientem, klasa .is-dragging
+(cursor: grabbing, lekkie scale, mocniejszy cień), touch-action: none +
+user-select: none na buttonie. Bez żadnych zewnętrznych grafik/ikon.
+
+Zweryfikowane BEZ przeglądarki (stały workflow): `node --check` na kopii
+.mjs (składnia OK), brace-balance styles.css, oraz harness Node w
+scratchpadzie (loader hook wymusza format module na web/main.js i stubuje
+/scripts/app.js -> rejestruje ext z setup(), /scripts/api.js; fake DOM z
+localStorage) - 20 asercji: import bez wyjątku; clamp (in-bounds bez
+zmian, ujemne -> 0, cap do viewportu, element większy niż okno -> 0);
+read (brak klucza / zły JSON / zły kształt / nie-skończone -> null bez
+rzutu); write+read round-trip; write łyka błąd storage; etykieta = trzy
+rzędy H3/Prompt/Cache + nowy title; start bez inline left/top; drag ponad
+próg rusza button i przełącza na left/top + klasa is-dragging; pointerup
+czyści klasę i zapisuje sclampowaną pozycję; syntetyczny click po dragu
+NIE otwiera panelu; klik poniżej progu otwiera panel (createPanel dokleja
+h3cm-root do body); resize wciąga button z powrotem do okna; restore
+honoruje zapisaną pozycję która się mieści i ignoruje tę która nie.
+
+NIE zweryfikowane (do sprawdzenia przez użytkownika w żywym ComfyUI):
+realny render trzech rzędów i wygląd gradientu/hover/scale, faktyczne
+złapanie i przeciągnięcie przycisku myszą/dotykiem, że zwykły klik nadal
+otwiera panel, przetrwanie pozycji przez odświeżenie strony, zachowanie
+przy zmniejszeniu okna, brak błędów w konsoli. Znane ograniczenie: przy
+pierwszym paint stylesheet (`<link>` z injectStyles) może jeszcze nie być
+zaaplikowany, więc offsetWidth/Height użyte w clampie na ścieżce restore
+mogą chwilowo odbiegać - kolejny resize/drag mierzy już poprawnie.
