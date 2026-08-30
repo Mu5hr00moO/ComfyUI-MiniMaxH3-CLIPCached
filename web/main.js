@@ -162,6 +162,43 @@ export function allNormalTags(entries, variant) {
   return [...set].sort((a, b) => a.localeCompare(b));
 }
 
+// Legacy/inconsistent entries (no verbose, or classification !== "normal")
+// have nothing meaningful to sort by in either mode -- they always sink to
+// the end rather than landing above real entries by accident (e.g. a
+// legacy row's entryLabel() fallback text sorting alphabetically before
+// real prompts).
+function normalCreatedAtTime(entry) {
+  if (entry.classification !== "normal") return null;
+  const value = entry.verbose && entry.verbose.system && entry.verbose.system.created_at;
+  if (typeof value !== "string" || !value) return null;
+  const t = new Date(value).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
+function compareByDateDesc(a, b) {
+  const ta = normalCreatedAtTime(a);
+  const tb = normalCreatedAtTime(b);
+  if (ta === null && tb === null) return 0;
+  if (ta === null) return 1;
+  if (tb === null) return -1;
+  return tb - ta; // newest first
+}
+
+function compareByNameAsc(a, b) {
+  const sortableA = a.classification === "normal";
+  const sortableB = b.classification === "normal";
+  if (!sortableA && !sortableB) return 0;
+  if (!sortableA) return 1;
+  if (!sortableB) return -1;
+  return entryLabel(a).localeCompare(entryLabel(b), undefined, { sensitivity: "base", numeric: true });
+}
+
+export function sortEntries(entries, mode) {
+  const copy = [...(entries || [])];
+  copy.sort(mode === "name" ? compareByNameAsc : compareByDateDesc);
+  return copy;
+}
+
 // --- HTTP ----------------------------------------------------------------
 
 async function fetchJson(path, options) {
@@ -210,6 +247,10 @@ function createPanel() {
           <button type="button" data-h3cm-variant="ref2va" class="h3cm-variant-btn">Ref2VA</button>
         </div>
         <input type="text" class="h3cm-search" data-h3cm-search placeholder="Search…">
+        <select class="h3cm-select" data-h3cm-sort aria-label="Sort by">
+          <option value="date">Date</option>
+          <option value="name">Name</option>
+        </select>
         <select class="h3cm-select" data-h3cm-tag-filter aria-label="Filter by tag">
           <option value="">All tags</option>
         </select>
@@ -268,6 +309,7 @@ function createPanel() {
     statusEl: root.querySelector("[data-h3cm-status]"),
     listEl: root.querySelector("[data-h3cm-list]"),
     searchEl: root.querySelector("[data-h3cm-search]"),
+    sortEl: root.querySelector("[data-h3cm-sort]"),
     tagFilterEl: root.querySelector("[data-h3cm-tag-filter]"),
     favoritesOnlyEl: root.querySelector("[data-h3cm-favorites-only]"),
     variantBtns: [...root.querySelectorAll("[data-h3cm-variant]")],
@@ -280,6 +322,7 @@ function createPanel() {
   panel.searchEl.addEventListener("input", renderList);
   panel.tagFilterEl.addEventListener("change", renderList);
   panel.favoritesOnlyEl.addEventListener("change", renderList);
+  panel.sortEl.addEventListener("change", renderList);
   root.querySelector("[data-h3cm-detail-close]").addEventListener("click", closeDetail);
   root.querySelector("[data-h3cm-save]").addEventListener("click", saveDetail);
   root.querySelector("[data-h3cm-edit-favorite]").addEventListener("change", onDetailFavoriteChange);
@@ -308,8 +351,9 @@ function closePanel() {
 // Switch which node's entries the list shows. Purely client-side: /check
 // already returned every entry, so this only changes the filter and
 // re-renders. By prior decision the toolbar filters are NOT kept per tab --
-// switching resets search / tag / favorites to their defaults and closes any
-// open detail panel, so each tab always opens on a clean, unfiltered view.
+// switching resets search / tag / favorites / sort to their defaults and
+// closes any open detail panel, so each tab always opens on a clean,
+// unfiltered view.
 function switchVariant(variant) {
   if (variant !== "fl2va" && variant !== "ref2va") return;
   currentVariant = variant;
@@ -319,6 +363,7 @@ function switchVariant(variant) {
   panel.searchEl.value = "";
   panel.tagFilterEl.value = ALL_TAGS;
   panel.favoritesOnlyEl.checked = false;
+  panel.sortEl.value = "date";
   refreshTagFilterOptions(); // rebuild the dropdown from the new variant's tags
   if (openDetailFingerprint) closeDetail();
 
@@ -574,7 +619,7 @@ function renderList() {
   };
   const entries = lastCheckResult.entries || [];
   const lastUsedFingerprint = (lastCheckResult.last_used || {})[currentVariant] || null;
-  const filtered = filterEntries(entries, state);
+  const filtered = sortEntries(filterEntries(entries, state), panel.sortEl.value);
 
   panel.listEl.innerHTML = "";
 
