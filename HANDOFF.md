@@ -1,58 +1,56 @@
 # HANDOFF
 
-## Stan na: 2026-08-30 / branch master (po poprawce kolejności zwalniania proxy)
+## Stan na: 2026-08-30 / branch master
 
 ## Ostatnio zrobione
-- Poprawka kolejności zwalniania referencji w
-  `_release_real_clip_safety_net` (`nodes.py`). Regresja pochodziła z
-  commita 500d668: po wydzieleniu bloku `finally` do wspólnej funkcji
-  `del proxy` w środku helpera kasował już tylko *parametr* funkcji, a
-  `execute()` wciąż trzymał tę samą referencję na swoim stosie (czeka w
-  `finally` na powrót helpera). W efekcie `gc.collect()` i
-  `comfy.model_management.soft_empty_cache()` odpalały się, gdy proxy — i
-  osiągalny przez nie realny ~27 GB encoder — wciąż był żywy. Dotyczyło
-  KAŻDEGO MISS/refresh, nie tylko ścieżki awaryjnej.
-- `_release_real_clip_safety_net(proxy)` robi teraz tylko targeted unload
-  + `logger.warning` (jak dawniej) i zwraca `bool`: `True` gdy
-  `proxy.did_load_real_clip` (realny load — caller ma posprzątać),
-  `False` przy HIT.
-- Oba `execute()` (FL2VA i Ref2VA) w `finally`:
-  ```python
-  if _release_real_clip_safety_net(proxy):
-      del proxy
-      gc.collect()
-      comfy.model_management.soft_empty_cache()
-  ```
-  `del proxy` wykonuje się teraz we właściwej ramce (`execute()`), gdzie
-  jest ostatnią referencją — obiekt ginie natychmiast przez refcounting,
-  PRZED `gc.collect()`/`soft_empty_cache()`, dokładnie jak przed 500d668.
-  Świadoma, minimalna duplikacja 3 linii w obu miejscach — nie cofka
-  całego refaktoru.
-- Docstring `_release_real_clip_safety_net` rozszerzony o wyjaśnienie
-  WHY `del`/`gc`/`soft_empty_cache` nie mogą żyć w tej funkcji (parametr
-  = dodatkowa żywa referencja u wywołującego do jego powrotu).
+- (JS) Konsolidacja `buildLegacyRow` i `buildInconsistentRow` w
+  `web/main.js`. Obie budowały identyczny szkielet DOM (span `h3cm-fp`,
+  badge, hint span, przycisk Delete z tym samym listenerem
+  `stopPropagation` + `deleteEntry`), różniąc się tylko nazwami klas
+  row/badge/hint i tekstem badge/hint. Wydzielono
+  `buildSimpleRow(entry, { rowClass, badgeClass, badgeText, hintClass, hintText })`.
+  `buildLegacyRow`/`buildInconsistentRow` to teraz cienkie wywołania;
+  `buildInconsistentRow` nadal mapuje `entry.reason -> hintText` przed
+  delegacją. Zero zmian nazw klas CSS i struktury DOM.
+- (Python, wcześniejszy krok tej sesji) Poprawka kolejności zwalniania
+  referencji w `_release_real_clip_safety_net` (`nodes.py`) — funkcja
+  zwraca `bool`, a `del proxy; gc.collect(); soft_empty_cache()` wróciło
+  do `finally` obu `execute()`. Commity `5ff08b0` + `a7185d7`.
 
 ## Ustalenia istotne dla Chat
-- `git diff nodes.py` ogranicza się do `_release_real_clip_safety_net`
-  (`nodes.py:276`) i dwóch bloków `finally` w `execute()`
-  (`nodes.py:392`, `nodes.py:575`) — 46 wstawień / 14 usunięć.
-- Nowy test regresyjny w OBU plikach:
-  `tests/test_node.py::test_k2_proxy_unreachable_before_soft_empty_cache_on_miss`
-  i `tests/test_node_ref2va.py::test_j2_proxy_unreachable_before_soft_empty_cache_on_miss`.
-  Monkeypatch `comfy.model_management.soft_empty_cache`; wewnątrz sprawdza
-  przez `weakref.ref` na obiekcie proxy, że jest już nieosiągalny w
-  momencie wywołania `soft_empty_cache()`. Weakref (nie strong ref), żeby
-  sam test nie trzymał obiektu.
-- Potwierdzone lokalnie: oba nowe testy FAILują na kodzie sprzed
-  poprawki (`git stash push nodes.py`, `assert True is False` — proxy
-  wciąż żywy) i PASSują po niej.
-- `pytest tests/test_node.py tests/test_node_ref2va.py -v` — 67 passed
-  (38 FL2VA + 29 Ref2VA), 0 SKIP, 0 FAIL. Pełny pakiet: 262 passed.
-- Pełny output: scratchpad `release_order_fix_report.txt`.
-- Poprzedni HANDOFF (dla 500d668) klasyfikował tę różnicę jako
-  „teoretyczną, bez konsekwencji dla VRAM/RAM" — to była błędna ocena:
-  realny encoder jest osiągalny przez proxy przez cały czas trwania
-  `gc.collect()`/`soft_empty_cache()`, więc reclaim ich nie obejmuje.
+- `git diff web/main.js` (commit `5eb87b1`) = tylko konsolidacja: 30
+  wstawień / 35 usunięć, nowa funkcja `buildSimpleRow` (`web/main.js:473`)
+  + dwa cienkie wrappery. Żadna nazwa klasy CSS nie ruszona.
+- Nazwa funkcji: użyto `buildSimpleRow` (bez podkreślnika sugerowanego w
+  zleceniu), spójnie z istniejącymi `buildLegacyRow`/`buildInconsistentRow`/
+  `buildNormalRow`/`buildTagChips` w tym pliku — w `web/main.js` nie ma
+  konwencji `_`-prefiksu dla funkcji modułowych.
+- Selektory w `web/styles.css` zależne od tych wierszy (niezmienione):
+  `.h3cm-row` / `.h3cm-row.is-*` (`styles.css:209`), `.h3cm-fp`
+  (`:231`), `.h3cm-legacy-hint` (`:261`, italic/szary),
+  `.h3cm-inconsistent-hint` (`:266`, `flex:1`/czerwony — inne niż legacy,
+  dlatego `hintClass` jest parametrem), `.h3cm-badge` +
+  `.h3cm-badge-legacy` / `-inconsistent` (`:348`, `:360`, `:364`),
+  `.h3cm-row-delete` (`:515`).
+- Weryfikacja BEZ przeglądarki (stały workflow z tego repo):
+  - `node --check` na kopii `.mjs` — składnia OK.
+  - Harness Node z fake DOM (`scratchpad/harness.mjs` + `loader.mjs`:
+    loader stubuje `/scripts/app.js` + `/scripts/api.js`, dokleja
+    `export { buildLegacyRow, buildInconsistentRow }` — nazwy istniejące
+    w obu wersjach pliku). Renderuje wiersz legacy, wiersz legacy bez
+    fingerprintu, oraz inconsistent dla wszystkich 6 znanych `reason` +
+    nieznanego + braku `reason`. Serializowane drzewo DOM (tag, className,
+    textContent, type, listenery, dzieci) **bajt w bajt identyczne**
+    przed (git stash) vs po zmianie (`diff -u` pusty).
+  - Probe przycisku Delete: listener nadal woła `event.stopPropagation()`
+    (1×) i dochodzi do `window.confirm` przez `deleteEntry` (1×), oba
+    typy wierszy.
+- Pełny output weryfikacji: `scratchpad/buildsimplerow_verification.txt`.
+- NIE zweryfikowane (do sprawdzenia przez użytkownika w żywym ComfyUI):
+  realny render obu typów wierszy w DOM, wygląd (badge, kolor hinta),
+  faktyczne kliknięcie Delete + `window.confirm` + znikanie wiersza,
+  brak błędów w konsoli. `pytest` nie dotyczy `web/main.js` — nie
+  uruchamiany dla tej zmiany (żaden plik Pythona nie tknięty).
 
 ## Otwarte pytania
 - brak
