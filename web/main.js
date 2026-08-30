@@ -466,25 +466,29 @@ function buildRef2vaThumbnails(fingerprint, references, generation) {
   return wrap;
 }
 
-function buildLegacyRow(entry) {
+// Shared skeleton for the two row kinds that have no detail panel (legacy
+// and inconsistent): a truncated fingerprint, a status badge, a one-line
+// hint, and a Delete button. Both kinds still correspond to real
+// .json/.safetensors files the user may want to remove (plan section 15
+// makes no exception), so the Delete button and its stopPropagation +
+// deleteEntry listener are identical; only the row/badge/hint classes and
+// the badge/hint text differ.
+function buildSimpleRow(entry, { rowClass, badgeClass, badgeText, hintClass, hintText }) {
   const row = document.createElement("div");
-  row.className = "h3cm-row is-legacy";
+  row.className = `h3cm-row ${rowClass}`;
 
   const fp = document.createElement("span");
   fp.className = "h3cm-fp";
   fp.textContent = `${String(entry.fingerprint || "").slice(0, 12)}…`;
 
   const badge = document.createElement("span");
-  badge.className = "h3cm-badge h3cm-badge-legacy";
-  badge.textContent = "legacy";
+  badge.className = `h3cm-badge ${badgeClass}`;
+  badge.textContent = badgeText;
 
   const hint = document.createElement("span");
-  hint.className = "h3cm-legacy-hint";
-  hint.textContent = "Use this entry once to populate details";
+  hint.className = hintClass;
+  hint.textContent = hintText;
 
-  // Legacy entries have no detail panel, but they still correspond to real
-  // .json/.safetensors files the user may want to remove (plan section 15
-  // makes no exception for legacy).
   const del = document.createElement("button");
   del.type = "button";
   del.className = "h3cm-button h3cm-danger h3cm-row-delete";
@@ -498,19 +502,18 @@ function buildLegacyRow(entry) {
   return row;
 }
 
+function buildLegacyRow(entry) {
+  return buildSimpleRow(entry, {
+    rowClass: "is-legacy",
+    badgeClass: "h3cm-badge-legacy",
+    badgeText: "legacy",
+    hintClass: "h3cm-legacy-hint",
+    hintText: "Use this entry once to populate details",
+  });
+}
+
 function buildInconsistentRow(entry) {
-  const row = document.createElement("div");
-  row.className = "h3cm-row is-inconsistent";
-
-  const fp = document.createElement("span");
-  fp.className = "h3cm-fp";
-  fp.textContent = `${String(entry.fingerprint || "").slice(0, 12)}…`;
-
-  const badge = document.createElement("span");
-  badge.className = "h3cm-badge h3cm-badge-inconsistent";
-  badge.textContent = "inconsistent";
-
-  const reasonText = {
+  const hintText = {
     missing_json: "Core JSON is missing",
     json_unreadable: "Core JSON cannot be read",
     invalid_json_envelope: "Core JSON has an invalid envelope",
@@ -518,21 +521,13 @@ function buildInconsistentRow(entry) {
     safetensors_unreadable: "Tensor header cannot be read",
     generation_mismatch: "Interrupted refresh: generation IDs do not match",
   }[entry.reason] || "Core cache files are inconsistent";
-  const hint = document.createElement("span");
-  hint.className = "h3cm-inconsistent-hint";
-  hint.textContent = reasonText;
-
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "h3cm-button h3cm-danger h3cm-row-delete";
-  del.textContent = "Delete";
-  del.addEventListener("click", (event) => {
-    event.stopPropagation();
-    deleteEntry(entry.fingerprint, null);
+  return buildSimpleRow(entry, {
+    rowClass: "is-inconsistent",
+    badgeClass: "h3cm-badge-inconsistent",
+    badgeText: "inconsistent",
+    hintClass: "h3cm-inconsistent-hint",
+    hintText,
   });
-
-  row.append(fp, badge, hint, del);
-  return row;
 }
 
 function buildNormalRow(entry, generation, lastUsedFingerprint) {
