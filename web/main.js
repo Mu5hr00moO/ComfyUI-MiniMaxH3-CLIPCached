@@ -1098,16 +1098,160 @@ function onDetailDeleteClick() {
 
 // --- launcher + wiring -------------------------------------------------
 
+const LAUNCHER_POSITION_KEY = "h3cm-launcher-position";
+const LAUNCHER_DRAG_THRESHOLD_PX = 5;
+
+// Read a persisted {left, top} (px). Returns null on any problem -- missing
+// key, malformed JSON, non-finite numbers, or localStorage being unavailable
+// (private mode, storage disabled) -- so the caller can silently fall back to
+// the default corner without an exception escaping setup().
+export function readLauncherPosition() {
+  try {
+    const raw = window.localStorage.getItem(LAUNCHER_POSITION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed.left !== "number" ||
+      typeof parsed.top !== "number" ||
+      !Number.isFinite(parsed.left) ||
+      !Number.isFinite(parsed.top)
+    ) {
+      return null;
+    }
+    return { left: parsed.left, top: parsed.top };
+  } catch (err) {
+    return null;
+  }
+}
+
+export function writeLauncherPosition(pos) {
+  try {
+    window.localStorage.setItem(LAUNCHER_POSITION_KEY, JSON.stringify(pos));
+  } catch (err) {
+    /* storage unavailable / over quota -- the position just won't persist */
+  }
+}
+
+// Keep the button fully inside the current viewport.
+export function clampLauncherPosition(left, top, el) {
+  const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth);
+  const maxTop = Math.max(0, window.innerHeight - el.offsetHeight);
+  return {
+    left: Math.min(Math.max(0, left), maxLeft),
+    top: Math.min(Math.max(0, top), maxTop),
+  };
+}
+
 function installLauncher() {
   if (document.querySelector("[data-h3cm-launcher]")) return;
+
   const button = document.createElement("button");
   button.type = "button";
   button.className = "h3cm-floating-launcher";
   button.dataset.h3cmLauncher = "true";
-  button.textContent = "H3 Cache";
-  button.title = "Open MiniMax H3 Cache Manager";
-  button.addEventListener("click", openPanel);
+  button.title = "Open MiniMax H3 Prompt Cache Manager";
+  for (const text of ["H3", "Prompt", "Cache"]) {
+    const line = document.createElement("span");
+    line.className = "h3cm-launcher-line";
+    line.textContent = text;
+    button.appendChild(line);
+  }
   document.body.appendChild(button);
+
+  // Switch anchoring from the CSS default (right/bottom) to left/top. Called
+  // the first time the button actually moves, and when restoring a position.
+  function pinToLeftTop(left, top) {
+    button.style.left = `${left}px`;
+    button.style.top = `${top}px`;
+    button.style.right = "auto";
+    button.style.bottom = "auto";
+  }
+
+  // Restore a saved position, but only if it still fits this viewport --
+  // otherwise stay at the default corner.
+  const saved = readLauncherPosition();
+  if (saved) {
+    const clamped = clampLauncherPosition(saved.left, saved.top, button);
+    if (clamped.left === saved.left && clamped.top === saved.top) {
+      pinToLeftTop(saved.left, saved.top);
+    }
+  }
+
+  // --- drag to move (pointer events cover mouse, touch and stylus at once) ---
+  let tracking = false; // following a pointerdown
+  let dragging = false; // movement has passed the click-vs-drag threshold
+  let suppressClick = false; // swallow the click synthesized right after a drag
+  let startX = 0;
+  let startY = 0;
+  let originLeft = 0;
+  let originTop = 0;
+
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button > 0) return; // primary mouse button / touch / pen only
+    tracking = true;
+    dragging = false;
+    suppressClick = false; // clear any stale flag from a drag that fired no click
+    startX = event.clientX;
+    startY = event.clientY;
+    const rect = button.getBoundingClientRect();
+    originLeft = rect.left;
+    originTop = rect.top;
+  });
+
+  window.addEventListener("pointermove", (event) => {
+    if (!tracking) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (!dragging) {
+      if (Math.hypot(dx, dy) < LAUNCHER_DRAG_THRESHOLD_PX) return;
+      dragging = true;
+      button.classList.add("is-dragging");
+    }
+    const next = clampLauncherPosition(originLeft + dx, originTop + dy, button);
+    pinToLeftTop(next.left, next.top);
+    event.preventDefault();
+  });
+
+  function endDrag() {
+    if (!tracking) return;
+    tracking = false;
+    if (!dragging) return; // under the threshold -- leave it for the click handler
+    dragging = false;
+    button.classList.remove("is-dragging");
+    suppressClick = true;
+    // Only the click the browser synthesizes from this gesture (dispatched
+    // synchronously, before this timer) should be swallowed -- not some
+    // unrelated later activation.
+    setTimeout(() => {
+      suppressClick = false;
+    }, 0);
+    const rect = button.getBoundingClientRect();
+    const clamped = clampLauncherPosition(rect.left, rect.top, button);
+    pinToLeftTop(clamped.left, clamped.top);
+    writeLauncherPosition(clamped);
+  }
+
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("pointercancel", endDrag);
+
+  button.addEventListener("click", (event) => {
+    if (suppressClick) {
+      suppressClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    openPanel();
+  });
+
+  // If the window shrinks under the button, pull it back into view.
+  window.addEventListener("resize", () => {
+    if (!button.style.left) return; // still at the default corner -- nothing to clamp
+    const rect = button.getBoundingClientRect();
+    const clamped = clampLauncherPosition(rect.left, rect.top, button);
+    pinToLeftTop(clamped.left, clamped.top);
+  });
 }
 
 document.addEventListener("keydown", (event) => {

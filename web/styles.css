@@ -7,18 +7,49 @@
   right: 20px;
   bottom: 20px;
   z-index: 9000;
-  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 10px 18px;
   border: 1px solid #3a3f4b;
-  border-radius: 8px;
-  background: #22252d;
+  border-radius: 14px;
+  background: linear-gradient(155deg, #2f333e 0%, #22252d 100%);
   color: #e8eaed;
-  font: 600 12px/1 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  cursor: pointer;
+  font: 600 12px/1.15 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  transition:
+    transform 0.12s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.h3cm-floating-launcher .h3cm-launcher-line {
+  display: block;
+}
+.h3cm-floating-launcher .h3cm-launcher-line:first-child {
+  font-weight: 700;
+  font-size: 13px;
+  color: #f4f6f8;
 }
 .h3cm-floating-launcher:hover {
-  background: #2c2f39;
+  background: linear-gradient(155deg, #3a3f4c 0%, #2a2d37 100%);
   border-color: #4c5361;
+  transform: scale(1.04);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+.h3cm-floating-launcher.is-dragging {
+  cursor: grabbing;
+  transform: scale(1.02);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55);
+  transition: none;
+}
+.h3cm-floating-launcher:active {
+  cursor: grabbing;
 }
 
 .h3cm-root,
