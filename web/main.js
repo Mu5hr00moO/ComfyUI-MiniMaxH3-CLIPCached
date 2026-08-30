@@ -81,6 +81,36 @@ export function entryLabel(entry) {
   return p || "(no prompt)";
 }
 
+export function formatCreatedAt(value) {
+  if (typeof value !== "string" || !value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit",
+    }).format(date);
+  } catch (e) {
+    return "—";
+  }
+}
+
+export function formatGenerationSize(system) {
+  const width = system && system.width;
+  const height = system && system.height;
+  if (typeof width !== "number" || typeof height !== "number") return "";
+  const megapixels = typeof (system && system.megapixels) === "number"
+    ? system.megapixels
+    : (width * height) / 1_000_000;
+  return `${width}×${height} (${megapixels.toFixed(2)} MP)`;
+}
+
+function formatEntryMetaLine(system) {
+  const sizeText = formatGenerationSize(system);
+  const dateText = formatCreatedAt(system && system.created_at);
+  return sizeText ? `${dateText} · ${sizeText}` : dateText;
+}
+
 // Which entries survive the current toolbar state. Reads the module-level
 // currentVariant for the FL2VA/Ref2VA cutoff (there is no per-call variant
 // arg); everything else is a pure function of its arguments.
@@ -194,6 +224,7 @@ function createPanel() {
           <span class="h3cm-detail-title" data-h3cm-detail-title></span>
           <button type="button" class="h3cm-button" data-h3cm-detail-close>Close details</button>
         </div>
+        <span class="h3cm-detail-created" data-h3cm-detail-created></span>
         <div class="h3cm-prompt-wrap">
           <div class="h3cm-prompt-toolbar">
             <span class="h3cm-refs-hint" data-h3cm-refs-hint></span>
@@ -488,7 +519,11 @@ function buildNormalRow(entry, generation, lastUsedFingerprint) {
   label.className = "h3cm-row-label";
   label.textContent = entryLabel(entry);
 
-  row.append(star, label);
+  const created = document.createElement("span");
+  created.className = "h3cm-row-created";
+  created.textContent = formatEntryMetaLine(system);
+
+  row.append(star, label, created);
   if (tags.length) row.appendChild(buildTagChips(tags));
   if (references.length) {
     const variant = system.node_variant || "fl2va";
@@ -715,6 +750,7 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
   const system = (entry.verbose && entry.verbose.system) || {};
 
   detailEl.querySelector("[data-h3cm-detail-title]").textContent = entryLabel(entry);
+  detailEl.querySelector("[data-h3cm-detail-created]").textContent = formatEntryMetaLine(system);
   detailEl.querySelector("[data-h3cm-detail-prompt]").textContent = system.prompt || "(no prompt)";
   renderDetailRefs(
     detailEl.querySelector("[data-h3cm-detail-refs]"),

@@ -210,6 +210,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.h3cm-row-created {
+  color: #9aa1ad;
+  font-size: 11px;
+  white-space: nowrap;
+}
 .h3cm-star {
   border: 0;
   padding: 0 2px;
@@ -355,6 +360,12 @@
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.h3cm-detail-created {
+  display: block;
+  margin: -2px 0 8px;
+  color: #9aa1ad;
+  font-size: 11px;
 }
 .h3cm-prompt-toolbar {
   display: flex;
