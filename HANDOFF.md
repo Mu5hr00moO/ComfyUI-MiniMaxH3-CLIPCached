@@ -3,54 +3,50 @@
 ## Stan na: 2026-08-30 / branch master
 
 ## Ostatnio zrobione
-- (JS) Konsolidacja `buildLegacyRow` i `buildInconsistentRow` w
-  `web/main.js`. Obie budowały identyczny szkielet DOM (span `h3cm-fp`,
-  badge, hint span, przycisk Delete z tym samym listenerem
-  `stopPropagation` + `deleteEntry`), różniąc się tylko nazwami klas
-  row/badge/hint i tekstem badge/hint. Wydzielono
-  `buildSimpleRow(entry, { rowClass, badgeClass, badgeText, hintClass, hintText })`.
-  `buildLegacyRow`/`buildInconsistentRow` to teraz cienkie wywołania;
-  `buildInconsistentRow` nadal mapuje `entry.reason -> hintText` przed
-  delegacją. Zero zmian nazw klas CSS i struktury DOM.
-- (Python, wcześniejszy krok tej sesji) Poprawka kolejności zwalniania
-  referencji w `_release_real_clip_safety_net` (`nodes.py`) — funkcja
-  zwraca `bool`, a `del proxy; gc.collect(); soft_empty_cache()` wróciło
-  do `finally` obu `execute()`. Commity `5ff08b0` + `a7185d7`.
+- Audyt `scripts/` (14 ręcznych skryptów GPU): rozpoznanie, które są
+  nieaktualne / zastąpione, bez usuwania czegokolwiek. Raport w
+  `/tmp/scripts_audit.md` (artefakt tymczasowy, nie w repo). Wynik:
+  7 zachować, 5 kandydatów do usunięcia jako zastąpione, 2 niepewne
+  (diagnostyka fazy 24, dochodzenie zamknięte). Szczegóły w sekcji
+  "Ustalenia" niżej. Zero zmian w kodzie/repo w tej części sesji.
+- (wcześniej w tej sesji) Konsolidacja `buildLegacyRow` /
+  `buildInconsistentRow` w `web/main.js` -> `buildSimpleRow`
+  (`web/main.js:473`). Commit `5eb87b1`. Weryfikacja bez przeglądarki OK,
+  render w żywym ComfyUI wciąż do sprawdzenia przez użytkownika.
 
 ## Ustalenia istotne dla Chat
-- `git diff web/main.js` (commit `5eb87b1`) = tylko konsolidacja: 30
-  wstawień / 35 usunięć, nowa funkcja `buildSimpleRow` (`web/main.js:473`)
-  + dwa cienkie wrappery. Żadna nazwa klasy CSS nie ruszona.
-- Nazwa funkcji: użyto `buildSimpleRow` (bez podkreślnika sugerowanego w
-  zleceniu), spójnie z istniejącymi `buildLegacyRow`/`buildInconsistentRow`/
-  `buildNormalRow`/`buildTagChips` w tym pliku — w `web/main.js` nie ma
-  konwencji `_`-prefiksu dla funkcji modułowych.
-- Selektory w `web/styles.css` zależne od tych wierszy (niezmienione):
-  `.h3cm-row` / `.h3cm-row.is-*` (`styles.css:209`), `.h3cm-fp`
-  (`:231`), `.h3cm-legacy-hint` (`:261`, italic/szary),
-  `.h3cm-inconsistent-hint` (`:266`, `flex:1`/czerwony — inne niż legacy,
-  dlatego `hintClass` jest parametrem), `.h3cm-badge` +
-  `.h3cm-badge-legacy` / `-inconsistent` (`:348`, `:360`, `:364`),
-  `.h3cm-row-delete` (`:515`).
-- Weryfikacja BEZ przeglądarki (stały workflow z tego repo):
-  - `node --check` na kopii `.mjs` — składnia OK.
-  - Harness Node z fake DOM (`scratchpad/harness.mjs` + `loader.mjs`:
-    loader stubuje `/scripts/app.js` + `/scripts/api.js`, dokleja
-    `export { buildLegacyRow, buildInconsistentRow }` — nazwy istniejące
-    w obu wersjach pliku). Renderuje wiersz legacy, wiersz legacy bez
-    fingerprintu, oraz inconsistent dla wszystkich 6 znanych `reason` +
-    nieznanego + braku `reason`. Serializowane drzewo DOM (tag, className,
-    textContent, type, listenery, dzieci) **bajt w bajt identyczne**
-    przed (git stash) vs po zmianie (`diff -u` pusty).
-  - Probe przycisku Delete: listener nadal woła `event.stopPropagation()`
-    (1×) i dochodzi do `window.confirm` przez `deleteEntry` (1×), oba
-    typy wierszy.
-- Pełny output weryfikacji: `scratchpad/buildsimplerow_verification.txt`.
-- NIE zweryfikowane (do sprawdzenia przez użytkownika w żywym ComfyUI):
-  realny render obu typów wierszy w DOM, wygląd (badge, kolor hinta),
-  faktyczne kliknięcie Delete + `window.confirm` + znikanie wiersza,
-  brak błędów w konsoli. `pytest` nie dotyczy `web/main.js` — nie
-  uruchamiany dla tej zmiany (żaden plik Pythona nie tknięty).
+- `scripts/test_proxy_gate.py` pełni podwójną rolę: historyczna bramka
+  faza 4-5 ORAZ współdzielony moduł-fixture (`SpyClipProxy`, stałe
+  loadera, `log_memory`) importowany przez 7 innych skryptów. Nie da się
+  go usunąć dopóki żyje którykolwiek importer.
+- `tests/test_server_script_safety.py` (pytest) czyta `read_text()`
+  źródło 5 skryptów serwerowych: `test_server_memory_trend.py`,
+  `test_server_memory_trend_phase17.py`, `test_ref2video_memory_trend.py`,
+  `test_ref2video_server_e2e.py`, `test_ref2video_server_hit.py`.
+  Usunięcie któregokolwiek wymaga też edycji tego pliku pytest.
+- `README.md` linkuje `scripts/test_stock_vs_cache.py` (2x) i
+  `scripts/test_proxy_equivalence.py` (1x).
+- `test_ref2video_server_e2e.py` pisze `/tmp/r7_last_fingerprint.txt`,
+  `test_ref2video_server_hit.py` go czyta — para, trzymać/usuwać razem.
+- KEEP (7): test_proxy_gate.py, test_stock_vs_cache.py (kanoniczny
+  bit-exact FL2VA), test_ref2video_equivalence.py (kanoniczny exact
+  Ref2VA), test_ref2video_server_e2e.py + test_ref2video_server_hit.py
+  (e2e Ref2VA MISS/HIT), test_server_memory_trend_phase17.py (trend RAM
+  FL2VA, 10 iter), test_ref2video_memory_trend.py (trend RAM Ref2VA,
+  jedyny z drugim VAE/audio_vae przez unload).
+- USUŃ jako zastąpione (5): test_proxy_equivalence.py (-> stock_vs_cache),
+  test_cache_roundtrip.py (-> stock_vs_cache + pytest laziness/
+  invalidation), test_ref2video_gate.py (-> ref2video_equivalence, R4
+  jest nadzbiorem R3), test_server_memory_trend.py (-> _phase17, ten sam
+  harness 3->10 iter), test_clip_unload_isolation_aimdo.py (plik sam
+  deklaruje `STATUS: BROKEN, DO NOT RUN AS-IS`, martwa gałąź
+  comfy_aimdo).
+- NIEPEWNE, decyzja Kamila (2): test_clip_unload_isolation.py,
+  test_vae_memory_isolation.py — diagnostyka fazy 24, dochodzenie
+  zamknięte w CLAUDE.md (wyciek był na sztucznej ścieżce aimdo=False bez
+  main.py; produkcja płaska). Trzymać tylko jako gotowe sondy / zapis
+  rozumowania.
 
 ## Otwarte pytania
-- brak
+- Czy usuwać 5 kandydatów i 2 niepewne — decyzja Kamila. Audyt nic nie
+  usunął.
