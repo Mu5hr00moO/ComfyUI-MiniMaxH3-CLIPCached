@@ -1,47 +1,58 @@
 # HANDOFF
 
-## Stan na: 2026-08-30 / commit 500d668 (branch master)
+## Stan na: 2026-08-30 / branch master (po poprawce kolejności zwalniania proxy)
 
 ## Ostatnio zrobione
-- Deduplikacja trzech identycznych bloków logiki między
-  `MiniMaxH3CLIPCachedFL2VA` i `MiniMaxH3CLIPCachedRef2VA` w `nodes.py`.
-  Wydzielone trzy funkcje modułowe (obok `_build_references` /
-  `_sync_verbose_metadata` / `_record_last_used`):
-  - `_is_changed_common(clip_name, cache_mode)` — całe ciało `IS_CHANGED`
-    (NaN przy refresh / niedostępnym ABI / brakującym pliku, inaczej
-    krotka `(cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)`).
-  - `_build_cached_proxy(clip_name, cache_mode) -> (proxy, file_size,
-    mtime_ns, ctime_ns)` — `resolve_clip_stat` + `build_clip_loader_fn` +
-    `get_encoder_abi_id` + konstrukcja `CachedClipProxy`.
-  - `_release_real_clip_safety_net(proxy)` — blok `finally` z targeted
-    unload + `del proxy` / `gc.collect()` / `soft_empty_cache()`.
-- `IS_CHANGED` każdej klasy pozostaje classmethodem (testy wołają
-  `cls.IS_CHANGED(...)` bezpośrednio); ciało to jednolinijkowa delegacja
-  `return _is_changed_common(clip_name, cache_mode)`.
-- Czysta relokacja kodu, bez zmiany zachowania. Komentarze „dlaczego"
-  przeniesione do nowych funkcji, nie zduplikowane w obu klasach.
+- Poprawka kolejności zwalniania referencji w
+  `_release_real_clip_safety_net` (`nodes.py`). Regresja pochodziła z
+  commita 500d668: po wydzieleniu bloku `finally` do wspólnej funkcji
+  `del proxy` w środku helpera kasował już tylko *parametr* funkcji, a
+  `execute()` wciąż trzymał tę samą referencję na swoim stosie (czeka w
+  `finally` na powrót helpera). W efekcie `gc.collect()` i
+  `comfy.model_management.soft_empty_cache()` odpalały się, gdy proxy — i
+  osiągalny przez nie realny ~27 GB encoder — wciąż był żywy. Dotyczyło
+  KAŻDEGO MISS/refresh, nie tylko ścieżki awaryjnej.
+- `_release_real_clip_safety_net(proxy)` robi teraz tylko targeted unload
+  + `logger.warning` (jak dawniej) i zwraca `bool`: `True` gdy
+  `proxy.did_load_real_clip` (realny load — caller ma posprzątać),
+  `False` przy HIT.
+- Oba `execute()` (FL2VA i Ref2VA) w `finally`:
+  ```python
+  if _release_real_clip_safety_net(proxy):
+      del proxy
+      gc.collect()
+      comfy.model_management.soft_empty_cache()
+  ```
+  `del proxy` wykonuje się teraz we właściwej ramce (`execute()`), gdzie
+  jest ostatnią referencją — obiekt ginie natychmiast przez refcounting,
+  PRZED `gc.collect()`/`soft_empty_cache()`, dokładnie jak przed 500d668.
+  Świadoma, minimalna duplikacja 3 linii w obu miejscach — nie cofka
+  całego refaktoru.
+- Docstring `_release_real_clip_safety_net` rozszerzony o wyjaśnienie
+  WHY `del`/`gc`/`soft_empty_cache` nie mogą żyć w tej funkcji (parametr
+  = dodatkowa żywa referencja u wywołującego do jego powrotu).
 
 ## Ustalenia istotne dla Chat
-- `git diff nodes.py` = tylko przeniesienie kodu do wspólnych funkcji
-  (122 wstawień / 148 usunięć, per-klasowe bloki zwinięte do wywołań).
-- `python -m py_compile nodes.py` — OK.
-- `pytest tests/test_node.py tests/test_node_ref2va.py -v` — 65 passed
-  (37 FL2VA + 28 Ref2VA), 0 SKIP, 0 FAIL. Pełny pakiet: 260 passed.
-- Pełny output pytest: scratchpad `pytest_refactor.txt` / `pytest_full.txt`.
-- Testy patchują `node_module.resolve_clip_stat` /
-  `node_module.build_clip_loader_fn` / `node_module.get_encoder_abi_id` /
-  `node_module.CachedClipProxy` / `node_module.CACHE_DIR`. Nowe funkcje
-  odwołują się do tych nazw jako globali modułu, więc monkeypatch dalej
-  je łapie — `nodes.py:_is_changed_common` / `nodes.py:_build_cached_proxy`.
-- Jedyna teoretyczna różnica semantyczna: `del proxy` żyje teraz w
-  `_release_real_clip_safety_net` i usuwa parametr funkcji, nie lokalną
-  `proxy` w `execute()`. `CachedClipProxy` nie ma `__del__` ani cyklu
-  referencji, `unload_model_and_clones` i `gc.collect()` /
-  `soft_empty_cache()` wołane bez zmian, a obiekt proxy (bez referencji do
-  odładowanego już encodera na normalnej ścieżce) i tak jest zwalniany
-  przez refcounting przy wyjściu z `execute()` mikrosekundy później —
-  brak konsekwencji dla VRAM/RAM, żaden test tego nie pokrywa.
-  `nodes.py:_release_real_clip_safety_net`.
+- `git diff nodes.py` ogranicza się do `_release_real_clip_safety_net`
+  (`nodes.py:276`) i dwóch bloków `finally` w `execute()`
+  (`nodes.py:392`, `nodes.py:575`) — 46 wstawień / 14 usunięć.
+- Nowy test regresyjny w OBU plikach:
+  `tests/test_node.py::test_k2_proxy_unreachable_before_soft_empty_cache_on_miss`
+  i `tests/test_node_ref2va.py::test_j2_proxy_unreachable_before_soft_empty_cache_on_miss`.
+  Monkeypatch `comfy.model_management.soft_empty_cache`; wewnątrz sprawdza
+  przez `weakref.ref` na obiekcie proxy, że jest już nieosiągalny w
+  momencie wywołania `soft_empty_cache()`. Weakref (nie strong ref), żeby
+  sam test nie trzymał obiektu.
+- Potwierdzone lokalnie: oba nowe testy FAILują na kodzie sprzed
+  poprawki (`git stash push nodes.py`, `assert True is False` — proxy
+  wciąż żywy) i PASSują po niej.
+- `pytest tests/test_node.py tests/test_node_ref2va.py -v` — 67 passed
+  (38 FL2VA + 29 Ref2VA), 0 SKIP, 0 FAIL. Pełny pakiet: 262 passed.
+- Pełny output: scratchpad `release_order_fix_report.txt`.
+- Poprzedni HANDOFF (dla 500d668) klasyfikował tę różnicę jako
+  „teoretyczną, bez konsekwencji dla VRAM/RAM" — to była błędna ocena:
+  realny encoder jest osiągalny przez proxy przez cały czas trwania
+  `gc.collect()`/`soft_empty_cache()`, więc reclaim ich nie obejmuje.
 
 ## Otwarte pytania
 - brak
