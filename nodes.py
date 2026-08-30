@@ -198,6 +198,117 @@ def _record_last_used(proxy, node_variant):
     record_last_used(node_variant, fingerprint)
 
 
+def _is_changed_common(clip_name, cache_mode):
+    """Shared body of both nodes' IS_CHANGED classmethod -- the two were
+    byte-for-byte identical. Returns the value ComfyUI folds into its own
+    execution-cache signature for this node.
+
+    Returning a fresh NaN whenever cache_mode == "refresh" makes the
+    executor's signature comparison fail on every Queue (NaN != NaN), so
+    "refresh" forces a real re-execution even when the user clicks Queue
+    again with all inputs unchanged.
+
+    In "auto" mode we must NOT return a bare constant: ComfyUI's own
+    execution cache keys on (literal inputs, IS_CHANGED result), and
+    clip_name is just a filename string. If the on-disk checkpoint is
+    replaced under the same filename, the literal input is unchanged, so a
+    constant IS_CHANGED would let ComfyUI skip re-executing this node
+    entirely -- serving a stale CONDITIONING without our own fingerprint
+    (which already includes file_size/mtime_ns/ctime_ns) ever being
+    computed. Folding the same stat into IS_CHANGED closes that gap: a
+    swapped file changes this return value, forcing a real re-execution, at
+    which point our own on-disk cache does its normal fingerprint-based
+    HIT/MISS. clip_name is only absent when a test calls IS_CHANGED directly
+    without it; real graphs always supply it.
+    """
+    if cache_mode == "refresh":
+        return float("nan")
+    # If the encoder ABI identity can't be determined (plan audit point 1),
+    # disk caching is unsafe this session: return a fresh NaN so ComfyUI
+    # always re-executes, and execute() below forces a real encode too.
+    abi_id, abi_available = get_encoder_abi_id()
+    if not abi_available:
+        return float("nan")
+    if clip_name is None:
+        return cache_mode
+    try:
+        file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
+    except FileNotFoundError:
+        # The checkpoint named in the graph no longer exists on disk. Return
+        # NaN (same trick as cache_mode == "refresh" above) to force a real
+        # execution rather than let this propagate here, in ComfyUI's own
+        # scheduling layer, as a confusing failure before the node even
+        # runs -- execute() will raise the same FileNotFoundError, but from
+        # inside the node, where ComfyUI reports it as this node's error.
+        return float("nan")
+    return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
+
+
+def _build_cached_proxy(clip_name, cache_mode):
+    """Resolve the checkpoint's on-disk identity and build the
+    CachedClipProxy that both nodes hand to their stock counterpart in place
+    of a real CLIP. Shared verbatim between the two execute() methods.
+
+    Returns (proxy, clip_file_size, clip_mtime_ns, clip_ctime_ns) -- the
+    three stat values come back alongside the proxy because execute() also
+    needs them for the Cache Manager verbose-metadata write.
+
+    When the encoder ABI identity is unavailable (plan audit point 1), the
+    proxy is built with force_refresh=True regardless of cache_mode and
+    encoder_abi_id="unavailable": never serve or write a HIT computed under
+    an unverified tokenizer implementation. See
+    minimaxh3_clipcache.encoder_abi.
+    """
+    file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
+    loader_fn = build_clip_loader_fn(clip_name)
+    abi_id, abi_available = get_encoder_abi_id()
+    proxy = CachedClipProxy(
+        loader_fn, clip_name, file_size, mtime_ns,
+        cache_dir=CACHE_DIR,
+        force_refresh=(cache_mode == "refresh") or not abi_available,
+        unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
+        encoder_abi_id=abi_id if abi_available else "unavailable",
+        clip_ctime_ns=ctime_ns,
+    )
+    return proxy, file_size, mtime_ns, ctime_ns
+
+
+def _release_real_clip_safety_net(proxy):
+    """nodes.py's outer safety net for releasing the real ~27 GB encoder,
+    run in both execute() methods' finally. Shared verbatim between them.
+
+    On the normal path the proxy already released the encoder itself right
+    after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
+    via the unload_fn passed in by _build_cached_proxy), before returning
+    control to the stock node -- so for FL2VA it no longer sits resident
+    through the stock node's later keyframe VAE encode, and for Ref2VA
+    (whose stock node does its VAE ref-encoding BEFORE the CLIP encode)
+    there is no post-encode work left to protect anyway. proxy.real_clip is
+    None once the proxy has already released it, so the inner guard avoids a
+    redundant double-unload.
+
+    The explicit unload here is only the safety net for a failure INSIDE the
+    real encode itself, before the proxy got a chance to unload (a real
+    failure mode seen in phase 23). We do NOT swallow the stock node's
+    exception -- per CLAUDE.md's "no silent fallbacks" rule the error must
+    propagate; we only make sure it doesn't leave the encoder resident as
+    ballast. On an exception cond/latent are never assigned and execute()
+    exits by propagating, so there is nothing to return.
+    """
+    if proxy.did_load_real_clip:
+        if proxy.real_clip is not None:
+            try:
+                comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
+            except Exception as e:
+                logger.warning(
+                    "[ENCODER UNLOAD FAILED] could not unload after execute() "
+                    "(safety-net path): %s", e,
+                )
+        del proxy
+        gc.collect()
+        comfy.model_management.soft_empty_cache()
+
+
 class MiniMaxH3CLIPCachedFL2VA:
     @classmethod
     def INPUT_TYPES(cls):
@@ -235,62 +346,13 @@ class MiniMaxH3CLIPCachedFL2VA:
     @classmethod
     def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
-        # only name the ones we care about and swallow the rest. Returning a
-        # fresh NaN whenever cache_mode == "refresh" makes the executor's
-        # signature comparison fail on every Queue (NaN != NaN), so "refresh"
-        # forces a real re-execution even when the user clicks Queue again
-        # with all inputs unchanged.
-        #
-        # In "auto" mode we must NOT return a bare constant: ComfyUI's own
-        # execution cache keys on (literal inputs, IS_CHANGED result), and
-        # clip_name is just a filename string. If the on-disk checkpoint is
-        # replaced under the same filename, the literal input is unchanged,
-        # so a constant IS_CHANGED would let ComfyUI skip re-executing this
-        # node entirely -- serving a stale CONDITIONING without our own
-        # fingerprint (which already includes file_size/mtime_ns/ctime_ns) ever being
-        # computed. Folding the same stat into IS_CHANGED closes that gap: a
-        # swapped file changes this return value, forcing a real
-        # re-execution, at which point our own on-disk cache does its normal
-        # fingerprint-based HIT/MISS. clip_name is only absent when a test
-        # calls IS_CHANGED directly without it; real graphs always supply it.
-        if cache_mode == "refresh":
-            return float("nan")
-        # If the encoder ABI identity can't be determined (plan audit point 1),
-        # disk caching is unsafe this session: return a fresh NaN so ComfyUI
-        # always re-executes, and execute() below forces a real encode too.
-        abi_id, abi_available = get_encoder_abi_id()
-        if not abi_available:
-            return float("nan")
-        if clip_name is None:
-            return cache_mode
-        try:
-            file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
-        except FileNotFoundError:
-            # The checkpoint named in the graph no longer exists on disk. Return
-            # NaN (same trick as cache_mode == "refresh" above) to force a real
-            # execution rather than let this propagate here, in ComfyUI's own
-            # scheduling layer, as a confusing failure before the node even
-            # runs -- execute() will raise the same FileNotFoundError, but from
-            # inside the node, where ComfyUI reports it as this node's error.
-            return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
+        # only name the ones we care about and swallow the rest. The body is
+        # shared with MiniMaxH3CLIPCachedRef2VA in _is_changed_common().
+        return _is_changed_common(clip_name, cache_mode)
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
-        file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
-        loader_fn = build_clip_loader_fn(clip_name)
-        # When the encoder ABI identity is unavailable, force a real encode
-        # regardless of cache_mode (never serve or write a HIT under an
-        # unverified tokenizer implementation) -- see minimaxh3_clipcache.encoder_abi.
-        abi_id, abi_available = get_encoder_abi_id()
-        proxy = CachedClipProxy(
-            loader_fn, clip_name, file_size, mtime_ns,
-            cache_dir=CACHE_DIR,
-            force_refresh=(cache_mode == "refresh") or not abi_available,
-            unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
-            encoder_abi_id=abi_id if abi_available else "unavailable",
-            clip_ctime_ns=ctime_ns,
-        )
+        proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
 
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
         try:
@@ -314,33 +376,7 @@ class MiniMaxH3CLIPCachedFL2VA:
             )
             _record_last_used(proxy, "fl2va")
         finally:
-            # The proxy already released the ~27 GB encoder itself right
-            # after its own real encode (CachedClipProxy.encode_from_tokens_scheduled,
-            # via the unload_fn passed in above), before the keyframe VAE
-            # encode below even runs, so it no longer sits resident through
-            # that step. The explicit unload call here is now only the
-            # safety net for a failure INSIDE the real encode itself, before
-            # the proxy got a chance to unload (a real failure mode seen in
-            # phase 23) -- proxy.real_clip is None once the proxy has
-            # already released it, so the inner guard avoids a redundant
-            # double-unload. We do NOT swallow the exception here -- per
-            # CLAUDE.md's "no silent fallbacks" rule the error must
-            # propagate; we only make sure it doesn't leave the encoder
-            # resident as ballast. On an exception cond/latent are never
-            # assigned and the function exits by propagating, so there is
-            # nothing to return.
-            if proxy.did_load_real_clip:
-                if proxy.real_clip is not None:
-                    try:
-                        comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
-                    except Exception as e:
-                        logger.warning(
-                            "[ENCODER UNLOAD FAILED] could not unload after execute() "
-                            "(safety-net path): %s", e,
-                        )
-                del proxy
-                gc.collect()
-                comfy.model_management.soft_empty_cache()
+            _release_real_clip_safety_net(proxy)
 
         return (cond, latent)
 
@@ -472,33 +508,10 @@ class MiniMaxH3CLIPCachedRef2VA:
 
     @classmethod
     def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
-        # Same contract as MiniMaxH3CLIPCachedFL2VA.IS_CHANGED: a fresh NaN
-        # whenever cache_mode == "refresh" (forces re-execution on every
-        # Queue), and otherwise (file_size, mtime_ns, ctime_ns) folded in alongside
-        # clip_name so a checkpoint swapped under the same filename still
-        # forces re-execution instead of being skipped by ComfyUI's own
-        # execution cache.
-        if cache_mode == "refresh":
-            return float("nan")
-        # If the encoder ABI identity can't be determined (plan audit point 1),
-        # disk caching is unsafe this session: return a fresh NaN so ComfyUI
-        # always re-executes, and execute() below forces a real encode too.
-        abi_id, abi_available = get_encoder_abi_id()
-        if not abi_available:
-            return float("nan")
-        if clip_name is None:
-            return cache_mode
-        try:
-            file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
-        except FileNotFoundError:
-            # The checkpoint named in the graph no longer exists on disk. Return
-            # NaN (same trick as cache_mode == "refresh" above) to force a real
-            # execution rather than let this propagate here, in ComfyUI's own
-            # scheduling layer, as a confusing failure before the node even
-            # runs -- execute() will raise the same FileNotFoundError, but from
-            # inside the node, where ComfyUI reports it as this node's error.
-            return float("nan")
-        return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
+        # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
+        # only name the ones we care about and swallow the rest. The body is
+        # shared with MiniMaxH3CLIPCachedFL2VA in _is_changed_common().
+        return _is_changed_common(clip_name, cache_mode)
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
                 ref_image_size="match",
@@ -509,20 +522,7 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
                 cache_mode="auto"):
-        file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
-        loader_fn = build_clip_loader_fn(clip_name)
-        # When the encoder ABI identity is unavailable, force a real encode
-        # regardless of cache_mode (never serve or write a HIT under an
-        # unverified tokenizer implementation) -- see minimaxh3_clipcache.encoder_abi.
-        abi_id, abi_available = get_encoder_abi_id()
-        proxy = CachedClipProxy(
-            loader_fn, clip_name, file_size, mtime_ns,
-            cache_dir=CACHE_DIR,
-            force_refresh=(cache_mode == "refresh") or not abi_available,
-            unload_fn=lambda patcher: comfy.model_management.unload_model_and_clones(patcher),
-            encoder_abi_id=abi_id if abi_available else "unavailable",
-            clip_ctime_ns=ctime_ns,
-        )
+        proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
 
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
@@ -551,32 +551,6 @@ class MiniMaxH3CLIPCachedRef2VA:
             )
             _record_last_used(proxy, "ref2va")
         finally:
-            # Same contract as MiniMaxH3CLIPCachedFL2VA: the proxy already
-            # released the encoder itself right after its own real encode,
-            # via the unload_fn passed in above. For Ref2VA specifically the
-            # stock node's VAE ref-encoding runs BEFORE the CLIP encode, not
-            # after, so today there is no post-encode work left here for the
-            # early release to protect -- but the shared proxy contract means
-            # this stays correct (and future-proof) without a special case.
-            # The explicit unload call below is only the safety net for a
-            # failure INSIDE the real encode itself, before the proxy got a
-            # chance to unload; proxy.real_clip is None once the proxy has
-            # already released it, so the inner guard avoids a redundant
-            # double-unload. We do NOT swallow the exception here -- per
-            # CLAUDE.md's "no silent fallbacks" rule the error must
-            # propagate; we only make sure it doesn't leave the encoder
-            # resident as ballast.
-            if proxy.did_load_real_clip:
-                if proxy.real_clip is not None:
-                    try:
-                        comfy.model_management.unload_model_and_clones(proxy.real_clip.patcher)
-                    except Exception as e:
-                        logger.warning(
-                            "[ENCODER UNLOAD FAILED] could not unload after execute() "
-                            "(safety-net path): %s", e,
-                        )
-                del proxy
-                gc.collect()
-                comfy.model_management.soft_empty_cache()
+            _release_real_clip_safety_net(proxy)
 
         return (cond, latent)
