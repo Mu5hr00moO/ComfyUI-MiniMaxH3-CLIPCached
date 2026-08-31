@@ -573,6 +573,21 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
     that resize identically) the second call is a natural cache HIT and the
     real encoder loads at most once; when keyframes make the pixels differ,
     both resolutions encode for real, exactly as two separate nodes would.
+
+    The optional ``generate_upscale_cond`` bool (default True) gates the
+    upscale-resolution encode. When it is False the second
+    _execute_fl2va_once() call does not run at all -- ``positive_upscale`` /
+    ``latent_upscale`` come back as ``None`` and _pair_verbose_entries() is
+    skipped (there is no second fingerprint to pair). This switch is the
+    ONLY way to avoid paying the upscale encode / VRAM cost, because the
+    node is a single atomic Python call that returns all four outputs at
+    once: ComfyUI cannot partially execute it, so bypassing the downstream
+    consumer of ``positive_upscale`` / ``latent_upscale`` (an entire
+    upscaler chain set to bypass, say) still forces this node to run in
+    full for the base-resolution outputs, and the upscale encode happens
+    regardless. Do not "fix" this by making the second encode conditional
+    on something else -- the node has no visibility into what downstream
+    consumes its outputs.
     """
 
     @classmethod
@@ -599,6 +614,13 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
             "optional": {
                 "first_frame": ("IMAGE",),
                 "last_frame": ("IMAGE",),
+                "generate_upscale_cond": ("BOOLEAN", {"default": True, "tooltip":
+                    "When off, the second (upscale-resolution) encode is skipped entirely - "
+                    "positive_upscale/latent_upscale come back as None. Turn off for a plain "
+                    "generation where nothing downstream uses the upscale outputs; turn on "
+                    "when you actually need them. Bypassing the upscale consumer downstream "
+                    "does NOT skip this encode by itself - this is the only thing that does, "
+                    "because the node runs as one atomic call."}),
                 "cache_mode": (["auto", "refresh"], {"default": "auto",
                     "tooltip": "auto: reuse the cached encode for an identical prompt+first_frame+"
                                "last_frame+clip_name (checkpoint identity = filename+size+mtime+ctime) if "
@@ -622,11 +644,19 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         return _is_changed_common(clip_name, cache_mode)
 
     def execute(self, clip_name, vae, prompt, width, height, width_upscale, height_upscale,
-                length, first_frame=None, last_frame=None, cache_mode="auto"):
+                length, first_frame=None, last_frame=None, cache_mode="auto",
+                generate_upscale_cond=True):
         cond, latent, fp1 = _execute_fl2va_once(
             clip_name, vae, prompt, width, height, length,
             first_frame, last_frame, cache_mode,
         )
+        if not generate_upscale_cond:
+            # Upscale pass switched off: the second _execute_fl2va_once() does
+            # not run at all (zero encode / VRAM cost) and there is no second
+            # fingerprint, so _pair_verbose_entries() is skipped too. See the
+            # class docstring for why bypassing the downstream consumer cannot
+            # achieve this on its own.
+            return (cond, latent, None, None)
         cond_upscale, latent_upscale, fp2 = _execute_fl2va_once(
             clip_name, vae, prompt, width_upscale, height_upscale, length,
             first_frame, last_frame, cache_mode,
@@ -888,6 +918,21 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
     HIT (the real encoder loads at most once); with large references under
     ref_image_size="match" the pixels handed to the encoder differ by
     resolution and both encode for real, exactly as two separate nodes would.
+
+    The optional ``generate_upscale_cond`` bool (default True) gates the
+    upscale-resolution encode. When it is False the second
+    _execute_ref2va_once() call does not run at all -- ``positive_upscale`` /
+    ``latent_upscale`` come back as ``None`` and _pair_verbose_entries() is
+    skipped (there is no second fingerprint to pair). This switch is the
+    ONLY way to avoid paying the upscale encode / VRAM cost, because the
+    node is a single atomic Python call that returns all four outputs at
+    once: ComfyUI cannot partially execute it, so bypassing the downstream
+    consumer of ``positive_upscale`` / ``latent_upscale`` (an entire
+    upscaler chain set to bypass, say) still forces this node to run in
+    full for the base-resolution outputs, and the upscale encode happens
+    regardless. Do not "fix" this by making the second encode conditional
+    on something else -- the node has no visibility into what downstream
+    consumes its outputs.
     """
 
     @classmethod
@@ -897,6 +942,13 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         # cache_mode stays defined here (not in that helper) because its
         # tooltip is tailored: "Applies to both resolutions."
         optional = _ref_slots_input_spec()
+        optional["generate_upscale_cond"] = ("BOOLEAN", {"default": True, "tooltip":
+            "When off, the second (upscale-resolution) encode is skipped entirely - "
+            "positive_upscale/latent_upscale come back as None. Turn off for a plain "
+            "generation where nothing downstream uses the upscale outputs; turn on "
+            "when you actually need them. Bypassing the upscale consumer downstream "
+            "does NOT skip this encode by itself - this is the only thing that does, "
+            "because the node runs as one atomic call."})
         optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
             "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
                        "images/videos/audio + clip_name (checkpoint identity = "
@@ -947,7 +999,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 ref_video_0=None, ref_video_1=None, ref_video_2=None,
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
-                cache_mode="auto"):
+                cache_mode="auto", generate_upscale_cond=True):
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
              ref_image_5, ref_image_6, ref_image_7, ref_image_8],
@@ -960,6 +1012,13 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
             cache_mode,
         )
+        if not generate_upscale_cond:
+            # Upscale pass switched off: the second _execute_ref2va_once() does
+            # not run at all (zero encode / VRAM cost) and there is no second
+            # fingerprint, so _pair_verbose_entries() is skipped too. See the
+            # class docstring for why bypassing the downstream consumer cannot
+            # achieve this on its own.
+            return (cond, latent, None, None)
         cond_upscale, latent_upscale, fp2 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width_upscale, height_upscale, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,

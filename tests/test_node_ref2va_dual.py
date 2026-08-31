@@ -337,6 +337,104 @@ def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_pa
     assert "paired_fingerprint" not in json.loads(sidecars[0].read_bytes())["system"]
 
 
+# --- generate_upscale_cond: skip the second encode entirely --------------
+
+def test_dual_generate_upscale_cond_false_skips_the_second_encode(monkeypatch, tmp_path):
+    """With generate_upscale_cond=False the upscale-resolution encode must
+    not run at all: on a resolution-dependent input (a real reference under
+    ref_image_size="match", which normally forces two real encodes) the real
+    encoder is loaded exactly once, and positive_upscale / latent_upscale
+    come back as None."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        item = {"type": "image", "data": torch.zeros(1, height // 16, width // 16, 3)}
+        tokens = clip.tokenize(prompt, minimax_ref_items=[item])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_{}x{}".format(width, height))
+
+    unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+    out = _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
+                   generate_upscale_cond=False)
+
+    assert len(out) == 4
+    cond, latent, cond_upscale, latent_upscale = out
+    assert latent == "latent_1344x768"
+    assert cond_upscale is None and latent_upscale is None
+    assert real_clip.encode_calls == 1
+    assert unload_calls["count"] == 1
+
+
+def test_dual_generate_upscale_cond_false_does_not_pair(monkeypatch, tmp_path):
+    """With generate_upscale_cond=False there is no second fingerprint, so
+    _pair_verbose_entries() is never called and only the base-resolution
+    sidecar is written (no paired_fingerprint on it)."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    pair_calls = {"count": 0}
+
+    def spy_pair(*args, **kwargs):
+        pair_calls["count"] += 1
+
+    monkeypatch.setattr(node_module, "_pair_verbose_entries", spy_pair)
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        item = {"type": "image", "data": torch.zeros(1, height // 16, width // 16, 3)}
+        tokens = clip.tokenize(prompt, minimax_ref_items=[item])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+    _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
+             generate_upscale_cond=False)
+
+    assert pair_calls["count"] == 0
+    sidecars = list(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 1
+    assert "paired_fingerprint" not in json.loads(sidecars[0].read_bytes())["system"]
+
+
+def test_dual_generate_upscale_cond_true_is_the_default(monkeypatch, tmp_path):
+    """Passing generate_upscale_cond=True explicitly is identical to omitting
+    it: the upscale encode runs and the two entries are paired, exactly as
+    before this switch existed."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    pair_calls = {"count": 0}
+    monkeypatch.setattr(
+        node_module, "_pair_verbose_entries",
+        lambda *a, **k: pair_calls.__setitem__("count", pair_calls["count"] + 1))
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        item = {"type": "image", "data": torch.zeros(1, height // 16, width // 16, 3)}
+        tokens = clip.tokenize(prompt, minimax_ref_items=[item])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+    out = _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
+                   generate_upscale_cond=True)
+
+    assert out[2] is not None and out[3] is not None
+    assert real_clip.encode_calls == 2
+    assert pair_calls["count"] == 1
+
+
 # --- schema / registration ------------------------------------------------
 
 def test_dual_return_spec_and_category():
@@ -380,10 +478,15 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     # both resolutions").
     dual_opt = m.MiniMaxH3CLIPCachedRef2VADualRes.INPUT_TYPES()["optional"]
     single_opt = m.MiniMaxH3CLIPCachedRef2VA.INPUT_TYPES()["optional"]
-    assert set(dual_opt) == set(single_opt)
+    # the dual node adds one optional over the single-resolution node: the
+    # generate_upscale_cond switch that gates the second encode.
+    assert set(dual_opt) == set(single_opt) | {"generate_upscale_cond"}
     ref_slots = [k for k in single_opt if k != "cache_mode"]
     assert {k: dual_opt[k] for k in ref_slots} == {k: single_opt[k] for k in ref_slots}
     assert dual_opt["cache_mode"][0] == single_opt["cache_mode"][0] == ["auto", "refresh"]
+    assert dual_opt["generate_upscale_cond"][0] == "BOOLEAN"
+    assert dual_opt["generate_upscale_cond"][1]["default"] is True
+    assert "tooltip" in dual_opt["generate_upscale_cond"][1]
 
 
 def test_dual_registered_in_node_mappings():
