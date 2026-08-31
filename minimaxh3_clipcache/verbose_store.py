@@ -138,6 +138,43 @@ def save_verbose(fingerprint: str, system: dict, cache_dir: Path) -> None:
     _atomic_write_json(_verbose_path(fingerprint, cache_dir), payload)
 
 
+def add_pairing(fingerprint: str, cache_dir: Path, paired_fingerprint: str,
+                paired_width: int, paired_height: int) -> None:
+    """Record, in this entry's "system" block, that it was produced alongside
+    another cache entry by a single dual-resolution node run.
+
+    A dual-resolution node encodes the same prompt at two target
+    resolutions. When the encoder input differs by resolution the two runs
+    produce two distinct fingerprints -- two cache entries with an identical
+    prompt. Writing each entry's counterpart here (paired_fingerprint) plus
+    that counterpart's pixel size (paired_width / paired_height) lets the
+    Cache Manager UI (a separate, later phase) collapse the pair into one
+    row with a "+ rescaled to WxH" badge instead of listing the prompt
+    twice.
+
+    The three keys are added to (or overwritten in) the existing "system"
+    block -- a later run of the same dual-resolution node with a different
+    second resolution simply repoints them. The write goes through
+    save_verbose(), which preserves the user's "user" block untouched.
+
+    A silent no-op when load_verbose() returns None (no sidecar yet, or one
+    that cannot be read): there is nothing meaningful to attach the pairing
+    to, and the verbose layer is not the source of truth.
+    """
+    existing = load_verbose(fingerprint, cache_dir)
+    if existing is None:
+        return
+
+    system = existing.get("system")
+    if not isinstance(system, dict):
+        system = {}
+    system["paired_fingerprint"] = paired_fingerprint
+    system["paired_width"] = paired_width
+    system["paired_height"] = paired_height
+
+    save_verbose(fingerprint, system, cache_dir)
+
+
 def update_user_metadata(fingerprint: str, updates: dict, cache_dir: Path) -> dict:
     """Apply a partial update to the "user" block of an existing verbose
     sidecar and return the full updated object.

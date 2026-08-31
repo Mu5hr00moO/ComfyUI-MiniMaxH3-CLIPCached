@@ -12,6 +12,7 @@ import pytest
 from minimaxh3_clipcache import verbose_store
 from minimaxh3_clipcache.verbose_store import (
     DEFAULT_USER_METADATA,
+    add_pairing,
     delete_verbose,
     load_verbose,
     save_verbose,
@@ -148,6 +149,54 @@ def test_e_failed_write_leaves_no_tmp_file_behind(tmp_path, monkeypatch):
 
     assert list(tmp_path.glob("*.tmp-*")) == []
     assert not _verbose_file(tmp_path, FINGERPRINT_A).exists()
+
+
+# --- add_pairing (dual-resolution cross-linking) ---
+
+def test_h_add_pairing_writes_paired_fields_into_existing_system(tmp_path):
+    system = _system(prompt="dual-res prompt")
+    system["width"] = 1344
+    system["height"] = 768
+    save_verbose(FINGERPRINT_A, system, tmp_path)
+
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+
+    loaded = load_verbose(FINGERPRINT_A, tmp_path)["system"]
+    assert loaded["paired_fingerprint"] == FINGERPRINT_B
+    assert loaded["paired_width"] == 1920
+    assert loaded["paired_height"] == 1088
+    # the rest of the system block is left as it was
+    assert loaded["prompt"] == "dual-res prompt"
+    assert loaded["width"] == 1344 and loaded["height"] == 768
+
+
+def test_h_add_pairing_preserves_user_block(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    update_user_metadata(
+        FINGERPRINT_A, {"name": "Keeper", "tags": ["hero"], "favorite": True}, tmp_path)
+
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+
+    assert load_verbose(FINGERPRINT_A, tmp_path)["user"] == {
+        "name": "Keeper", "notes": "", "tags": ["hero"], "favorite": True}
+
+
+def test_h_add_pairing_silent_noop_when_sidecar_missing(tmp_path):
+    # no sidecar for FINGERPRINT_A at all
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+    assert load_verbose(FINGERPRINT_A, tmp_path) is None
+    assert list(tmp_path.glob("*.verbose.json")) == []
+
+
+def test_h_add_pairing_repoints_a_previous_pairing(tmp_path):
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+    add_pairing(FINGERPRINT_A, tmp_path, "c" * 64, 2560, 1440)
+
+    loaded = load_verbose(FINGERPRINT_A, tmp_path)["system"]
+    assert loaded["paired_fingerprint"] == "c" * 64
+    assert loaded["paired_width"] == 2560
+    assert loaded["paired_height"] == 1440
 
 
 # --- Phase 5: update_user_metadata / delete_verbose ---

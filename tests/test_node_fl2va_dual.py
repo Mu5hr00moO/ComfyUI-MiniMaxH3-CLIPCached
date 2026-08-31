@@ -14,6 +14,7 @@ bare ``import nodes``, which collides with ComfyUI's own top-level nodes.py.
 """
 
 import importlib.util
+import json
 import math
 import os
 import sys
@@ -153,7 +154,7 @@ def test_original_fl2va_still_delegates_a_single_encode(monkeypatch, tmp_path):
 
 def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     """The dual node must call the shared encode path twice: once with
-    (width, height), once with (width2, height2), and every other argument
+    (width, height), once with (width_upscale, height_upscale), and every other argument
     (prompt, vae, length, first_frame, last_frame) identical between the two
     calls -- proven by inspecting what reached the stock execute() each
     time."""
@@ -178,7 +179,7 @@ def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
     out = node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="shared prompt",
-        width=1344, height=768, width2=1920, height2=1088, length=124,
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
         first_frame=ff, last_frame=lf,
     )
 
@@ -217,7 +218,7 @@ def test_dual_resolution_independent_input_encodes_once(monkeypatch, tmp_path):
     node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
     node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
-        width=1344, height=768, width2=1920, height2=1088, length=124,
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
     )
 
     assert real_clip.encode_calls == 1
@@ -245,7 +246,7 @@ def test_dual_resolution_dependent_input_encodes_twice(monkeypatch, tmp_path):
     node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
     node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
-        width=1344, height=768, width2=1920, height2=1088, length=124,
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
         first_frame=torch.zeros(1, 8, 8, 3),
     )
 
@@ -253,9 +254,73 @@ def test_dual_resolution_dependent_input_encodes_twice(monkeypatch, tmp_path):
     assert unload_calls["count"] == 2
 
 
+def test_dual_resolution_dependent_input_cross_links_the_two_verbose_entries(monkeypatch, tmp_path):
+    """When the two resolutions land on two distinct fingerprints, each
+    entry's verbose sidecar must carry the other's fingerprint and pixel size
+    (paired_fingerprint / paired_width / paired_height), so the Cache Manager
+    can later show them as one row instead of duplicating the prompt."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        img = torch.zeros(1, height, width, 3)  # simulate _resize to (width, height)
+        tokens = clip.tokenize(prompt, images=[img])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3),
+    )
+
+    sidecars = sorted(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 2
+    v_a = json.loads(sidecars[0].read_bytes())
+    v_b = json.loads(sidecars[1].read_bytes())
+
+    assert v_a["system"]["paired_fingerprint"] == v_b["fingerprint"]
+    assert v_b["system"]["paired_fingerprint"] == v_a["fingerprint"]
+    assert (v_a["system"]["paired_width"], v_a["system"]["paired_height"]) == \
+           (v_b["system"]["width"], v_b["system"]["height"])
+    assert (v_b["system"]["paired_width"], v_b["system"]["paired_height"]) == \
+           (v_a["system"]["width"], v_a["system"]["height"])
+    assert {(v_a["system"]["width"], v_a["system"]["height"]),
+            (v_b["system"]["width"], v_b["system"]["height"])} == {(1344, 768), (1920, 1088)}
+
+
+def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_path):
+    """When both resolutions share one fingerprint there is only one cache
+    entry and nothing to pair -- its sidecar carries no paired_fingerprint."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        tokens = clip.tokenize(prompt, images=[])  # ignores width/height
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
+    )
+
+    sidecars = list(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 1
+    assert "paired_fingerprint" not in json.loads(sidecars[0].read_bytes())["system"]
+
+
 def test_dual_same_resolution_twice_still_encodes_once(monkeypatch, tmp_path):
     """Even with a resolution-dependent encoder input, asking for the same
-    resolution twice (width2==width, height2==height) is one fingerprint and
+    resolution twice (width_upscale==width, height_upscale==height) is one fingerprint and
     one real encode -- the second call is a cache HIT."""
     node_module = _load_node_module()
     real_clip = FakeRealClip()
@@ -272,7 +337,7 @@ def test_dual_same_resolution_twice_still_encodes_once(monkeypatch, tmp_path):
     node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
     node.execute(
         clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
-        width=1344, height=768, width2=1344, height2=768, length=124,
+        width=1344, height=768, width_upscale=1344, height_upscale=768, length=124,
         first_frame=torch.zeros(1, 8, 8, 3),
     )
 
@@ -286,7 +351,7 @@ def test_dual_return_spec_and_category():
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedFL2VADualRes
     assert cls.RETURN_TYPES == ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    assert cls.RETURN_NAMES == ("positive", "latent", "positive_2", "latent_2")
+    assert cls.RETURN_NAMES == ("positive", "latent", "positive_upscale", "latent_upscale")
     assert cls.CATEGORY == "model/conditioning/minimax/cached"
     assert cls.FUNCTION == "execute"
 
@@ -312,11 +377,11 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     req = m.MiniMaxH3CLIPCachedFL2VADualRes.INPUT_TYPES()["required"]
     fl2va_req = m.MiniMaxH3CLIPCachedFL2VA.INPUT_TYPES()["required"]
 
-    assert "width2" in req and "height2" in req
-    # width2/height2 carry the same numeric constraints as width/height
+    assert "width_upscale" in req and "height_upscale" in req
+    # width_upscale/height_upscale carry the same numeric constraints as width/height
     for k in ("min", "max", "step", "default"):
-        assert req["width2"][1][k] == fl2va_req["width"][1][k]
-        assert req["height2"][1][k] == fl2va_req["height"][1][k]
+        assert req["width_upscale"][1][k] == fl2va_req["width"][1][k]
+        assert req["height_upscale"][1][k] == fl2va_req["height"][1][k]
     # the shared inputs are otherwise identical to the single-resolution node
     assert req["clip_name"] == fl2va_req["clip_name"]
     assert req["prompt"] == fl2va_req["prompt"]

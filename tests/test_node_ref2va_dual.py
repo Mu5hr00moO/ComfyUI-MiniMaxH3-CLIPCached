@@ -13,6 +13,7 @@ alone.
 """
 
 import importlib.util
+import json
 import math
 import os
 import sys
@@ -118,7 +119,7 @@ def _execute(node, **overrides):
     kwargs = dict(
         clip_name=CLIP_NAME, vae="fake_vae", audio_vae="fake_audio_vae",
         prompt="a ref2va prompt", width=1344, height=768,
-        width2=1920, height2=1088, length=124,
+        width_upscale=1920, height_upscale=1088, length=124,
     )
     kwargs.update(overrides)
     return node.execute(**kwargs)
@@ -264,11 +265,71 @@ def test_dual_same_resolution_twice_still_encodes_once(monkeypatch, tmp_path):
     unload_calls = _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
 
     node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
-    _execute(node, width=1344, height=768, width2=1344, height2=768,
+    _execute(node, width=1344, height=768, width_upscale=1344, height_upscale=768,
              ref_image_0=torch.zeros(1, 4, 4, 3))
 
     assert real_clip.encode_calls == 1
     assert unload_calls["count"] == 1
+
+
+# --- dual-resolution Cache Manager entry pairing --------------------------
+
+def test_dual_resolution_dependent_input_cross_links_the_two_verbose_entries(monkeypatch, tmp_path):
+    """A real reference under ref_image_size="match" makes the encoder input
+    differ by resolution: two fingerprints, two cache entries. Each entry's
+    verbose sidecar must carry the other's fingerprint and pixel size."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        item = {"type": "image", "data": torch.zeros(1, height // 16, width // 16, 3)}
+        tokens = clip.tokenize(prompt, minimax_ref_items=[item])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+    _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match")
+
+    sidecars = sorted(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 2
+    v_a = json.loads(sidecars[0].read_bytes())
+    v_b = json.loads(sidecars[1].read_bytes())
+
+    assert v_a["system"]["paired_fingerprint"] == v_b["fingerprint"]
+    assert v_b["system"]["paired_fingerprint"] == v_a["fingerprint"]
+    assert (v_a["system"]["paired_width"], v_a["system"]["paired_height"]) == \
+           (v_b["system"]["width"], v_b["system"]["height"])
+    assert (v_b["system"]["paired_width"], v_b["system"]["paired_height"]) == \
+           (v_a["system"]["width"], v_a["system"]["height"])
+    assert {(v_a["system"]["width"], v_a["system"]["height"]),
+            (v_b["system"]["width"], v_b["system"]["height"])} == {(1344, 768), (1920, 1088)}
+
+
+def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_path):
+    """No references reach the encoder: both resolutions share one
+    fingerprint, one cache entry, nothing to pair -- no paired_fingerprint."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])  # ignores width/height
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+    _execute(node)
+
+    sidecars = list(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 1
+    assert "paired_fingerprint" not in json.loads(sidecars[0].read_bytes())["system"]
 
 
 # --- schema / registration ------------------------------------------------
@@ -277,7 +338,7 @@ def test_dual_return_spec_and_category():
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedRef2VADualRes
     assert cls.RETURN_TYPES == ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    assert cls.RETURN_NAMES == ("positive", "latent", "positive_2", "latent_2")
+    assert cls.RETURN_NAMES == ("positive", "latent", "positive_upscale", "latent_upscale")
     assert cls.CATEGORY == "model/conditioning/minimax/cached"
     assert cls.FUNCTION == "execute"
 
@@ -301,10 +362,10 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     req = m.MiniMaxH3CLIPCachedRef2VADualRes.INPUT_TYPES()["required"]
     ref2va_req = m.MiniMaxH3CLIPCachedRef2VA.INPUT_TYPES()["required"]
 
-    assert "width2" in req and "height2" in req
+    assert "width_upscale" in req and "height_upscale" in req
     for k in ("min", "max", "step", "default"):
-        assert req["width2"][1][k] == ref2va_req["width"][1][k]
-        assert req["height2"][1][k] == ref2va_req["height"][1][k]
+        assert req["width_upscale"][1][k] == ref2va_req["width"][1][k]
+        assert req["height_upscale"][1][k] == ref2va_req["height"][1][k]
     assert req["clip_name"] == ref2va_req["clip_name"]
     assert req["audio_vae"] == ref2va_req["audio_vae"]
     assert req["ref_image_size"] == ref2va_req["ref_image_size"]

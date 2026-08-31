@@ -32,7 +32,7 @@ from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.proxy import CachedClipProxy
 from minimaxh3_clipcache.thumbnails import save_thumbnail
-from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+from minimaxh3_clipcache.verbose_store import add_pairing, load_verbose, save_verbose
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache")
@@ -196,6 +196,57 @@ def _record_last_used(proxy, node_variant):
     if fingerprint is None:
         return  # defensive; should not happen after a successful execute()
     record_last_used(node_variant, fingerprint)
+
+
+def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b):
+    """Cross-link the two verbose sidecars produced by one dual-resolution
+    run so the Cache Manager UI (a separate, later phase) can show just the
+    primary entry with a "+ rescaled to WxH" badge instead of listing the
+    same prompt twice.
+
+    A dual-resolution node runs the full cached encode path once per target
+    resolution. When the encoder input differs by resolution the two runs
+    land on two distinct fingerprints -- two separate cache entries with an
+    identical prompt. This records, in each entry's ``system`` block, the
+    other entry's fingerprint and pixel size (``paired_fingerprint`` /
+    ``paired_width`` / ``paired_height``). The two sides are symmetric here
+    (a/b), independent of which resolution the caller treats as primary.
+
+    fp_a == fp_b is an immediate no-op: the two resolutions collapsed onto
+    one shared cache entry, so there is nothing to pair.
+
+    Otherwise the two directions are written under ``get_lock(fp_a)`` and
+    ``get_lock(fp_b)`` taken SEPARATELY -- one acquired and released before
+    the other -- never nested, so two dual-resolution runs pairing an
+    overlapping set of fingerprints cannot deadlock on lock ordering. Each
+    direction re-checks that its own core ``<fp>.json`` still exists under
+    the lock, the same guard _sync_verbose_metadata() uses, so a Cache
+    Manager Delete that removed one entry mid-run does not get a pairing
+    pointer written back into a sidecar with no core cache behind it.
+
+    Never raises. Like _sync_verbose_metadata(), the verbose layer is not the
+    source of truth: a failure here must not disturb the already-valid
+    conditioning / latent the dual node is about to return.
+    """
+    if fp_a == fp_b:
+        return
+
+    try:
+        cache_dir = Path(CACHE_DIR)
+        # a -> b
+        with get_lock(fp_a):
+            if (cache_dir / "{}.json".format(fp_a)).exists():
+                add_pairing(fp_a, CACHE_DIR, fp_b, width_b, height_b)
+        # b -> a (separate lock acquisition, not nested inside the above)
+        with get_lock(fp_b):
+            if (cache_dir / "{}.json".format(fp_b)).exists():
+                add_pairing(fp_b, CACHE_DIR, fp_a, width_a, height_a)
+    except Exception as e:
+        logger.warning(
+            "[VERBOSE PAIRING FAILED] %s <-> %s: could not cross-link the "
+            "dual-resolution Cache Manager entries (%s) - both core caches "
+            "remain valid", fp_a[:12] if fp_a else fp_a, fp_b[:12] if fp_b else fp_b, e,
+        )
 
 
 def _is_changed_common(clip_name, cache_mode):
@@ -424,6 +475,10 @@ def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
             labels, clip_ctime_ns=ctime_ns, width=width, height=height,
         )
         _record_last_used(proxy, "fl2va")
+        # Read the fingerprint out while the proxy is still alive: the finally
+        # below may `del proxy` as part of reclaiming the real encoder, and
+        # MiniMaxH3CLIPCachedFL2VADualRes needs it to pair the two entries.
+        fingerprint = proxy.last_fingerprint
     finally:
         # The del/gc/soft_empty_cache stay here, in _execute_fl2va_once()'s
         # own frame, on purpose -- see _release_real_clip_safety_net's
@@ -435,7 +490,7 @@ def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
             gc.collect()
             comfy.model_management.soft_empty_cache()
 
-    return (cond, latent)
+    return (cond, latent, fingerprint)
 
 
 class MiniMaxH3CLIPCachedFL2VA:
@@ -480,19 +535,21 @@ class MiniMaxH3CLIPCachedFL2VA:
                 first_frame=None, last_frame=None, cache_mode="auto"):
         # Thin wrapper: the whole body now lives in _execute_fl2va_once() so
         # MiniMaxH3CLIPCachedFL2VADualRes can reuse it verbatim for a second
-        # resolution. Single-resolution behaviour is unchanged.
-        return _execute_fl2va_once(
+        # resolution. Single-resolution behaviour is unchanged -- the third
+        # tuple element (the fingerprint) is only of use to the dual node.
+        cond, latent, _fingerprint = _execute_fl2va_once(
             clip_name, vae, prompt, width, height, length,
             first_frame, last_frame, cache_mode,
         )
+        return (cond, latent)
 
 
 class MiniMaxH3CLIPCachedFL2VADualRes:
     """Two-resolution sibling of MiniMaxH3CLIPCachedFL2VA.
 
     Produces CONDITIONING + AV LATENT for two resolutions -- a base one
-    (width/height) and a second one (width2/height2, e.g. an upscale
-    target) -- from a single shared set of inputs (clip_name, prompt, vae,
+    (width/height) and an upscale target (width_upscale/height_upscale) --
+    from a single shared set of inputs (clip_name, prompt, vae,
     first_frame, last_frame, length, cache_mode). Driving both resolutions
     off one node removes the risk of those shared values silently drifting
     apart between two separate MiniMaxH3CLIPCachedFL2VA instances in the same
@@ -516,16 +573,14 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
-                "width2": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
-                                    "tooltip": "Second target resolution's width (e.g. an upscaling "
-                                               "target). Encoded through the same fully independent "
-                                               "cached path as width -- a cache HIT if the encoder "
-                                               "input ends up identical, a real encode otherwise."}),
-                "height2": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
-                                     "tooltip": "Second target resolution's height (e.g. an upscaling "
-                                                "target). Encoded through the same fully independent "
-                                                "cached path as height -- a cache HIT if the encoder "
-                                                "input ends up identical, a real encode otherwise."}),
+                "width_upscale": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                    "tooltip": "Encoded through the same fully independent cached path as "
+                                               "width -- a cache HIT if the encoder input ends up "
+                                               "identical, a real encode otherwise."}),
+                "height_upscale": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                     "tooltip": "Encoded through the same fully independent cached path as "
+                                                "height -- a cache HIT if the encoder input ends up "
+                                                "identical, a real encode otherwise."}),
                 "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid "
                                                "(124 = ~5s; trained range is ~124-362, longer is untested)"}),
@@ -544,7 +599,7 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    RETURN_NAMES = ("positive", "latent", "positive_2", "latent_2")
+    RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
@@ -555,17 +610,20 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         # depends on how many resolutions this run computes.
         return _is_changed_common(clip_name, cache_mode)
 
-    def execute(self, clip_name, vae, prompt, width, height, width2, height2,
+    def execute(self, clip_name, vae, prompt, width, height, width_upscale, height_upscale,
                 length, first_frame=None, last_frame=None, cache_mode="auto"):
-        cond, latent = _execute_fl2va_once(
+        cond, latent, fp1 = _execute_fl2va_once(
             clip_name, vae, prompt, width, height, length,
             first_frame, last_frame, cache_mode,
         )
-        cond2, latent2 = _execute_fl2va_once(
-            clip_name, vae, prompt, width2, height2, length,
+        cond_upscale, latent_upscale, fp2 = _execute_fl2va_once(
+            clip_name, vae, prompt, width_upscale, height_upscale, length,
             first_frame, last_frame, cache_mode,
         )
-        return (cond, latent, cond2, latent2)
+        # Both encodes succeeded (either call raising propagates before here),
+        # so it is safe to cross-link the two Cache Manager entries now.
+        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale)
+        return (cond, latent, cond_upscale, latent_upscale)
 
 
 # --- Ref2VA (reference images / videos / audio) -----------------------------
@@ -589,6 +647,32 @@ _REF_IMAGE_SIZE_TOOLTIP = (
     "short edge for best identity fidelity. Reference tokens ride through every "
     "sampling step, so 'max' can be several times slower."
 )
+
+
+def _ref_slots_input_spec():
+    """The fixed optional reference-slot block shared verbatim between
+    MiniMaxH3CLIPCachedRef2VA.INPUT_TYPES() and
+    MiniMaxH3CLIPCachedRef2VADualRes.INPUT_TYPES(): _REF_IMAGE_COUNT image
+    slots, _REF_VIDEO_COUNT video slots, the same number of matching
+    soundtrack slots, and _REF_AUDIO_COUNT standalone audio slots, each
+    carrying the stock tooltip for its kind.
+
+    Returned as a fresh dict on every call so each caller can add its own
+    "cache_mode" entry afterward without mutating shared state. "cache_mode"
+    is deliberately NOT part of this block: its tooltip differs between the
+    two nodes (the dual-resolution one appends "Applies to both
+    resolutions."), so it stays defined separately in each INPUT_TYPES().
+    """
+    optional = {}
+    for i in range(_REF_IMAGE_COUNT):
+        optional["ref_image_" + str(i)] = ("IMAGE", {"tooltip": _REF_IMAGE_TOOLTIP})
+    for i in range(_REF_VIDEO_COUNT):
+        optional["ref_video_" + str(i)] = ("IMAGE", {"tooltip": _REF_VIDEO_TOOLTIP})
+    for i in range(_REF_VIDEO_COUNT):
+        optional["ref_video_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_VIDEO_AUDIO_TOOLTIP})
+    for i in range(_REF_AUDIO_COUNT):
+        optional["ref_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_AUDIO_TOOLTIP})
+    return optional
 
 
 def _build_ref_slot_dicts(ref_image_slots, ref_video_slots, ref_video_audio_slots, ref_audio_slots):
@@ -687,6 +771,10 @@ def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, lengt
             clip_ctime_ns=ctime_ns, width=width, height=height,
         )
         _record_last_used(proxy, "ref2va")
+        # Read the fingerprint out while the proxy is still alive: the finally
+        # below may `del proxy` as part of reclaiming the real encoder, and
+        # MiniMaxH3CLIPCachedRef2VADualRes needs it to pair the two entries.
+        fingerprint = proxy.last_fingerprint
     finally:
         # The del/gc/soft_empty_cache stay here, in _execute_ref2va_once()'s
         # own frame, on purpose -- see _release_real_clip_safety_net's
@@ -698,21 +786,13 @@ def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, lengt
             gc.collect()
             comfy.model_management.soft_empty_cache()
 
-    return (cond, latent)
+    return (cond, latent, fingerprint)
 
 
 class MiniMaxH3CLIPCachedRef2VA:
     @classmethod
     def INPUT_TYPES(cls):
-        optional = {}
-        for i in range(_REF_IMAGE_COUNT):
-            optional["ref_image_" + str(i)] = ("IMAGE", {"tooltip": _REF_IMAGE_TOOLTIP})
-        for i in range(_REF_VIDEO_COUNT):
-            optional["ref_video_" + str(i)] = ("IMAGE", {"tooltip": _REF_VIDEO_TOOLTIP})
-        for i in range(_REF_VIDEO_COUNT):
-            optional["ref_video_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_VIDEO_AUDIO_TOOLTIP})
-        for i in range(_REF_AUDIO_COUNT):
-            optional["ref_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_AUDIO_TOOLTIP})
+        optional = _ref_slots_input_spec()
         optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
             "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
                        "images/videos/audio + clip_name (checkpoint identity = "
@@ -768,19 +848,20 @@ class MiniMaxH3CLIPCachedRef2VA:
             [ref_video_audio_0, ref_video_audio_1, ref_video_audio_2],
             [ref_audio_0, ref_audio_1, ref_audio_2],
         )
-        return _execute_ref2va_once(
+        cond, latent, _fingerprint = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width, height, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
             cache_mode,
         )
+        return (cond, latent)
 
 
 class MiniMaxH3CLIPCachedRef2VADualRes:
     """Two-resolution sibling of MiniMaxH3CLIPCachedRef2VA.
 
     Produces CONDITIONING + AV LATENT for two resolutions -- a base one
-    (width/height) and a second one (width2/height2, e.g. an upscale
-    target) -- from a single shared set of inputs (clip_name, prompt, vae,
+    (width/height) and an upscale target (width_upscale/height_upscale) --
+    from a single shared set of inputs (clip_name, prompt, vae,
     audio_vae, ref_image_size, every ref_* slot, length, cache_mode).
     Driving both resolutions off one node removes the risk of those shared
     values silently drifting apart between two separate
@@ -799,17 +880,10 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
     @classmethod
     def INPUT_TYPES(cls):
         # The optional ref_* slot block is identical to
-        # MiniMaxH3CLIPCachedRef2VA's; it is rebuilt here rather than shared
-        # to keep that node's INPUT_TYPES untouched by this addition.
-        optional = {}
-        for i in range(_REF_IMAGE_COUNT):
-            optional["ref_image_" + str(i)] = ("IMAGE", {"tooltip": _REF_IMAGE_TOOLTIP})
-        for i in range(_REF_VIDEO_COUNT):
-            optional["ref_video_" + str(i)] = ("IMAGE", {"tooltip": _REF_VIDEO_TOOLTIP})
-        for i in range(_REF_VIDEO_COUNT):
-            optional["ref_video_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_VIDEO_AUDIO_TOOLTIP})
-        for i in range(_REF_AUDIO_COUNT):
-            optional["ref_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_AUDIO_TOOLTIP})
+        # MiniMaxH3CLIPCachedRef2VA's -- shared via _ref_slots_input_spec().
+        # cache_mode stays defined here (not in that helper) because its
+        # tooltip is tailored: "Applies to both resolutions."
+        optional = _ref_slots_input_spec()
         optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
             "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
                        "images/videos/audio + clip_name (checkpoint identity = "
@@ -825,16 +899,14 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
-                "width2": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
-                                    "tooltip": "Second target resolution's width (e.g. an upscaling "
-                                               "target). Encoded through the same fully independent "
-                                               "cached path as width -- a cache HIT if the encoder "
-                                               "input ends up identical, a real encode otherwise."}),
-                "height2": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
-                                     "tooltip": "Second target resolution's height (e.g. an upscaling "
-                                                "target). Encoded through the same fully independent "
-                                                "cached path as height -- a cache HIT if the encoder "
-                                                "input ends up identical, a real encode otherwise."}),
+                "width_upscale": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                    "tooltip": "Encoded through the same fully independent cached path as "
+                                               "width -- a cache HIT if the encoder input ends up "
+                                               "identical, a real encode otherwise."}),
+                "height_upscale": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                     "tooltip": "Encoded through the same fully independent cached path as "
+                                                "height -- a cache HIT if the encoder input ends up "
+                                                "identical, a real encode otherwise."}),
                 "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, (124 = ~5s, trained range is ~124-362)"}),
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
@@ -843,7 +915,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    RETURN_NAMES = ("positive", "latent", "positive_2", "latent_2")
+    RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
@@ -854,7 +926,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         # depends on how many resolutions this run computes.
         return _is_changed_common(clip_name, cache_mode)
 
-    def execute(self, clip_name, vae, audio_vae, prompt, width, height, width2, height2,
+    def execute(self, clip_name, vae, audio_vae, prompt, width, height, width_upscale, height_upscale,
                 length, ref_image_size="match",
                 ref_image_0=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
                 ref_image_4=None, ref_image_5=None, ref_image_6=None, ref_image_7=None,
@@ -870,17 +942,20 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
             [ref_video_audio_0, ref_video_audio_1, ref_video_audio_2],
             [ref_audio_0, ref_audio_1, ref_audio_2],
         )
-        cond, latent = _execute_ref2va_once(
+        cond, latent, fp1 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width, height, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
             cache_mode,
         )
-        cond2, latent2 = _execute_ref2va_once(
-            clip_name, vae, audio_vae, prompt, width2, height2, length,
+        cond_upscale, latent_upscale, fp2 = _execute_ref2va_once(
+            clip_name, vae, audio_vae, prompt, width_upscale, height_upscale, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
             cache_mode,
         )
-        return (cond, latent, cond2, latent2)
+        # Both encodes succeeded (either call raising propagates before here),
+        # so it is safe to cross-link the two Cache Manager entries now.
+        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale)
+        return (cond, latent, cond_upscale, latent_upscale)
 
 
 # --- CLIP Name (standalone encoder picker) ----------------------------------
