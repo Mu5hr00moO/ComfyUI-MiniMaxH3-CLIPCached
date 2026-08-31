@@ -15,6 +15,7 @@ bare ``import nodes``, which collides with ComfyUI's own top-level nodes.py.
 
 import importlib.util
 import json
+import logging
 import math
 import os
 import sys
@@ -451,6 +452,45 @@ def test_dual_generate_upscale_cond_true_is_the_default(monkeypatch, tmp_path):
     assert out[2] is not None and out[3] is not None
     assert real_clip.encode_calls == 2
     assert pair_calls["count"] == 1
+
+
+def test_dual_generate_upscale_cond_false_logs_one_info_line(monkeypatch, tmp_path, caplog):
+    """generate_upscale_cond=False emits exactly one INFO record tagged
+    [UPSCALE COND SKIPPED], carrying the first 12 chars of the base-
+    resolution fingerprint. With the default (True) that line is absent."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        img = torch.zeros(1, height, width, 3)
+        tokens = clip.tokenize(prompt, images=[img])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
+    kwargs = dict(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3),
+    )
+
+    with caplog.at_level(logging.INFO):
+        node.execute(generate_upscale_cond=False, **kwargs)
+
+    skipped = [r for r in caplog.records
+               if r.levelno == logging.INFO and "[UPSCALE COND SKIPPED]" in r.getMessage()]
+    assert len(skipped) == 1
+    fp_prefix = json.loads(
+        next(iter(tmp_path.glob("*.verbose.json"))).read_bytes())["fingerprint"][:12]
+    assert fp_prefix in skipped[0].getMessage()
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        node.execute(generate_upscale_cond=True, **kwargs)
+    assert not any("[UPSCALE COND SKIPPED]" in r.getMessage() for r in caplog.records)
 
 
 # --- schema / registration ------------------------------------------------

@@ -656,6 +656,10 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
             # fingerprint, so _pair_verbose_entries() is skipped too. See the
             # class docstring for why bypassing the downstream consumer cannot
             # achieve this on its own.
+            logger.info(
+                "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
+                "positive_upscale/latent_upscale not computed", fp1[:12],
+            )
             return (cond, latent, None, None)
         cond_upscale, latent_upscale, fp2 = _execute_fl2va_once(
             clip_name, vae, prompt, width_upscale, height_upscale, length,
@@ -1018,6 +1022,10 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
             # fingerprint, so _pair_verbose_entries() is skipped too. See the
             # class docstring for why bypassing the downstream consumer cannot
             # achieve this on its own.
+            logger.info(
+                "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
+                "positive_upscale/latent_upscale not computed", fp1[:12],
+            )
             return (cond, latent, None, None)
         cond_upscale, latent_upscale, fp2 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width_upscale, height_upscale, length,

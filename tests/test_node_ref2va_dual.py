@@ -14,6 +14,7 @@ alone.
 
 import importlib.util
 import json
+import logging
 import math
 import os
 import sys
@@ -433,6 +434,43 @@ def test_dual_generate_upscale_cond_true_is_the_default(monkeypatch, tmp_path):
     assert out[2] is not None and out[3] is not None
     assert real_clip.encode_calls == 2
     assert pair_calls["count"] == 1
+
+
+def test_dual_generate_upscale_cond_false_logs_one_info_line(monkeypatch, tmp_path, caplog):
+    """generate_upscale_cond=False emits exactly one INFO record tagged
+    [UPSCALE COND SKIPPED], carrying the first 12 chars of the base-
+    resolution fingerprint. With the default (True) that line is absent."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        item = {"type": "image", "data": torch.zeros(1, height // 16, width // 16, 3)}
+        tokens = clip.tokenize(prompt, minimax_ref_items=[item])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
+
+    with caplog.at_level(logging.INFO):
+        _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
+                 generate_upscale_cond=False)
+
+    skipped = [r for r in caplog.records
+               if r.levelno == logging.INFO and "[UPSCALE COND SKIPPED]" in r.getMessage()]
+    assert len(skipped) == 1
+    fp_prefix = json.loads(
+        next(iter(tmp_path.glob("*.verbose.json"))).read_bytes())["fingerprint"][:12]
+    assert fp_prefix in skipped[0].getMessage()
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
+                 generate_upscale_cond=True)
+    assert not any("[UPSCALE COND SKIPPED]" in r.getMessage() for r in caplog.records)
 
 
 # --- schema / registration ------------------------------------------------
