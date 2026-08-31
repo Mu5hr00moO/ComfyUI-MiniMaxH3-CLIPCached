@@ -198,7 +198,8 @@ def _record_last_used(proxy, node_variant):
     record_last_used(node_variant, fingerprint)
 
 
-def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b):
+def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b,
+                          b_is_upscale_target=True):
     """Cross-link the two verbose sidecars produced by one dual-resolution
     run so the Cache Manager UI (a separate, later phase) can show just the
     primary entry with a "+ rescaled to WxH" badge instead of listing the
@@ -209,8 +210,16 @@ def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b):
     land on two distinct fingerprints -- two separate cache entries with an
     identical prompt. This records, in each entry's ``system`` block, the
     other entry's fingerprint and pixel size (``paired_fingerprint`` /
-    ``paired_width`` / ``paired_height``). The two sides are symmetric here
-    (a/b), independent of which resolution the caller treats as primary.
+    ``paired_width`` / ``paired_height``) plus an explicit
+    ``is_upscale_target`` role flag.
+
+    The a/b split is pure filesystem symmetry -- both directions are always
+    written. Which side is the upscale target is the caller's
+    responsibility: ``b_is_upscale_target`` (default True) marks side b as
+    the upscale-resolution entry and side a as the base-resolution entry,
+    so both nodes call this with fp_a / width_a / height_a as the
+    width / height side and fp_b / width_b / height_b as the
+    width_upscale / height_upscale side.
 
     fp_a == fp_b is an immediate no-op: the two resolutions collapsed onto
     one shared cache entry, so there is nothing to pair.
@@ -236,11 +245,13 @@ def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b):
         # a -> b
         with get_lock(fp_a):
             if (cache_dir / "{}.json".format(fp_a)).exists():
-                add_pairing(fp_a, CACHE_DIR, fp_b, width_b, height_b)
+                add_pairing(fp_a, CACHE_DIR, fp_b, width_b, height_b,
+                            is_upscale_target=not b_is_upscale_target)
         # b -> a (separate lock acquisition, not nested inside the above)
         with get_lock(fp_b):
             if (cache_dir / "{}.json".format(fp_b)).exists():
-                add_pairing(fp_b, CACHE_DIR, fp_a, width_a, height_a)
+                add_pairing(fp_b, CACHE_DIR, fp_a, width_a, height_a,
+                            is_upscale_target=b_is_upscale_target)
     except Exception as e:
         logger.warning(
             "[VERBOSE PAIRING FAILED] %s <-> %s: could not cross-link the "
@@ -622,7 +633,9 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         )
         # Both encodes succeeded (either call raising propagates before here),
         # so it is safe to cross-link the two Cache Manager entries now.
-        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale)
+        # fp1 is the base-resolution side, fp2 the upscale-resolution side.
+        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale,
+                              b_is_upscale_target=True)
         return (cond, latent, cond_upscale, latent_upscale)
 
 
@@ -954,7 +967,9 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         )
         # Both encodes succeeded (either call raising propagates before here),
         # so it is safe to cross-link the two Cache Manager entries now.
-        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale)
+        # fp1 is the base-resolution side, fp2 the upscale-resolution side.
+        _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale,
+                              b_is_upscale_target=True)
         return (cond, latent, cond_upscale, latent_upscale)
 
 

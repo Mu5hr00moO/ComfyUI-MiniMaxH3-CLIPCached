@@ -139,7 +139,8 @@ def save_verbose(fingerprint: str, system: dict, cache_dir: Path) -> None:
 
 
 def add_pairing(fingerprint: str, cache_dir: Path, paired_fingerprint: str,
-                paired_width: int, paired_height: int) -> None:
+                paired_width: int, paired_height: int,
+                is_upscale_target: bool) -> None:
     """Record, in this entry's "system" block, that it was produced alongside
     another cache entry by a single dual-resolution node run.
 
@@ -152,7 +153,14 @@ def add_pairing(fingerprint: str, cache_dir: Path, paired_fingerprint: str,
     row with a "+ rescaled to WxH" badge instead of listing the prompt
     twice.
 
-    The three keys are added to (or overwritten in) the existing "system"
+    ``is_upscale_target`` records this entry's role in the pair explicitly:
+    False for the base-resolution entry (the node's width / height side),
+    True for the upscale-resolution entry (the width_upscale / height_upscale
+    side). The frontend reads this flag directly instead of guessing the
+    role from paired_width * paired_height, which is unreliable -- the node
+    does not validate that the upscale resolution is actually larger.
+
+    The four keys are added to (or overwritten in) the existing "system"
     block -- a later run of the same dual-resolution node with a different
     second resolution simply repoints them. The write goes through
     save_verbose(), which preserves the user's "user" block untouched.
@@ -171,6 +179,7 @@ def add_pairing(fingerprint: str, cache_dir: Path, paired_fingerprint: str,
     system["paired_fingerprint"] = paired_fingerprint
     system["paired_width"] = paired_width
     system["paired_height"] = paired_height
+    system["is_upscale_target"] = is_upscale_target
 
     save_verbose(fingerprint, system, cache_dir)
 

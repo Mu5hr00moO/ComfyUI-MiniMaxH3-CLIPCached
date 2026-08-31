@@ -38,7 +38,10 @@ FP2 = "b" * 64
 
 def test_cross_links_both_sidecars(monkeypatch, tmp_path):
     """Two distinct fingerprints from one dual-resolution run: each sidecar
-    ends up carrying the other's fingerprint and pixel size."""
+    ends up carrying the other's fingerprint and pixel size. The a side
+    (fp_a / width_a / height_a) is the base-resolution entry and the b side
+    the upscale target, so is_upscale_target lands False on fp_a and True
+    on fp_b."""
     node_module = _load_node_module()
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
@@ -54,8 +57,29 @@ def test_cross_links_both_sidecars(monkeypatch, tmp_path):
     s2 = load_verbose(FP2, tmp_path)["system"]
     assert s1["paired_fingerprint"] == FP2
     assert (s1["paired_width"], s1["paired_height"]) == (1920, 1088)
+    assert s1["is_upscale_target"] is False
     assert s2["paired_fingerprint"] == FP1
     assert (s2["paired_width"], s2["paired_height"]) == (1344, 768)
+    assert s2["is_upscale_target"] is True
+
+
+def test_b_is_upscale_target_false_swaps_the_role_flags(monkeypatch, tmp_path):
+    """b_is_upscale_target is the caller's declaration of which side is the
+    upscale target; passing False makes fp_a the upscale target instead."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path, FP1)
+    _make_core_json(tmp_path, FP2)
+    save_verbose(FP1, {"prompt": "p", "references": []}, tmp_path)
+    save_verbose(FP2, {"prompt": "p", "references": []}, tmp_path)
+
+    node_module._pair_verbose_entries(FP1, 1920, 1088, FP2, 1344, 768,
+                                      b_is_upscale_target=False)
+
+    assert load_verbose(FP1, tmp_path)["system"]["is_upscale_target"] is True
+    assert load_verbose(FP2, tmp_path)["system"]["is_upscale_target"] is False
 
 
 def test_noop_when_fingerprints_equal(monkeypatch, tmp_path):
@@ -110,5 +134,7 @@ def test_skips_direction_whose_core_entry_is_gone(monkeypatch, tmp_path):
 
     node_module._pair_verbose_entries(FP1, 1344, 768, FP2, 1920, 1088)
 
-    assert load_verbose(FP1, tmp_path)["system"]["paired_fingerprint"] == FP2
+    s1 = load_verbose(FP1, tmp_path)["system"]
+    assert s1["paired_fingerprint"] == FP2
+    assert s1["is_upscale_target"] is False
     assert "paired_fingerprint" not in load_verbose(FP2, tmp_path)["system"]

@@ -159,15 +159,33 @@ def test_h_add_pairing_writes_paired_fields_into_existing_system(tmp_path):
     system["height"] = 768
     save_verbose(FINGERPRINT_A, system, tmp_path)
 
-    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088,
+                is_upscale_target=False)
 
     loaded = load_verbose(FINGERPRINT_A, tmp_path)["system"]
     assert loaded["paired_fingerprint"] == FINGERPRINT_B
     assert loaded["paired_width"] == 1920
     assert loaded["paired_height"] == 1088
+    assert loaded["is_upscale_target"] is False
     # the rest of the system block is left as it was
     assert loaded["prompt"] == "dual-res prompt"
     assert loaded["width"] == 1344 and loaded["height"] == 768
+
+
+def test_h_add_pairing_records_the_upscale_target_role_on_both_sides(tmp_path):
+    """The base-resolution entry is stamped is_upscale_target=False and the
+    upscale-resolution entry is_upscale_target=True, so the frontend never
+    has to infer the role from paired_width * paired_height."""
+    save_verbose(FINGERPRINT_A, _system(), tmp_path)   # base side
+    save_verbose(FINGERPRINT_B, _system(), tmp_path)   # upscale side
+
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088,
+                is_upscale_target=False)
+    add_pairing(FINGERPRINT_B, tmp_path, FINGERPRINT_A, 1344, 768,
+                is_upscale_target=True)
+
+    assert load_verbose(FINGERPRINT_A, tmp_path)["system"]["is_upscale_target"] is False
+    assert load_verbose(FINGERPRINT_B, tmp_path)["system"]["is_upscale_target"] is True
 
 
 def test_h_add_pairing_preserves_user_block(tmp_path):
@@ -175,7 +193,8 @@ def test_h_add_pairing_preserves_user_block(tmp_path):
     update_user_metadata(
         FINGERPRINT_A, {"name": "Keeper", "tags": ["hero"], "favorite": True}, tmp_path)
 
-    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088,
+                is_upscale_target=False)
 
     assert load_verbose(FINGERPRINT_A, tmp_path)["user"] == {
         "name": "Keeper", "notes": "", "tags": ["hero"], "favorite": True}
@@ -183,20 +202,24 @@ def test_h_add_pairing_preserves_user_block(tmp_path):
 
 def test_h_add_pairing_silent_noop_when_sidecar_missing(tmp_path):
     # no sidecar for FINGERPRINT_A at all
-    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088,
+                is_upscale_target=False)
     assert load_verbose(FINGERPRINT_A, tmp_path) is None
     assert list(tmp_path.glob("*.verbose.json")) == []
 
 
 def test_h_add_pairing_repoints_a_previous_pairing(tmp_path):
     save_verbose(FINGERPRINT_A, _system(), tmp_path)
-    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088)
-    add_pairing(FINGERPRINT_A, tmp_path, "c" * 64, 2560, 1440)
+    add_pairing(FINGERPRINT_A, tmp_path, FINGERPRINT_B, 1920, 1088,
+                is_upscale_target=False)
+    add_pairing(FINGERPRINT_A, tmp_path, "c" * 64, 2560, 1440,
+                is_upscale_target=True)
 
     loaded = load_verbose(FINGERPRINT_A, tmp_path)["system"]
     assert loaded["paired_fingerprint"] == "c" * 64
     assert loaded["paired_width"] == 2560
     assert loaded["paired_height"] == 1440
+    assert loaded["is_upscale_target"] is True
 
 
 # --- Phase 5: update_user_metadata / delete_verbose ---

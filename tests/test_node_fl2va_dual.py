@@ -291,6 +291,11 @@ def test_dual_resolution_dependent_input_cross_links_the_two_verbose_entries(mon
            (v_a["system"]["width"], v_a["system"]["height"])
     assert {(v_a["system"]["width"], v_a["system"]["height"]),
             (v_b["system"]["width"], v_b["system"]["height"])} == {(1344, 768), (1920, 1088)}
+    # the base-resolution entry (width / height) is stamped False, the
+    # upscale-resolution entry (width_upscale / height_upscale) True
+    by_res = {(v["system"]["width"], v["system"]["height"]): v["system"] for v in (v_a, v_b)}
+    assert by_res[(1344, 768)]["is_upscale_target"] is False
+    assert by_res[(1920, 1088)]["is_upscale_target"] is True
 
 
 def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_path):
