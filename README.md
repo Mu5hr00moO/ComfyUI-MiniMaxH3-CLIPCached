@@ -71,12 +71,20 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached
 ```
 
-Restart ComfyUI. Two new nodes, **"MiniMax H3 CLIP-Cached FL2VA"** and
-**"MiniMax H3 CLIP-Cached Ref2VA"**, will appear under
+Restart ComfyUI. Five new nodes appear under
 `model/conditioning/minimax/cached` — a deliberately separate category from
 the stock nodes' `model/conditioning/minimax`, since these nodes have
 different timing behavior (a first run can be much slower than a cached
-repeat) and a different input contract.
+repeat) and a different input contract:
+
+- **"MiniMax H3 CLIP-Cached FL2VA"** and **"MiniMax H3 CLIP-Cached Ref2VA"**
+  — the two main cached nodes (below).
+- **"MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"** and **"… Ref2VA
+  (Dual Resolution)"** — siblings that encode at two resolutions from one
+  shared set of inputs (see [Dual Resolution variants](#dual-resolution-variants)).
+- **"MiniMax H3 CLIP Name"** — a one-widget encoder-checkpoint picker to
+  drive several cached nodes from a single place (see
+  [The CLIP Name node](#the-clip-name-node)).
 
 ## The FL2VA node
 
@@ -240,6 +248,75 @@ tokenizing. A few consequences are specific to this node:
   soundtracks, 3 standalone audios), not the stock node's dynamic
   `io.Autogrow`. If you need more references than that, use the stock node.
 
+## The CLIP Name node
+
+**"MiniMax H3 CLIP Name"** is a one-widget helper: a single `clip_name`
+dropdown — the exact same `models/text_encoders` picker the FL2VA and
+Ref2VA nodes carry — and a single output that re-emits the selected
+filename.
+
+Its point is to choose the encoder checkpoint in **one** place and feed it
+into the `clip_name` input of any number of FL2VA / Ref2VA / Dual
+Resolution nodes at once, after "Convert widget to Input" on each. Without
+it, a graph with several cached nodes repeats the checkpoint name on every
+one of them, and they can silently drift apart; with it, there is a single
+value to change.
+
+The output is typed so it plugs into a `clip_name` slot regardless of which
+encoder files are in `models/text_encoders` at the time — it stays valid
+even if that folder gains or loses a file mid-session, with no restart.
+
+## Dual Resolution variants
+
+**"MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"** and **"… Ref2VA (Dual
+Resolution)"** each run the cached encode **twice** from one set of inputs:
+once at the base `width`/`height` and once at a second
+`width_upscale`/`height_upscale`, returning two `CONDITIONING` / `LATENT`
+pairs.
+
+| Input | Type | Notes |
+|---|---|---|
+| `width_upscale` / `height_upscale` | int | The second target resolution. Same defaults and range as `width` / `height`. Encoded through the same cached path — a hit if the encoder input ends up identical, a real encode otherwise. |
+| `generate_upscale_cond` | bool (default on) | When off, the second encode is skipped entirely and `positive_upscale` / `latent_upscale` come back as `None`. See below. |
+
+Every other input — `prompt`, `clip_name`, `vae` (and `audio_vae`),
+`first_frame` / `last_frame` or the `ref_*` slots, `ref_image_size`,
+`length`, `cache_mode` — matches the single-resolution node and is shared
+across both passes. Outputs are `positive` / `latent` for the base
+resolution and `positive_upscale` / `latent_upscale` for the second.
+
+**This is a consistency feature, not a performance optimization in
+itself.** Two separate cached nodes, one per resolution, already share a
+cache entry automatically whenever the pixels reaching the encoder come out
+identical regardless of resolution — a plain prompt with no keyframes,
+small reference images, or `ref_image_size="max"`; the fingerprint
+mechanism deduplicates that case on its own, so the second resolution is a
+plain cache hit and the encoder still loads at most once. What two separate
+nodes cannot guarantee is that their shared inputs stay in lockstep: edit
+the prompt on one and forget the other and the two resolutions silently
+diverge. The Dual Resolution node removes that failure mode by
+construction — one prompt widget, one keyframe pair, one checkpoint. When a
+keyframe or a large reference image genuinely makes the encoder input
+differ by resolution, both passes encode for real and produce two distinct
+cache entries, exactly as two separate nodes would.
+
+### `generate_upscale_cond`
+
+An optional bool, **on** by default. When **off**, the second
+(upscale-resolution) encode does not run at all — `positive_upscale` and
+`latent_upscale` return `None` and nothing is loaded or computed for them.
+Turn it off for a plain base-resolution generation where nothing downstream
+consumes the upscale outputs; turn it on when you actually need them.
+
+**Bypassing the downstream consumer of `positive_upscale` /
+`latent_upscale` does not skip the upscale encode** — this switch is the
+only thing that does. The node is a single atomic call that returns all
+four outputs together, so ComfyUI cannot partially execute it: even with a
+whole downstream upscaler chain set to bypass, the node still runs in full
+to produce the base-resolution outputs, and the upscale encode happens
+along with it unless `generate_upscale_cond` is off. A skipped upscale
+encode is logged as an `[UPSCALE COND SKIPPED]` line.
+
 ## Measured performance
 
 Numbers below are from real runs on one machine (RTX-class GPU, 16 GB
@@ -290,6 +367,16 @@ floating button ComfyUI shows over the graph (or the Extensions menu).
 - **Load** copies an entry's prompt to the clipboard; **Delete** removes a
   whole entry (core cache + sidecar + thumbnails) after a confirmation.
 - A **FL2VA / Ref2VA** switch flips the list between the two nodes' entries.
+
+**Dual-resolution pairing:** when two entries come from a single Dual
+Resolution run and have different fingerprints (a keyframe or large
+reference made the encoder input resolution-dependent), the manager folds
+them into **one visible row** — the base resolution — with an expandable
+**"+ rescaled to W×H"** badge that reveals the second entry. The prompt is
+not repeated, since it is identical by construction. **Delete does not
+cascade:** removing one side leaves the other fully intact on disk, marked
+with a warning badge on the next **Check**, to be removed by hand if you
+don't want it.
 
 The manager is only an index over the cache directory, so deleting `cache/`
 by hand and re-running **Check** is always safe.
