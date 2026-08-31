@@ -3,87 +3,83 @@
 ## Stan na: 2026-08-31 / branch master
 
 ## Ostatnio zrobione
-- Rozpoznanie mechanizmu typu COMBO w lokalnym ComfyUI 0.34.2 +
-  comfyui-frontend-package 1.49.6, pod przyszły samodzielny node
-  "MiniMax H3 CLIP Name" (jeden output podpinany do `clip_name` na N
-  węzłach FL2VA/Ref2VA po wystawieniu widgetu jako input). NIE napisano
-  żadnego kodu node'a — samo rozpoznanie.
-- Empirycznie przetestowano `comfy_execution.validation.validate_node_input`
-  na zainstalowanym kodzie (skrypt jednorazowy, nie commitowany):
-  - `RETURN_TYPES=("COMBO",)` (literalny string) → `validate_node_input`
-    zwraca **False** przy targecie będącym listą opcji (stary format
-    combo). Link narysuje się w UI, ale Queue padnie z
-    `return_type_mismatch`.
-  - `RETURN_TYPES=(folder_paths.get_filename_list("text_encoders"),)`
-    (lista opcji jako "typ") → **True**, o ile lista jest treściowo równa
-    liście `clip_name` targetu (obie strony wołają ten sam
-    `folder_paths.get_filename_list("text_encoders")`).
-  - `RETURN_TYPES=("*",)` → **True** (ale łączy się z każdym typem).
-  - `str`-subclass "COMBO" z nadpisanym `__ne__`/`__eq__` (match dowolnej
-    listy) → **True** dla listy, **False** dla `STRING`, **True** dla
-    `COMBO`; do frontendu to zwykły string "COMBO".
+- Rozpoznanie: czy `width`/`height` w stockowych `MiniMaxH3ImageToVideo`
+  i `MiniMaxH3ReferenceToVideo` (`comfy_extras/nodes_minimax_h3.py`,
+  lokalny ComfyUI 0.34.2) wpływa na wejście `clip.tokenize(...)`, czy jest
+  wyłącznie metadaną/rozmiarem zwracanej LATENT. Czysty odczyt przepływu
+  danych w źródle — jednoznaczny, bez potrzeby testu empirycznego. Kodu
+  nie pisano.
+- (Poprzednia sesja) Rozpoznanie mechanizmu typu COMBO pod node
+  "MiniMax H3 CLIP Name" — patrz commit 0c26627 w historii; wynik:
+  `RETURN_TYPES = (folder_paths.get_filename_list("text_encoders"),)`,
+  literalny `("COMBO",)` pada na Queue.
 
 ## Ustalenia istotne dla Chat
-- Wersje: ComfyUI 0.34.2 (`git describe` = v0.34.2, HEAD 169fcf35);
-  frontend przypięty w `requirements.txt:1` =
-  `comfyui-frontend-package==1.49.6` (zgodne z zainstalowanym pakietem).
-- `clip_name` w obu węzłach cached jest starym formatem combo:
-  `(folder_paths.get_filename_list("text_encoders"), {...})` —
-  `nodes.py:333` (FL2VA) i `nodes.py:512` (Ref2VA). Żaden z węzłów nie ma
-  `VALIDATE_INPUTS` (tylko `IS_CHANGED`, `nodes.py:363` / `:534`).
-- Backend NIE konwertuje starego formatu combo na string "COMBO":
-  `comfy_execution/graph.py:99-104` — konwersja jawnie zakomentowana.
-  `get_input_info` zwraca surową listę opcji jako `input_type`.
-- `validate_inputs` w `execution.py:934-951`: dla linku czyta
-  `RETURN_TYPES[slot]` źródła i woła `validate_node_input(received_type,
-  input_type, strict=False)`. Brak `VALIDATE_INPUTS` z parametrem
-  `input_types` na targecie → sprawdzenie typu FAKTYCZNIE się wykonuje.
-- `comfy_execution/validation.py`: `"COMBO"` (str) vs lista → linie 38-43
-  → **False**. Lista vs identyczna lista → linia 24 (`not (a != b)`) →
-  **True**. `"*"` → linia 28 → **True**. Komentarz w liniach 36-39
-  ("custom nodes that output lists of options as the type ... if we ever
-  want to break them on purpose, this can be removed") — ten wzorzec jest
-  tolerowany, nie jest kontraktem.
-- `server.py:759`: `info['output'] = obj_class.RETURN_TYPES` przekazywane
-  1:1 do `/object_info` (element-lista → JSON `[[...]]`).
-- Frontend (odczyt z source-map 1.49.6, NIE test w żywym UI):
-  - `transformNodeDefV1ToV2` (`src/schemas/nodeDef/migration.ts:56,62-64`):
-    output typu `Array` → `type:'COMBO'` + `options`. Input combo →
-    `type:'COMBO'` (`migration.ts:116-123`).
-  - `litegraphService.addOutputs` (`:341-357`) i `addInputSocket`
-    (`:218-231`) używają `spec.type` z V2 → gniazdo dostaje string
-    `"COMBO"`.
-  - `LiteGraph.isValidConnection` (`LiteGraphGlobal.ts:688`): `'COMBO'`
-    vs `'COMBO'` → true; `'*'` traktowane jak `0` → true z każdym.
-  - "Convert widget to input" jest **deprecated / no-op** w 1.49.6
-    (`src/extensions/core/widgetInputs.ts:430-438,518-523` — tylko
-    `console.warn`). Widget i gniazdo współistnieją; gniazdo combo jest
-    zawsze obecne, typu `"COMBO"`.
-  - Promocja przez subgraf (`src/core/graph/subgraph/promotionUtils.ts:
-    287-290`): `subgraph.addInput(name, String(sourceSlot.type ?? ...))`
-    → też `"COMBO"`. Ten sam string co "convert widget to input".
-  - Stockowy frontendowy `PrimitiveNode`
-    (`src/extensions/core/widgetInputs.ts:31-403`) jest `isVirtualNode`
-    — output startuje jako `'*'`, zwężany do `'COMBO'` przy pierwszym
-    połączeniu; wartość wpisywana wprost do widgetu targetu przed
-    wysłaniem promptu → backend go nigdy nie waliduje. Realny node
-    backendowy nie ma tej furtki.
 
-## Rekomendacja (jako sugestia dla Chat, nie polecenie)
-- Docelowy `RETURN_TYPES` nowego node'a:
-  `RETURN_TYPES = (folder_paths.get_filename_list("text_encoders"),)`,
-  `RETURN_NAMES = ("clip_name",)`. Bez dodatkowych flag/atrybutów, bez
-  zmian w `nodes.py` FL2VA/Ref2VA.
-- Wariant odporniejszy na rozjazd treści listy: `str`-subclass "COMBO"
-  z `__ne__`/`__eq__` matchującym dowolną listę (udokumentowany trik
-  AnyType, zawężony do combo). Do frontendu wygląda jak string "COMBO".
-- `("COMBO",)` literalnie — NIE (przechodzi w UI, pada na Queue).
+### FL2VA — MiniMaxH3ImageToVideo.execute() (nodes_minimax_h3.py:134-159)
+- `width`/`height` wpływa na `clip.tokenize()` **TAK, ale tylko gdy podano
+  first_frame i/lub last_frame**:
+  - linia 143: `_resize(first_frame[:1], width, height, "disabled")` —
+    plain stretch DOKŁADNIE do `(width, height)`.
+  - linia 148: `_resize(last_frame[:1], width, height, "center")` —
+    cover-crop do `(width, height)`.
+  - linia 152: `clip.tokenize(prompt, images=images)` — `images` zawiera
+    te już-przeskalowane tensory. To jest PRZED tokenize. Klasa (a).
+- Czysty t2va (brak keyframes): `images=[]` → `width`/`height` NIE dotyka
+  `tokenize()`. Wtedy jedyne użycie to linia 137 `_empty_av_latent(width,
+  height, length)` → kształt zwracanej pustej LATENT (`height//16`,
+  `width//16`). Klasa (b).
+- linia 157: `vae.encode(kf.pop("image"))` — latenty keyframe, ścieżka
+  VAE, PO `encode_from_tokens_scheduled`, doklejane jako
+  `minimax_keyframes` przez `conditioning_set_values` (linia 158). Klasa
+  (b). Rozmiaro-zależne (obraz był `_resize`'owany do width/height), ale
+  to nie CLIP.
+- `prompt` przekazywany bez zmian; `width`/`height` NIGDY nie wchodzą do
+  tekstu promptu.
+
+### Ref2VA — MiniMaxH3ReferenceToVideo.execute() (nodes_minimax_h3.py:285-355)
+- `width`/`height` wpływa na `clip.tokenize()` **TAK, ale tylko przez ref
+  images w trybie `ref_image_size="match"` (domyślny) i tylko gdy ref
+  obraz jest WIĘKSZY powierzchniowo niż `width*height`**:
+  - linia 299: `scale = min(1.0, math.sqrt((width*height)/(w*h)))` —
+    liczy się WYŁĄCZNIE iloczyn `width*height` (pole), nie proporcje.
+    Gdy `width*height >= w*h` → `scale = 1.0` → ref zachowuje własny
+    rozmiar (do 32) → `width`/`height` bez efektu.
+  - linie 302-304: `tw`, `th`, `_resize(img[:1], tw, th, "disabled")`.
+  - linia 306: `ref_items.append({"type": "image", "data": resized})`.
+  - linia 351: `clip.tokenize(prompt, minimax_ref_items=ref_items)`.
+    PRZED tokenize. Klasa (a).
+- `ref_image_size="max"`: linia 301 używa `REF_IMAGE_SHORT_EDGE` (2048),
+  `width`/`height` bez efektu na `tokenize()`.
+- ref videos: **NIE** — linia 316 `adapt_canvas(vw, vh)` liczy kanwę
+  wyłącznie z wymiarów samego wideo referencyjnego + stałych (768,
+  768*1344); `width`/`height` node'a nie wchodzi. `qwen_frames` (linia
+  337) → `ref_items` (linia 338) są w rozmiarze pochodnym od wideo, nie
+  od width/height.
+- ref audio: brak `width`/`height`.
+- linia 288: `_empty_av_latent(width, height, length)` → kształt
+  zwracanej LATENT. Klasa (b).
+- linie 305/329/347 `vae.encode(...)` → `ref_blocks` → `minimax_refs`
+  doklejane PO encode (linie 353-354). Klasa (b). `latent_h`/`latent_w`
+  w ref_blocks (linia 307) pochodzą z `th`/`tw` → w trybie "match"
+  pośrednio zależą od `width*height`, ale to payload DiT (VAE), nie CLIP.
+- `prompt` bez zmian; `width`/`height` nie wchodzą do tekstu.
+
+### Implikacja dla planowanej funkcji "cond dla upscalingu latenów"
+- Hidden states z Qwena (`encode_from_tokens_scheduled`) są niezależne od
+  `width`/`height` TYLKO w: FL2VA bez keyframes; Ref2VA bez ref images;
+  Ref2VA z ref images w trybie "max"; Ref2VA gdzie każdy ref obraz jest
+  mniejszy powierzchniowo niż `width*height` w trybie "match".
+- W pozostałych przypadkach zmiana `width`/`height` zmienia piksele
+  wchodzące do enkodera → inny CONDITIONING → inny fingerprint; nie da
+  się przenieść na inny rozmiar bez ponownego encode.
+- Część conda doklejana po encode (`minimax_keyframes` / `minimax_refs`,
+  latenty VAE) jest rozmiaro-zależna ZAWSZE — nawet gdy hidden states
+  nie są.
 
 ## Otwarte pytania
-- Świadoma kruchość wariantu z gołą listą: `RETURN_TYPES` jest liczone
-  RAZ przy imporcie modułu; dodanie/usunięcie pliku w `models/text_encoders`
-  w trakcie sesji rozjeżdża listę z `INPUT_TYPES()` targetu (liczone
-  świeżo) do czasu restartu ComfyUI. Wariant `str`-subclass to omija.
-- Frontendowa część rozpoznania to ODCZYT source-map, nie test w żywym
-  UI. Do domknięcia: jeden fizyczny test (nowy node → drop output na
-  `clip_name` 2× FL2VA → Queue).
+- Kruchość wariantu COMBO z gołą listą (patrz poprzednia sesja):
+  `RETURN_TYPES` liczone raz przy imporcie; dodanie/usunięcie pliku
+  w `models/text_encoders` w sesji rozjeżdża listę do restartu.
+- Frontendowa część rozpoznania COMBO to odczyt source-map 1.49.6, nie
+  test w żywym UI — do domknięcia jeden fizyczny test.
