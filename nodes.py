@@ -383,6 +383,61 @@ def _clip_name_input_spec(tooltip=None):
     return (folder_paths.get_filename_list("text_encoders"), {"tooltip": tooltip})
 
 
+def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
+                        first_frame, last_frame, cache_mode):
+    """One full cached FL2VA encode at a single resolution.
+
+    This is the entire body of MiniMaxH3CLIPCachedFL2VA.execute() from the
+    proxy build onward, lifted into a module function so a second node
+    (MiniMaxH3CLIPCachedFL2VADualRes) can run it twice -- once per target
+    resolution -- from a single shared set of inputs. Behaviour is identical
+    to handing the stock MiniMaxH3ImageToVideo.execute() a CachedClipProxy in
+    place of clip: a cache HIT never loads the real encoder, a MISS loads it
+    once, uses it, and releases it before returning.
+
+    Nothing here branches on width/height. The existing fingerprint/proxy
+    alone decides HIT vs MISS, so two resolutions whose encoder input happens
+    to be identical (no keyframes, or keyframes that resize the same) share
+    one cache entry transparently, while two that differ each encode for
+    real -- exactly as two separate nodes would.
+    """
+    proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
+
+    from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
+    try:
+        cond, latent = MiniMaxH3ImageToVideo.execute(
+            clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
+            length=length, first_frame=first_frame, last_frame=last_frame,
+        )
+        # Inside the try (not the finally): only describe a run that
+        # actually produced a conditioning. If the stock execute() raised,
+        # there is no successful operation to record.
+        items, labels = [], []
+        if first_frame is not None:
+            items.append(("image", first_frame))
+            labels.append("first_frame")
+        if last_frame is not None:
+            items.append(("image", last_frame))
+            labels.append("last_frame")
+        _sync_verbose_metadata(
+            proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
+            labels, clip_ctime_ns=ctime_ns, width=width, height=height,
+        )
+        _record_last_used(proxy, "fl2va")
+    finally:
+        # The del/gc/soft_empty_cache stay here, in _execute_fl2va_once()'s
+        # own frame, on purpose -- see _release_real_clip_safety_net's
+        # docstring: a `del proxy` inside that helper would not be the last
+        # reference (this frame still holds `proxy` until the helper returns),
+        # so the encoder would survive the reclaim.
+        if _release_real_clip_safety_net(proxy):
+            del proxy
+            gc.collect()
+            comfy.model_management.soft_empty_cache()
+
+    return (cond, latent)
+
+
 class MiniMaxH3CLIPCachedFL2VA:
     @classmethod
     def INPUT_TYPES(cls):
@@ -423,41 +478,94 @@ class MiniMaxH3CLIPCachedFL2VA:
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
-        proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
+        # Thin wrapper: the whole body now lives in _execute_fl2va_once() so
+        # MiniMaxH3CLIPCachedFL2VADualRes can reuse it verbatim for a second
+        # resolution. Single-resolution behaviour is unchanged.
+        return _execute_fl2va_once(
+            clip_name, vae, prompt, width, height, length,
+            first_frame, last_frame, cache_mode,
+        )
 
-        from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
-        try:
-            cond, latent = MiniMaxH3ImageToVideo.execute(
-                clip=proxy, vae=vae, prompt=prompt, width=width, height=height,
-                length=length, first_frame=first_frame, last_frame=last_frame,
-            )
-            # Inside the try (not the finally): only describe a run that
-            # actually produced a conditioning. If the stock execute() raised,
-            # there is no successful operation to record.
-            items, labels = [], []
-            if first_frame is not None:
-                items.append(("image", first_frame))
-                labels.append("first_frame")
-            if last_frame is not None:
-                items.append(("image", last_frame))
-                labels.append("last_frame")
-            _sync_verbose_metadata(
-                proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
-                labels, clip_ctime_ns=ctime_ns, width=width, height=height,
-            )
-            _record_last_used(proxy, "fl2va")
-        finally:
-            # The del/gc/soft_empty_cache stay here, in execute()'s own
-            # frame, on purpose -- see _release_real_clip_safety_net's
-            # docstring: a `del proxy` inside that helper would not be the
-            # last reference (this frame still holds `proxy` until the helper
-            # returns), so the encoder would survive the reclaim.
-            if _release_real_clip_safety_net(proxy):
-                del proxy
-                gc.collect()
-                comfy.model_management.soft_empty_cache()
 
-        return (cond, latent)
+class MiniMaxH3CLIPCachedFL2VADualRes:
+    """Two-resolution sibling of MiniMaxH3CLIPCachedFL2VA.
+
+    Produces CONDITIONING + AV LATENT for two resolutions -- a base one
+    (width/height) and a second one (width2/height2, e.g. an upscale
+    target) -- from a single shared set of inputs (clip_name, prompt, vae,
+    first_frame, last_frame, length, cache_mode). Driving both resolutions
+    off one node removes the risk of those shared values silently drifting
+    apart between two separate MiniMaxH3CLIPCachedFL2VA instances in the same
+    graph.
+
+    It runs the full, unmodified cached encode path (_execute_fl2va_once)
+    once per resolution and lets the existing fingerprint/proxy decide HIT vs
+    MISS each time -- there is no width/height-conditional logic here. When
+    the encoder input is resolution-independent (no keyframes, or keyframes
+    that resize identically) the second call is a natural cache HIT and the
+    real encoder loads at most once; when keyframes make the pixels differ,
+    both resolutions encode for real, exactly as two separate nodes would.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip_name": _clip_name_input_spec(),
+                "vae": ("VAE",),
+                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "width2": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                    "tooltip": "Second target resolution's width (e.g. an upscaling "
+                                               "target). Encoded through the same fully independent "
+                                               "cached path as width -- a cache HIT if the encoder "
+                                               "input ends up identical, a real encode otherwise."}),
+                "height2": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                     "tooltip": "Second target resolution's height (e.g. an upscaling "
+                                                "target). Encoded through the same fully independent "
+                                                "cached path as height -- a cache HIT if the encoder "
+                                                "input ends up identical, a real encode otherwise."}),
+                "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
+                                    "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid "
+                                               "(124 = ~5s; trained range is ~124-362, longer is untested)"}),
+            },
+            "optional": {
+                "first_frame": ("IMAGE",),
+                "last_frame": ("IMAGE",),
+                "cache_mode": (["auto", "refresh"], {"default": "auto",
+                    "tooltip": "auto: reuse the cached encode for an identical prompt+first_frame+"
+                               "last_frame+clip_name (checkpoint identity = filename+size+mtime+ctime) if "
+                               "one exists, otherwise encode and save it. refresh: ignore any cached "
+                               "encode, always re-encode and overwrite the cache. Applies to both "
+                               "resolutions.",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
+    RETURN_NAMES = ("positive", "latent", "positive_2", "latent_2")
+    FUNCTION = "execute"
+    CATEGORY = "model/conditioning/minimax/cached"
+
+    @classmethod
+    def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
+        # Same contract as the single-resolution node: IS_CHANGED tracks the
+        # CLIP checkpoint's identity and the refresh flag, neither of which
+        # depends on how many resolutions this run computes.
+        return _is_changed_common(clip_name, cache_mode)
+
+    def execute(self, clip_name, vae, prompt, width, height, width2, height2,
+                length, first_frame=None, last_frame=None, cache_mode="auto"):
+        cond, latent = _execute_fl2va_once(
+            clip_name, vae, prompt, width, height, length,
+            first_frame, last_frame, cache_mode,
+        )
+        cond2, latent2 = _execute_fl2va_once(
+            clip_name, vae, prompt, width2, height2, length,
+            first_frame, last_frame, cache_mode,
+        )
+        return (cond, latent, cond2, latent2)
 
 
 # --- Ref2VA (reference images / videos / audio) -----------------------------
@@ -543,6 +651,56 @@ def _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
     return items
 
 
+def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, length,
+                         ref_image_size, ref_images, ref_videos, ref_video_audios,
+                         ref_audios, cache_mode):
+    """One full cached Ref2VA encode at a single resolution.
+
+    This is the body of MiniMaxH3CLIPCachedRef2VA.execute() from the proxy
+    build onward, lifted into a module function so
+    MiniMaxH3CLIPCachedRef2VADualRes can run it twice -- once per target
+    resolution -- from the same references. The four ref_* arguments are the
+    already-assembled {name: value} dicts (the caller runs
+    _build_ref_slot_dicts on its flat optional slots); everything else
+    matches the stock MiniMaxH3ReferenceToVideo.execute() contract.
+
+    As with _execute_fl2va_once nothing here branches on width/height -- the
+    existing fingerprint/proxy alone decides HIT vs MISS.
+    """
+    proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
+
+    from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
+    try:
+        cond, latent = MiniMaxH3ReferenceToVideo.execute(
+            clip=proxy, vae=vae, audio_vae=audio_vae, prompt=prompt,
+            width=width, height=height, length=length,
+            ref_image_size=ref_image_size,
+            ref_images=ref_images, ref_videos=ref_videos,
+            ref_video_audios=ref_video_audios, ref_audios=ref_audios,
+        )
+        # Inside the try (not the finally): only describe a run that
+        # actually produced a conditioning. If the stock execute() raised,
+        # there is no successful operation to record.
+        items = _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
+        _sync_verbose_metadata(
+            proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
+            clip_ctime_ns=ctime_ns, width=width, height=height,
+        )
+        _record_last_used(proxy, "ref2va")
+    finally:
+        # The del/gc/soft_empty_cache stay here, in _execute_ref2va_once()'s
+        # own frame, on purpose -- see _release_real_clip_safety_net's
+        # docstring: a `del proxy` inside that helper would not be the last
+        # reference (this frame still holds `proxy` until the helper returns),
+        # so the encoder would survive the reclaim.
+        if _release_real_clip_safety_net(proxy):
+            del proxy
+            gc.collect()
+            comfy.model_management.soft_empty_cache()
+
+    return (cond, latent)
+
+
 class MiniMaxH3CLIPCachedRef2VA:
     @classmethod
     def INPUT_TYPES(cls):
@@ -598,8 +756,11 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
                 cache_mode="auto"):
-        proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
-
+        # Thin wrapper: the flat optional slots are folded into the stock
+        # {name: value} dicts here, then the whole encode body runs in
+        # _execute_ref2va_once() -- shared verbatim with
+        # MiniMaxH3CLIPCachedRef2VADualRes. Single-resolution behaviour is
+        # unchanged.
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
              ref_image_5, ref_image_6, ref_image_7, ref_image_8],
@@ -607,37 +768,119 @@ class MiniMaxH3CLIPCachedRef2VA:
             [ref_video_audio_0, ref_video_audio_1, ref_video_audio_2],
             [ref_audio_0, ref_audio_1, ref_audio_2],
         )
+        return _execute_ref2va_once(
+            clip_name, vae, audio_vae, prompt, width, height, length,
+            ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
+            cache_mode,
+        )
 
-        from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo
-        try:
-            cond, latent = MiniMaxH3ReferenceToVideo.execute(
-                clip=proxy, vae=vae, audio_vae=audio_vae, prompt=prompt,
-                width=width, height=height, length=length,
-                ref_image_size=ref_image_size,
-                ref_images=ref_images, ref_videos=ref_videos,
-                ref_video_audios=ref_video_audios, ref_audios=ref_audios,
-            )
-            # Inside the try (not the finally): only describe a run that
-            # actually produced a conditioning. If the stock execute() raised,
-            # there is no successful operation to record.
-            items = _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
-            _sync_verbose_metadata(
-                proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
-                clip_ctime_ns=ctime_ns, width=width, height=height,
-            )
-            _record_last_used(proxy, "ref2va")
-        finally:
-            # The del/gc/soft_empty_cache stay here, in execute()'s own
-            # frame, on purpose -- see _release_real_clip_safety_net's
-            # docstring: a `del proxy` inside that helper would not be the
-            # last reference (this frame still holds `proxy` until the helper
-            # returns), so the encoder would survive the reclaim.
-            if _release_real_clip_safety_net(proxy):
-                del proxy
-                gc.collect()
-                comfy.model_management.soft_empty_cache()
 
-        return (cond, latent)
+class MiniMaxH3CLIPCachedRef2VADualRes:
+    """Two-resolution sibling of MiniMaxH3CLIPCachedRef2VA.
+
+    Produces CONDITIONING + AV LATENT for two resolutions -- a base one
+    (width/height) and a second one (width2/height2, e.g. an upscale
+    target) -- from a single shared set of inputs (clip_name, prompt, vae,
+    audio_vae, ref_image_size, every ref_* slot, length, cache_mode).
+    Driving both resolutions off one node removes the risk of those shared
+    values silently drifting apart between two separate
+    MiniMaxH3CLIPCachedRef2VA instances in the same graph.
+
+    It runs the full, unmodified cached encode path (_execute_ref2va_once)
+    once per resolution and lets the existing fingerprint/proxy decide HIT vs
+    MISS each time -- there is no width/height-conditional logic here. With
+    no references, small references, or ref_image_size="max" the encoder
+    input is resolution-independent and the second call is a natural cache
+    HIT (the real encoder loads at most once); with large references under
+    ref_image_size="match" the pixels handed to the encoder differ by
+    resolution and both encode for real, exactly as two separate nodes would.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # The optional ref_* slot block is identical to
+        # MiniMaxH3CLIPCachedRef2VA's; it is rebuilt here rather than shared
+        # to keep that node's INPUT_TYPES untouched by this addition.
+        optional = {}
+        for i in range(_REF_IMAGE_COUNT):
+            optional["ref_image_" + str(i)] = ("IMAGE", {"tooltip": _REF_IMAGE_TOOLTIP})
+        for i in range(_REF_VIDEO_COUNT):
+            optional["ref_video_" + str(i)] = ("IMAGE", {"tooltip": _REF_VIDEO_TOOLTIP})
+        for i in range(_REF_VIDEO_COUNT):
+            optional["ref_video_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_VIDEO_AUDIO_TOOLTIP})
+        for i in range(_REF_AUDIO_COUNT):
+            optional["ref_audio_" + str(i)] = ("AUDIO", {"tooltip": _REF_AUDIO_TOOLTIP})
+        optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
+            "tooltip": "auto: reuse the cached encode for an identical prompt + reference "
+                       "images/videos/audio + clip_name (checkpoint identity = "
+                       "filename+size+mtime+ctime) if one exists, otherwise encode and save it. "
+                       "refresh: ignore any cached encode, always re-encode and overwrite "
+                       "the cache. Applies to both resolutions.",
+        })
+        return {
+            "required": {
+                "clip_name": _clip_name_input_spec(),
+                "vae": ("VAE",),
+                "audio_vae": ("VAE",),
+                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
+                "width2": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                    "tooltip": "Second target resolution's width (e.g. an upscaling "
+                                               "target). Encoded through the same fully independent "
+                                               "cached path as width -- a cache HIT if the encoder "
+                                               "input ends up identical, a real encode otherwise."}),
+                "height2": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
+                                     "tooltip": "Second target resolution's height (e.g. an upscaling "
+                                                "target). Encoded through the same fully independent "
+                                                "cached path as height -- a cache HIT if the encoder "
+                                                "input ends up identical, a real encode otherwise."}),
+                "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
+                                    "tooltip": "Frame count at 24 fps, (124 = ~5s, trained range is ~124-362)"}),
+                "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
+            },
+            "optional": optional,
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
+    RETURN_NAMES = ("positive", "latent", "positive_2", "latent_2")
+    FUNCTION = "execute"
+    CATEGORY = "model/conditioning/minimax/cached"
+
+    @classmethod
+    def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
+        # Same contract as the single-resolution node: IS_CHANGED tracks the
+        # CLIP checkpoint's identity and the refresh flag, neither of which
+        # depends on how many resolutions this run computes.
+        return _is_changed_common(clip_name, cache_mode)
+
+    def execute(self, clip_name, vae, audio_vae, prompt, width, height, width2, height2,
+                length, ref_image_size="match",
+                ref_image_0=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+                ref_image_4=None, ref_image_5=None, ref_image_6=None, ref_image_7=None,
+                ref_image_8=None,
+                ref_video_0=None, ref_video_1=None, ref_video_2=None,
+                ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
+                ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
+                cache_mode="auto"):
+        ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
+            [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
+             ref_image_5, ref_image_6, ref_image_7, ref_image_8],
+            [ref_video_0, ref_video_1, ref_video_2],
+            [ref_video_audio_0, ref_video_audio_1, ref_video_audio_2],
+            [ref_audio_0, ref_audio_1, ref_audio_2],
+        )
+        cond, latent = _execute_ref2va_once(
+            clip_name, vae, audio_vae, prompt, width, height, length,
+            ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
+            cache_mode,
+        )
+        cond2, latent2 = _execute_ref2va_once(
+            clip_name, vae, audio_vae, prompt, width2, height2, length,
+            ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
+            cache_mode,
+        )
+        return (cond, latent, cond2, latent2)
 
 
 # --- CLIP Name (standalone encoder picker) ----------------------------------

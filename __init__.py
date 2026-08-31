@@ -42,7 +42,9 @@ _nodes_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_nodes_module)
 
 MiniMaxH3CLIPCachedFL2VA = _nodes_module.MiniMaxH3CLIPCachedFL2VA
+MiniMaxH3CLIPCachedFL2VADualRes = _nodes_module.MiniMaxH3CLIPCachedFL2VADualRes
 MiniMaxH3CLIPCachedRef2VA = _nodes_module.MiniMaxH3CLIPCachedRef2VA
+MiniMaxH3CLIPCachedRef2VADualRes = _nodes_module.MiniMaxH3CLIPCachedRef2VADualRes
 MiniMaxH3CLIPName = _nodes_module.MiniMaxH3CLIPName
 
 # Importing routes.py registers the Cache Manager's REST endpoints on
@@ -61,12 +63,16 @@ except Exception as _routes_err:  # pragma: no cover
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA,
+    "MiniMaxH3CLIPCachedFL2VADualRes": MiniMaxH3CLIPCachedFL2VADualRes,
     "MiniMaxH3CLIPCachedRef2VA": MiniMaxH3CLIPCachedRef2VA,
+    "MiniMaxH3CLIPCachedRef2VADualRes": MiniMaxH3CLIPCachedRef2VADualRes,
     "MiniMaxH3CLIPName": MiniMaxH3CLIPName,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3CLIPCachedFL2VA": "MiniMax H3 CLIP-Cached FL2VA",
+    "MiniMaxH3CLIPCachedFL2VADualRes": "MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)",
     "MiniMaxH3CLIPCachedRef2VA": "MiniMax H3 CLIP-Cached Ref2VA",
+    "MiniMaxH3CLIPCachedRef2VADualRes": "MiniMax H3 CLIP-Cached Ref2VA (Dual Resolution)",
     "MiniMaxH3CLIPName": "MiniMax H3 CLIP Name",
 }
 

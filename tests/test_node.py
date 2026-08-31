@@ -805,9 +805,13 @@ def test_f_node_class_mappings_has_both_node_keys():
     spec.loader.exec_module(package)
 
     assert set(package.NODE_CLASS_MAPPINGS.keys()) == {
-        "MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedRef2VA", "MiniMaxH3CLIPName"}
+        "MiniMaxH3CLIPCachedFL2VA", "MiniMaxH3CLIPCachedFL2VADualRes",
+        "MiniMaxH3CLIPCachedRef2VA", "MiniMaxH3CLIPCachedRef2VADualRes",
+        "MiniMaxH3CLIPName"}
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VA"].__name__ == "MiniMaxH3CLIPCachedFL2VA"
+    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VADualRes"].__name__ == "MiniMaxH3CLIPCachedFL2VADualRes"
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedRef2VA"].__name__ == "MiniMaxH3CLIPCachedRef2VA"
+    assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedRef2VADualRes"].__name__ == "MiniMaxH3CLIPCachedRef2VADualRes"
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPName"].__name__ == "MiniMaxH3CLIPName"
     assert set(package.NODE_DISPLAY_NAME_MAPPINGS.keys()) == set(package.NODE_CLASS_MAPPINGS.keys())
 
