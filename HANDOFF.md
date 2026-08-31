@@ -1,75 +1,97 @@
 # HANDOFF
 
-## Stan na: 2026-08-31 / branch master / commit b22774f
+## Stan na: 2026-08-31 / branch master / commit 4c5fbf7
 
 ## Ostatnio zrobione
-- Dodany trzeci node w repo: **MiniMaxH3CLIPName** ("MiniMax H3 CLIP Name").
-  Jeden widget `clip_name` (ten sam dropdown co FL2VA/Ref2VA) -> jeden
-  output typu COMBO, do podpięcia (po "Convert widget to Input") pod
-  `clip_name` dowolnej liczby MiniMaxH3CLIPCachedFL2VA /
-  MiniMaxH3CLIPCachedRef2VA naraz. Jedno miejsce zmiany enkodera zamiast N.
-- `nodes.py`: nowy `_ComboType(str)` (output type dopasowujący się do
-  dowolnej listy), nowy `_clip_name_input_spec(tooltip=None)` (wspólny
-  wpis INPUT_TYPES dla `clip_name`), nowa klasa `MiniMaxH3CLIPName`.
-  FL2VA i Ref2VA używają teraz `_clip_name_input_spec()` zamiast trzeciej
-  kopii wpisu inline - ich tooltip bez zmian (domyślny w helperze jest
-  bajt-w-bajt tym samym tekstem co wcześniej inline).
-- `__init__.py`: trzy nowe wpisy (import klasy + NODE_CLASS_MAPPINGS +
-  NODE_DISPLAY_NAME_MAPPINGS).
-- `tests/test_clip_name_node.py`: nowy plik, 10 testów.
+- Dodane dwa nowe, samodzielne node'y "dual resolution":
+  **MiniMaxH3CLIPCachedFL2VADualRes** ("MiniMax H3 CLIP-Cached FL2VA
+  (Dual Resolution)") i **MiniMaxH3CLIPCachedRef2VADualRes** ("MiniMax H3
+  CLIP-Cached Ref2VA (Dual Resolution)"). Każdy liczy CONDITIONING+LATENT
+  dla DWÓCH rozdzielczości (width/height oraz nowe width2/height2) z
+  jednego zestawu współdzielonych inputów - eliminuje ryzyko rozjazdu tych
+  wartości między dwiema osobnymi instancjami node'a w jednym workflow.
+  RETURN_TYPES = (CONDITIONING, LATENT, CONDITIONING, LATENT),
+  RETURN_NAMES = (positive, latent, positive_2, latent_2).
+- `nodes.py`: ciało `MiniMaxH3CLIPCachedFL2VA.execute()` (od budowy proxy
+  w dół) wydzielone do modułowej funkcji `_execute_fl2va_once(clip_name,
+  vae, prompt, width, height, length, first_frame, last_frame,
+  cache_mode) -> (cond, latent)`. Analogicznie
+  `MiniMaxH3CLIPCachedRef2VA.execute()` -> `_execute_ref2va_once(clip_name,
+  vae, audio_vae, prompt, width, height, length, ref_image_size,
+  ref_images, ref_videos, ref_video_audios, ref_audios, cache_mode) ->
+  (cond, latent)` (cztery argumenty `ref_*` to gotowe dicty
+  `{nazwa: wartość}` - wrapper woła `_build_ref_slot_dicts` na płaskich
+  slotach i przekazuje wynik dalej). Czysta relokacja: stare klasy to
+  teraz cienkie wrappery, ich sygnatury / INPUT_TYPES / IS_CHANGED bez
+  zmian. Dual node woła `_execute_*_once` DWA razy (raz per rozdzielczość),
+  wszystkie pozostałe argumenty współdzielone.
+- Zero logiki warunkowej po naszej stronie: dual node zawsze woła pełną,
+  niezmienioną ścieżkę encode dwa razy, istniejący fingerprint/proxy sam
+  decyduje HIT/MISS dla drugiej rozdzielczości.
+- `__init__.py`: cztery nowe linie (2 importy klas + wpisy w
+  NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS).
+- `tests/test_node_fl2va_dual.py` i `tests/test_node_ref2va_dual.py`: nowe
+  pliki (9 testów każdy), reużyty istniejący harness (FakeRealClip,
+  _patch_common, monkeypatch na stockowym execute, prawdziwy CachedClipProxy
+  na tmp_path).
 - `tests/test_node.py` `test_f`: zbiór oczekiwanych kluczy
-  NODE_CLASS_MAPPINGS rozszerzony o trzeci node (wymuszone przez
-  KRYTERIUM_DONE "0 FAIL" - asercja `set(...) == {2 klucze}` inaczej pada).
-- Weryfikacja: `python -m py_compile nodes.py __init__.py` OK;
-  pełny pytest **271 passed, 0 skipped, 0 failed** (było 261, +10 nowych).
+  NODE_CLASS_MAPPINGS rozszerzony o dwa nowe node'y (jedyna dozwolona
+  zmiana w istniejących testach - "mapowanie kluczy jak przy CLIP Name").
+- Weryfikacja: `python -m py_compile nodes.py __init__.py` OK; pełny pytest
+  **289 passed, 0 skipped, 0 failed** (było 271, +18 nowych). Output w
+  scratchpadzie sesji: `dualres_test_output.txt`.
 
 ## Ustalenia istotne dla Chat
 
-### Wariant COMBO - potwierdzony bezpośrednio przeciw prawdziwej walidacji ComfyUI
-- `comfy_execution.validation.validate_node_input` **da się** zaimportować
-  w zwykłym środowisku pytest bez żadnego dodatkowego stanu procesu
-  (bez `init_extra_nodes`, bez serwera). Jedyna zależność tego modułu to
-  `from comfy_api.latest import IO`, a `conftest.py` już wrzuca korzeń
-  ComfyUI na `sys.path`. Test `test_comfy_execution_validation_is_importable`
-  to formalnie potwierdza.
-- Przeciw prawdziwemu `validate_node_input`
-  (`comfy_execution/validation.py`):
-  - `validate_node_input(_ComboType("COMBO"), <lista opcji clip_name>)` -> `True`
-  - `validate_node_input(_ComboType("COMBO"), "COMBO")` -> `True`
-  - `validate_node_input(_ComboType("COMBO"), "STRING")` -> `False`
-  - `validate_node_input(_ComboType("COMBO"), "CONDITIONING")` -> `False`
-  - `validate_node_input("COMBO", <lista opcji clip_name>)` -> `False`
-    (goły string "COMBO" NIE przechodzi - potwierdza, że `_ComboType`
-    faktycznie coś rozwiązuje, nie jest kosmetyką).
-  Ścieżka w źródle: pierwsza linia `if not received_type != input_type`
-  honoruje override `__ne__` na typie otrzymanym; `_ComboType.__ne__`
-  zwraca `False` dla dowolnej `list`.
-- W `validation.py` jest komentarz `# if we ever want to break them on
-  purpose, this can be removed` przy specjalnym przypadku list/COMBO -
-  zachowanie nieudokumentowane, ale obecnie stabilne; do rewizji przy
-  większym bumpie ComfyUI. Odnotowane w docstringu `_ComboType`.
+### Dowód empiryczny: cache sam obsługuje oba przypadki (test 6c ZLECENIA)
+Dwa warianty `fake_execute` w KAŻDYM z nowych plików testowych, przeciw
+prawdziwemu `CachedClipProxy` + prawdziwemu `compute_fingerprint` (tylko
+stockowy `MiniMaxH3ImageToVideo/ReferenceToVideo.execute` jest zamockowany):
+- "resolution-independent": `fake_execute` NIE wplata width/height w to, co
+  idzie do `clip.tokenize(...)` -> dual node z RÓŻNYM (width,height) vs
+  (width2,height2) daje `real_clip.encode_calls == 1` (druga rozdzielczość
+  = HIT przez niezmieniony fingerprint) - `test_dual_resolution_independent_input_encodes_once`.
+- "resolution-dependent": `fake_execute` wplata width/height w kształt
+  tensora idącego do `clip.tokenize(...)` (symuluje keyframe/ref_image po
+  `_resize`) -> `real_clip.encode_calls == 2` -
+  `test_dual_resolution_dependent_input_encodes_twice`.
+- Bonus: `test_dual_same_resolution_twice_still_encodes_once` - nawet przy
+  resolution-dependent input, width2==width/height2==height => 1 encode.
 
-### Kwestia środowiskowa: `import nodes` pod pytest
-- Pod prawdziwym ComfyUI `import nodes` wewnątrz naszego `nodes.py` łapie
-  globalny moduł ComfyUI (już w `sys.modules`). Pod pytest łapie **nasz
-  własny** `nodes.py` (korzeń repo jest przed korzeniem ComfyUI na
-  `sys.path`), który nie ma `MAX_RESOLUTION`.
-- Skutek: `MiniMaxH3CLIPCachedFL2VA.INPUT_TYPES()` /
-  `...Ref2VA.INPUT_TYPES()` rzuca `AttributeError: module 'nodes' has no
-  attribute 'MAX_RESOLUTION'` pod pytest. Dotąd nie ujawniało się, bo
-  ŻADEN istniejący test nie wołał `INPUT_TYPES()`.
-- Rozwiązane w `test_clip_name_node.py` fixture
-  `node_module_with_real_comfy_nodes`: ładuje prawdziwy
-  `<ComfyUI>/nodes.py` (~0,2 s, bez serwera) do `sys.modules["nodes"]`
-  na czas testu i przywraca poprzednie wiązanie po. To realne obejście
-  (ładuje prawdziwy moduł), nie mock.
-- `MiniMaxH3CLIPName.INPUT_TYPES()` sam NIE wymaga tego fixture - ma tylko
-  widget `clip_name`, zero `nodes.MAX_RESOLUTION`.
+### Fakty potwierdzone w kodzie
+- Stockowe `MiniMaxH3ImageToVideo.execute` / `MiniMaxH3ReferenceToVideo.execute`
+  (`comfy_extras/nodes_minimax_h3.py`) NIE mutują wejściowych tensorów ani
+  dictów: `_resize()` tworzy nowe tensory, ref dicty są tylko czytane przez
+  `.values()` / `.items()`. Dlatego dual Ref2VA bezpiecznie przekazuje te
+  SAME obiekty dictów do obu wywołań `_execute_ref2va_once`
+  (`nodes.py` - metoda `execute` klasy `MiniMaxH3CLIPCachedRef2VADualRes`).
+- Dual node NIE trzyma nigdy dwóch encoderów naraz: `_execute_*_once`
+  robi `del proxy; gc.collect(); soft_empty_cache()` we własnej ramce
+  (jego finally), więc pierwsze wywołanie w pełni zwalnia encoder zanim
+  drugie zbuduje swój proxy. Zgodne z twardą zasadą CLAUDE.md
+  ("Nigdy nie trzymać więcej niż jednego dużego modelu rezydentnego").
+- Wpisy cache dual node'a lądują pod istniejącymi wariantami "fl2va" /
+  "ref2va" w Cache Managerze (`_execute_*_once` przekazuje te same stringi
+  do `_sync_verbose_metadata` / `_record_last_used`). Brak zmian w
+  `web/*.js`.
+- Efekt uboczny (drobny, nieblokujący): dual node woła `_record_last_used`
+  dwa razy, więc "aktywny wiersz" w Cache Managerze pokaże fingerprint
+  DRUGIEJ rozdzielczości (width2/height2). Poza zakresem ZLECENIA.
 
 ## Otwarte pytania
-- brak (KRYTERIUM_DONE spełnione: py_compile OK, nowy plik testowy zielony
-  w tym test przeciw prawdziwej walidacji, pełny pakiet 271/0/0).
-- Do sprawdzenia przez użytkownika w żywym UI (CC nie może): czy output
-  MiniMaxH3CLIPName faktycznie podłącza się pod `clip_name` po "Convert
-  widget to Input" na FL2VA/Ref2VA i przechodzi Queue bez type_mismatch,
-  oraz czy jeden output da się rozgałęzić na wiele node'ów naraz.
+- brak (KRYTERIUM_DONE spełnione: py_compile OK; targeted 85/0/0 w tym oba
+  warianty 6c; pełny pakiet 289/0/0; git diff nodes.py = tylko
+  _execute_*_once + dwie nowe klasy + cienkie wrappery; git diff
+  __init__.py = tylko nowe wpisy).
+- Do sprawdzenia przez użytkownika w żywym UI (CC nie może): render obu
+  node'ów w edytorze, oba wyjścia positive/latent i positive_2/latent_2
+  podłączają się poprawnie, realny podwójny encode przy keyframe'ach
+  (dwie linie "Requested to load MiniMaxH3TEModel_" w logu) vs pojedynczy
+  przy t2va bez keyframe'ów.
+
+## Sugestie (nie polecenia)
+- Konstrukcja bloku `optional` z ref_* slotami jest teraz zduplikowana
+  między `MiniMaxH3CLIPCachedRef2VA.INPUT_TYPES` a
+  `MiniMaxH3CLIPCachedRef2VADualRes.INPUT_TYPES` (~10 linii pętli). Można
+  by kiedyś wyciągnąć wspólny helper - świadomie NIE zrobione teraz, bo
+  ZLECENIE wymagało "bez zmiany INPUT_TYPES" istniejącego node'a.
