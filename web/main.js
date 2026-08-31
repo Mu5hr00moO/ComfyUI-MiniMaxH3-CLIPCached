@@ -199,6 +199,69 @@ export function sortEntries(entries, mode) {
   return copy;
 }
 
+// --- dual-resolution pairing --------------------------------------------
+//
+// A dual-resolution node run (MiniMaxH3CLIPCached{FL2VA,Ref2VA}DualRes)
+// encodes the same prompt at two target resolutions and lands on two
+// separate cache entries. The backend cross-links them: each entry's
+// verbose.system carries paired_fingerprint / paired_width / paired_height
+// (the OTHER side's fingerprint and pixel size) and is_upscale_target
+// (THIS entry's own role -- false = base resolution, true = upscale
+// resolution). See verbose_store.add_pairing() and
+// nodes._pair_verbose_entries().
+//
+// The Cache Manager folds a valid pair into a single visible row -- the
+// base entry, carrying a "+ rescaled to WxH" badge that expands a small
+// read-only strip for the upscale entry -- so the (identical) prompt is
+// never listed twice. resolvePairing() decides, for one entry, whether
+// that treatment applies. It returns a status object; the caller keys off
+// `.status`:
+//
+//   "none"          No paired_fingerprint at all: an ordinary entry.
+//   "valid"         Mutual pointer + opposite explicit roles. Also carries
+//                   { partner, entryIsUpscale, partnerIsUpscale }.
+//   "orphaned"      Has a paired_fingerprint, but the partner is not in
+//                   `entriesByFingerprint` (deleted -- Delete does not
+//                   cascade, by design) or no longer points back (a later
+//                   dual-res run with a different second resolution
+//                   repointed the base entry, stranding the old upscale
+//                   entry with a stale one-way pointer).
+//   "role-unknown"  Mutual pointer, but is_upscale_target is missing on one
+//                   or both sides (a pair written before that flag existed)
+//                   or the two roles are equal (should never happen). The
+//                   role is not trustworthy, so both sides render as plain
+//                   separate rows -- the role is NEVER guessed from
+//                   paired_width * paired_height.
+//
+// `entriesByFingerprint` MUST be built from the full entry list of the last
+// /check, not from the post-search/tag/favorite subset -- otherwise an
+// active text filter that hides the partner would make a real pair look
+// orphaned.
+export function resolvePairing(entry, entriesByFingerprint) {
+  const system = (entry && entry.verbose && entry.verbose.system) || {};
+  const partnerFingerprint = system.paired_fingerprint;
+  if (typeof partnerFingerprint !== "string" || partnerFingerprint === "") {
+    return { status: "none" };
+  }
+
+  const partner = entriesByFingerprint.get(partnerFingerprint);
+  if (!partner) return { status: "orphaned" };
+
+  const partnerSystem = (partner.verbose && partner.verbose.system) || {};
+  if (partnerSystem.paired_fingerprint !== entry.fingerprint) {
+    return { status: "orphaned" };
+  }
+
+  const entryIsUpscale = system.is_upscale_target;
+  const partnerIsUpscale = partnerSystem.is_upscale_target;
+  if (typeof entryIsUpscale !== "boolean" || typeof partnerIsUpscale !== "boolean") {
+    return { status: "role-unknown" };
+  }
+  if (entryIsUpscale === partnerIsUpscale) return { status: "role-unknown" };
+
+  return { status: "valid", partner, entryIsUpscale, partnerIsUpscale };
+}
+
 // --- HTTP ----------------------------------------------------------------
 
 async function fetchJson(path, options) {
@@ -530,7 +593,63 @@ function buildInconsistentRow(entry) {
   });
 }
 
-function buildNormalRow(entry, generation, lastUsedFingerprint) {
+// The base row of a valid dual-resolution pair carries a "+ rescaled to WxH"
+// toggle. WxH is the partner (upscale) entry's pixel size, which the backend
+// mirrored onto this entry as paired_width / paired_height. Clicking the
+// toggle expands one compact, read-only strip describing the partner -- its
+// short fingerprint, date, pixel size, and a Delete button acting on the
+// PARTNER's fingerprint (the same deleteEntry() path as every other Delete,
+// only a different target). The prompt is deliberately never repeated here:
+// the two entries share it by construction.
+function appendRescaledBadge(row, baseSystem, partner) {
+  const rescaledTo = formatGenerationSize({
+    width: baseSystem.paired_width,
+    height: baseSystem.paired_height,
+  });
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "h3cm-badge h3cm-badge-paired h3cm-pair-toggle";
+  toggle.textContent = rescaledTo ? `+ rescaled to ${rescaledTo}` : "+ rescaled";
+  toggle.setAttribute("aria-expanded", "false");
+
+  const strip = document.createElement("div");
+  strip.className = "h3cm-pair-strip";
+  strip.hidden = true;
+
+  const partnerSystem = (partner.verbose && partner.verbose.system) || {};
+
+  const fp = document.createElement("span");
+  fp.className = "h3cm-fp";
+  fp.textContent = `${String(partner.fingerprint || "").slice(0, 12)}…`;
+
+  const meta = document.createElement("span");
+  meta.className = "h3cm-pair-strip-meta";
+  meta.textContent = formatEntryMetaLine(partnerSystem);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "h3cm-button h3cm-danger h3cm-row-delete";
+  del.textContent = "Delete";
+  del.addEventListener("click", (event) => {
+    event.stopPropagation();
+    deleteEntry(partner.fingerprint, null);
+  });
+
+  strip.append(fp, meta, del);
+
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const opening = strip.hidden;
+    strip.hidden = !opening;
+    toggle.classList.toggle("is-open", opening);
+    toggle.setAttribute("aria-expanded", opening ? "true" : "false");
+  });
+
+  row.append(toggle, strip);
+}
+
+function buildNormalRow(entry, generation, lastUsedFingerprint, pairing = null) {
   const user = (entry.verbose && entry.verbose.user) || {};
   const system = (entry.verbose && entry.verbose.system) || {};
   const tags = Array.isArray(user.tags) ? user.tags : [];
@@ -539,7 +658,16 @@ function buildNormalRow(entry, generation, lastUsedFingerprint) {
   const row = document.createElement("div");
   row.className = "h3cm-row is-normal";
   row.dataset.fingerprint = entry.fingerprint; // so attachDetailAfterRow() can find this row
-  if (lastUsedFingerprint && entry.fingerprint === lastUsedFingerprint) {
+  // After a dual-resolution run the freshly saved fingerprint is the upscale
+  // side, which has no row of its own -- so the visible base row also lights
+  // up when the "last used" fingerprint is its hidden pair partner.
+  const isLastUsed =
+    !!lastUsedFingerprint &&
+    (entry.fingerprint === lastUsedFingerprint ||
+      (pairing &&
+        pairing.status === "valid" &&
+        pairing.partner.fingerprint === lastUsedFingerprint));
+  if (isLastUsed) {
     row.classList.add("is-last-used");
   }
 
@@ -572,6 +700,25 @@ function buildNormalRow(entry, generation, lastUsedFingerprint) {
         ? buildRef2vaThumbnails(entry.fingerprint, references, generation)
         : buildThumbnails(entry.fingerprint, references, generation),
     );
+  }
+
+  if (pairing && pairing.status === "valid" && !pairing.entryIsUpscale) {
+    // Valid pair, base side: the expandable "+ rescaled to WxH" strip.
+    appendRescaledBadge(row, system, pairing.partner);
+  } else if (pairing && pairing.status === "orphaned") {
+    // Had a pairing pointer, but the partner is gone or no longer points
+    // back. Render as a normal, fully visible row plus a warning tag so the
+    // user can judge it by hand -- Delete is not cascaded (deliberate).
+    // NOTE: a "role-unknown" pairing gets NO badge -- it is not broken,
+    // only missing the is_upscale_target flag (a pre-flag pair).
+    const badge = document.createElement("span");
+    badge.className = "h3cm-badge h3cm-badge-orphaned";
+    badge.textContent = "⚠ pairing partner missing";
+    badge.title =
+      "Created by a dual-resolution run, but the paired entry is no longer "
+      + "cross-linked (deleted, or re-paired by a later run). Shown as a "
+      + "normal entry -- delete it here if you no longer need it.";
+    row.appendChild(badge);
   }
 
   row.addEventListener("click", () => openDetail(entry.fingerprint));
@@ -613,6 +760,13 @@ function renderList() {
     favoritesOnly: panel.favoritesOnlyEl.checked,
   };
   const entries = lastCheckResult.entries || [];
+  // Indexed over the FULL entry set, not `filtered`: resolvePairing() must be
+  // able to see a pair partner even while an active search / tag filter hides
+  // it, otherwise a real pair would look orphaned (see resolvePairing()).
+  const entriesByFingerprint = new Map();
+  for (const e of entries) {
+    if (e && typeof e.fingerprint === "string") entriesByFingerprint.set(e.fingerprint, e);
+  }
   const lastUsedFingerprint = (lastCheckResult.last_used || {})[currentVariant] || null;
   const filtered = sortEntries(filterEntries(entries, state), panel.sortEl.value);
 
@@ -634,16 +788,23 @@ function renderList() {
       panel.listEl.appendChild(buildInconsistentRow(entry));
       continue;
     }
-    // No verbose block -> the simplified row. That covers a real legacy
-    // entry (predates the sidecar) AND a "normal" entry whose verbose.json
-    // is unreadable (load_verbose() returned null): buildNormalRow() would
-    // give it a detail panel / favorite / save that all 404, so render it
-    // the same stripped-down way. _sync_verbose_metadata() backfills both
-    // cases identically the next time the entry is used.
+    if (!entry.verbose) {
+      // No verbose block -> the simplified row. That covers a real legacy
+      // entry (predates the sidecar) AND a "normal" entry whose verbose.json
+      // is unreadable (load_verbose() returned null): buildNormalRow() would
+      // give it a detail panel / favorite / save that all 404, so render it
+      // the same stripped-down way. _sync_verbose_metadata() backfills both
+      // cases identically the next time the entry is used.
+      panel.listEl.appendChild(buildLegacyRow(entry));
+      continue;
+    }
+    const pairing = resolvePairing(entry, entriesByFingerprint);
+    // The upscale side of a valid dual-resolution pair has no row of its
+    // own: its data is reached by expanding the "+ rescaled to" badge on
+    // the base row (buildNormalRow -> appendRescaledBadge).
+    if (pairing.status === "valid" && pairing.entryIsUpscale) continue;
     panel.listEl.appendChild(
-      !entry.verbose
-        ? buildLegacyRow(entry)
-        : buildNormalRow(entry, generation, lastUsedFingerprint),
+      buildNormalRow(entry, generation, lastUsedFingerprint, pairing),
     );
   }
 
