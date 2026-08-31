@@ -43,6 +43,7 @@ _spec.loader.exec_module(_nodes_module)
 
 MiniMaxH3CLIPCachedFL2VA = _nodes_module.MiniMaxH3CLIPCachedFL2VA
 MiniMaxH3CLIPCachedRef2VA = _nodes_module.MiniMaxH3CLIPCachedRef2VA
+MiniMaxH3CLIPName = _nodes_module.MiniMaxH3CLIPName
 
 # Importing routes.py registers the Cache Manager's REST endpoints on
 # PromptServer.instance.routes (Phase 5). This is optional UI plumbing: if
@@ -61,10 +62,12 @@ except Exception as _routes_err:  # pragma: no cover
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA,
     "MiniMaxH3CLIPCachedRef2VA": MiniMaxH3CLIPCachedRef2VA,
+    "MiniMaxH3CLIPName": MiniMaxH3CLIPName,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3CLIPCachedFL2VA": "MiniMax H3 CLIP-Cached FL2VA",
     "MiniMaxH3CLIPCachedRef2VA": "MiniMax H3 CLIP-Cached Ref2VA",
+    "MiniMaxH3CLIPName": "MiniMax H3 CLIP Name",
 }
 
 # ComfyUI serves this directory's files under /extensions/<repo>/ and loads

@@ -325,15 +325,70 @@ def _release_real_clip_safety_net(proxy):
     return True
 
 
+class _ComboType(str):
+    """A ``str`` that additionally compares equal to *any* ``list``.
+
+    Used as ``MiniMaxH3CLIPName``'s single RETURN_TYPE so its output can be
+    wired into the ``clip_name`` widget-turned-input of any number of
+    MiniMaxH3CLIPCachedFL2VA / MiniMaxH3CLIPCachedRef2VA nodes.
+
+    Why this is needed on ComfyUI 0.34.2: an old-style COMBO input
+    (``(options_list, {...})``) is seen by the executor as the raw list of
+    option strings, not the string ``"COMBO"`` -- the string conversion is
+    commented out in ``comfy_execution/graph.py``. When Queue validates a
+    link, ``comfy_execution/validation.py`` runs
+    ``if not received_type != input_type`` first, which honours a ``__ne__``
+    override on the received type. So:
+
+    - ``RETURN_TYPES = ("COMBO",)`` (a plain str) fails that check against a
+      list and Queue raises a type mismatch, even though the link draws in
+      the editor.
+    - ``RETURN_TYPES = (folder_paths.get_filename_list(...),)`` (a plain
+      list frozen at import time) works, but drifts out of sync if
+      ``models/text_encoders`` gains or loses a file mid-session.
+
+    Overriding ``__ne__``/``__eq__`` to match any list keeps the link valid
+    regardless of the live encoder list, without a restart. This rides on
+    undocumented-but-stable behaviour: ``validation.py`` carries the note
+    "if we ever want to break them on purpose, this can be removed" next to
+    its list/COMBO special-case, so this may need revisiting on a future
+    ComfyUI upgrade. The checks stay narrow -- a non-list ``other`` still
+    falls through to normal string comparison, so this does not accidentally
+    match unrelated string types such as ``"STRING"``.
+    """
+
+    def __ne__(self, other):
+        return False if isinstance(other, list) else str.__ne__(self, other)
+
+    def __eq__(self, other):
+        return True if isinstance(other, list) else str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
+def _clip_name_input_spec(tooltip=None):
+    """The shared ``clip_name`` INPUT_TYPES entry -- the encoder-checkpoint
+    dropdown -- used by all three nodes in this package so the widget stays
+    identical across them.
+
+    Returns the ``(options_list, options_dict)`` pair, with the option list
+    coming from ``folder_paths.get_filename_list("text_encoders")``. Pass
+    ``tooltip`` to override the default help text for a node whose role
+    differs (MiniMaxH3CLIPName); FL2VA and Ref2VA use the default, which is
+    byte-for-byte the tooltip they carried inline before.
+    """
+    if tooltip is None:
+        tooltip = ("MiniMax H3 text/vision encoder (Qwen3-VL) checkpoint from "
+                   "models/text_encoders. Loaded lazily -- only on a cache miss.")
+    return (folder_paths.get_filename_list("text_encoders"), {"tooltip": tooltip})
+
+
 class MiniMaxH3CLIPCachedFL2VA:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "clip_name": (folder_paths.get_filename_list("text_encoders"), {
-                    "tooltip": "MiniMax H3 text/vision encoder (Qwen3-VL) checkpoint from "
-                               "models/text_encoders. Loaded lazily -- only on a cache miss.",
-                }),
+                "clip_name": _clip_name_input_spec(),
                 "vae": ("VAE",),
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
@@ -509,10 +564,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         })
         return {
             "required": {
-                "clip_name": (folder_paths.get_filename_list("text_encoders"), {
-                    "tooltip": "MiniMax H3 text/vision encoder (Qwen3-VL) checkpoint from "
-                               "models/text_encoders. Loaded lazily -- only on a cache miss.",
-                }),
+                "clip_name": _clip_name_input_spec(),
                 "vae": ("VAE",),
                 "audio_vae": ("VAE",),
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
@@ -586,3 +638,42 @@ class MiniMaxH3CLIPCachedRef2VA:
                 comfy.model_management.soft_empty_cache()
 
         return (cond, latent)
+
+
+# --- CLIP Name (standalone encoder picker) ----------------------------------
+
+class MiniMaxH3CLIPName:
+    """A one-widget source node for the encoder-checkpoint dropdown.
+
+    It carries the same ``clip_name`` dropdown as MiniMaxH3CLIPCachedFL2VA /
+    MiniMaxH3CLIPCachedRef2VA (via the shared ``_clip_name_input_spec()``)
+    and simply re-emits the selected filename as a COMBO-typed output. The
+    point is to wire that one output into the ``clip_name`` input (after
+    "Convert widget to Input") of any number of FL2VA / Ref2VA nodes at
+    once, so the encoder is chosen in a single place instead of N.
+
+    See ``_ComboType`` for why the output type is a str subclass rather than
+    the string ``"COMBO"`` or a frozen list.
+
+    No IS_CHANGED: the node is deterministic in its single widget, so
+    ComfyUI's default input-literal caching is already correct here.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip_name": _clip_name_input_spec(
+                    "Pick the MiniMax H3 encoder checkpoint once and feed it into "
+                    "multiple FL2VA / Ref2VA nodes' clip_name input (after 'Convert "
+                    "widget to Input' on each)."),
+            },
+        }
+
+    RETURN_TYPES = (_ComboType("COMBO"),)
+    RETURN_NAMES = ("clip_name",)
+    FUNCTION = "execute"
+    CATEGORY = "model/conditioning/minimax/cached"
+
+    def execute(self, clip_name):
+        return (clip_name,)
