@@ -1,116 +1,93 @@
 # HANDOFF
 
-## Stan na: 2026-08-31 / branch master / commit 576b0c4
+## Stan na: 2026-08-31 / branch master / commit (po tej sesji)
 
 ## Ostatnio zrobione
-- **Faza 2 (UI) dual-resolution pairing w `web/main.js` + `web/styles.css`**
-  (commit 576b0c4). Backend (5286ce9 + cf731ba) był już gotowy; ta zmiana
-  uczy Cache Managera czytać `paired_fingerprint` / `paired_width` /
-  `paired_height` / `is_upscale_target` z `entry.verbose.system`.
-- Nowa czysta, eksportowana funkcja
-  `resolvePairing(entry, entriesByFingerprint)` (`web/main.js:203`).
-  Zwraca **obiekt statusu** (nie `null`), bo UI musi rozróżnić trzy różne
-  "nie-parowania":
-  - `{ status: "none" }` - brak `paired_fingerprint`.
-  - `{ status: "valid", partner, entryIsUpscale, partnerIsUpscale }` -
-    wskazanie wzajemne **oraz** obie strony mają jawne, przeciwne
-    `is_upscale_target`.
-  - `{ status: "orphaned" }` - jest `paired_fingerprint`, ale partnera
-    nie ma w `entriesByFingerprint` **albo** partner nie wskazuje z
-    powrotem.
-  - `{ status: "role-unknown" }` - wskazanie wzajemne, ale
-    `is_upscale_target` brak po którejś stronie (para sprzed cf731ba)
-    albo obie role równe. Rola **nigdy** nie jest zgadywana z
-    `paired_width * paired_height`.
-- `entriesByFingerprint` budowany w `renderList()` z **pełnej** listy
-  `entries` z ostatniego `/check`, nie z `filtered` - inaczej aktywne
-  wyszukiwanie mogłoby fałszywie pokazać kogoś jako osieroconego.
-- `renderList()`: strona upscale ważnej pary (`status === "valid" &&
-  entryIsUpscale`) **nie dostaje własnego wiersza** (`continue`).
-- `buildNormalRow(entry, generation, lastUsedFingerprint, pairing)` -
-  nowy 4. parametr:
-  - Strona bazowa ważnej pary: przycisk-plakietka
-    `+ rescaled to {paired_width}×{paired_height} (X.XX MP)` (klasy
-    `h3cm-badge h3cm-badge-paired h3cm-pair-toggle`). Klik toggluje
-    wcięty blok `.h3cm-pair-strip` pokazujący TYLKO: skrócony fingerprint
-    partnera (`.slice(0,12)…`, ten sam wzorzec co reszta pliku),
-    `formatEntryMetaLine(partner.verbose.system)` (data + wymiary), i
-    osobny przycisk **Delete** wołający `deleteEntry(partner.fingerprint,
-    null)` - ten sam mechanizm co każdy inny Delete, tylko inny cel, bez
-    kaskady. Prompt nie jest powtarzany.
-  - `status === "orphaned"`: plakietka `⚠ pairing partner missing`
-    (klasy `h3cm-badge h3cm-badge-orphaned`, z `title=` wyjaśniającym) +
-    normalny, w pełni widoczny wiersz. `role-unknown` i `none`
-    plakietki **nie** dostają.
-  - Podświetlenie "ostatnio używany": zapala się teraz też na wierszu
-    bazowym, gdy `lastUsedFingerprint === pairing.partner.fingerprint`
-    (po dual-res przebiegu ostatni zapisany fingerprint to ukryta strona
-    upscale, bo `_execute_*_once` woła się drugi raz dla upscale).
-- `web/styles.css`: `.h3cm-badge-paired`, `.h3cm-badge-orphaned`,
-  `.h3cm-pair-toggle`, `.h3cm-pair-toggle.is-open`, `.h3cm-pair-strip`,
-  `.h3cm-pair-strip[hidden]`, `.h3cm-pair-strip-meta` - kolorystyka z
-  istniejącej palety `.h3cm-badge-*` / `.h3cm-row.is-last-used`, bez
-  nowego systemu.
+- **Nowy opcjonalny bool `generate_upscale_cond` (default True) w obu
+  klasach DualRes** (`MiniMaxH3CLIPCachedFL2VADualRes`,
+  `MiniMaxH3CLIPCachedRef2VADualRes`).
+  - Gdy `False`: drugie wywołanie `_execute_*_once` (rozdzielczość
+    upscale) NIE wykonuje się w ogóle - zero kosztu encode/VRAM.
+    `execute()` zwraca `(cond, latent, None, None)` natychmiast po
+    pierwszym (bazowym) wywołaniu. `_pair_verbose_entries()` też się nie
+    woła (brak drugiego fingerprintu do sparowania), nie powstaje żaden
+    sidecar z `paired_fingerprint`.
+  - Gdy `True` / pominięty: zachowanie identyczne jak przed zmianą (drugie
+    wywołanie + parowanie).
+  - Powód istnienia przełącznika: dual-res node to jedno atomowe wywołanie
+    Pythona zwracające 4 wyjścia naraz. ComfyUI nie umie wykonać go
+    "częściowo", więc bypass konsumenta `positive_upscale`/`latent_upscale`
+    w dół grafu (np. cały łańcuch upscalera z mode=4) NIE oszczędza kosztu
+    encode'u - node i tak musi się wykonać w całości dla pozostałych
+    wyjść. Ten bool jest jedynym mechanizmem, który faktycznie pomija ten
+    encode. Udokumentowane w docstringach obu klas ("Do not fix this by
+    making the second encode conditional on something else").
+- `git diff nodes.py` ograniczony do: docstringów obu klas DualRes, ich
+  `INPUT_TYPES()` (nowy wpis `generate_upscale_cond` w `optional`, przed
+  `cache_mode`) i ich `execute()` (nowy parametr + wczesny return). Zero
+  zmian w `_execute_fl2va_once` / `_execute_ref2va_once` /
+  `_pair_verbose_entries`.
+- Tooltip nowego wejścia (dosłownie, oba node'y): "When off, the second
+  (upscale-resolution) encode is skipped entirely - positive_upscale/
+  latent_upscale come back as None. Turn off for a plain generation where
+  nothing downstream uses the upscale outputs; turn on when you actually
+  need them. Bypassing the upscale consumer downstream does NOT skip this
+  encode by itself - this is the only thing that does, because the node
+  runs as one atomic call."
+
+## Testy (workflow test-first: nowe testy napisane i widziane jako FAIL przed implementacją)
+- `tests/test_node_fl2va_dual.py` i `tests/test_node_ref2va_dual.py`, po 3
+  nowe testy każdy:
+  - `test_dual_generate_upscale_cond_false_skips_the_second_encode` - na
+    input zależnym od rozdzielczości (normalnie 2 realne encode): przy
+    `generate_upscale_cond=False` `real_clip.encode_calls == 1`,
+    `unload_calls == 1`, zwrócone `(cond_upscale, latent_upscale) ==
+    (None, None)`.
+  - `test_dual_generate_upscale_cond_false_does_not_pair` - spy na
+    `node_module._pair_verbose_entries`: `call_count == 0`, powstaje
+    dokładnie 1 sidecar `.verbose.json`, bez `paired_fingerprint`.
+  - `test_dual_generate_upscale_cond_true_is_the_default` - jawne
+    `=True` == pominięcie: 2 encode, parowanie wołane raz.
+- Zaktualizowane (schema faktycznie się zmieniła - dodane wejście
+  opcjonalne): `test_dual_input_types_adds_second_resolution_only` w obu
+  plikach - oczekiwany zbiór `optional` powiększony o
+  `generate_upscale_cond`, plus asercje typu (`BOOLEAN`), default (`True`)
+  i obecności tooltipa. Testy behawioralne dual (encode-count, pairing,
+  shared-inputs) NIE ruszane.
+- `python -m py_compile nodes.py` - OK.
+- Pełny pytest: **309 passed, 0 skipped, 0 failed** (`conda run -n
+  comfyenv python -m pytest`). Przed sesją: 303 passed.
+- Output zapisany w scratchpadzie sesji:
+  `generate_upscale_cond_result.txt`.
 
 ## Ustalenia istotne dla Chat
-- Odczyt pól z `entry.verbose.system` (przechodzą przez scanner/routes bez
-  zmian): `paired_fingerprint` (str), `paired_width` / `paired_height`
-  (int - **wymiary partnera**, nie własne), `is_upscale_target` (bool -
-  **własna rola**: `false` = baza, `true` = upscale).
-- `entry` z `/check` ma kształt `{ fingerprint, classification:
-  "normal"|"legacy"|"inconsistent", reason?, verbose: {user, system} |
-  null }`. Brak per-wpis pola rozmiaru w bajtach - dlatego blok
-  rozwinięcia pokazuje wymiary pikselowe (`formatEntryMetaLine`), nie
-  rozmiar plików.
-- `data.last_used` z `/check` = `{ fl2va: fp|null, ref2va: fp|null }`
-  (`minimaxh3_clipcache/last_used.py`).
-- Osierocone parowanie po **ponownym** uruchomieniu dual-res node'a z tą
-  samą bazą, inną drugą rozdzielczością: `_pair_verbose_entries`
-  przepina wskaźnik bazy na nowy upscale, stary upscale zostaje z
-  jednostronnym wskazaniem - `resolvePairing` klasyfikuje go jako
-  `orphaned`, renderowany normalnie z plakietką.
+- `MiniMaxH3CLIPCached{FL2VA,Ref2VA}DualRes.execute()` mają teraz sygnaturę
+  z `generate_upscale_cond=True` jako ostatnim parametrem
+  (nodes.py, po `cache_mode="auto"`).
+- Wczesny return `(cond, latent, None, None)` przy `False` - konsumenci
+  `positive_upscale`/`latent_upscale` w grafie muszą tolerować `None`
+  (ComfyUI standardowo pozwala nie podłączać wyjścia; podłączony
+  konsument dostanie `None`).
+- `IS_CHANGED` NIE zmieniane: `generate_upscale_cond` to literalne wejście
+  node'a, więc własny execution-cache ComfyUI i tak wymusza re-exec przy
+  jego zmianie - nie trzeba go składać do sygnatury.
+- Nowe wejście jest w `optional`, tuż przed `cache_mode`. Dla Ref2VA
+  dodane w `INPUT_TYPES()` po `_ref_slots_input_spec()`, przed
+  `optional["cache_mode"]`.
 
 ## Otwarte pytania
-- brak (KRYTERIUM_DONE ZLECENIA spełnione headless - patrz niżej).
+- brak.
 - **Do sprawdzenia przez użytkownika w żywym ComfyUI** (CC nie może):
-  realny render przycisku-plakietki i wciętego bloku, faktyczny klik
-  toggle / Delete na partnerze, podświetlenie "ostatnio używany" po
-  realnym dual-res przebiegu, brak błędów w konsoli, wygląd kolorów
-  plakietek w ciemnej palecie.
-
-## Weryfikacja (headless, scratchpad sesji)
-- `node --check` na kopii `.mjs` `web/main.js` - OK.
-- Brace-balance `web/styles.css` - OK.
-- Harness Node z fake DOM (stuby `/scripts/app.js`, `/scripts/api.js`;
-  napędza `openPanel → runCheck → renderList`, serializuje drzewo
-  `panel.listEl`; plus unit-testy `resolvePairing`) - **ALL PASS** dla
-  przypadków a-g z KRYTERIUM_DONE:
-  a) para ważna, wzajemna, oba `is_upscale_target` → 1 wiersz (bazowy) z
-     plakietką, upscale bez wiersza.
-  b) klik plakietki → blok pokazuje dane partnera, bez promptu.
-  c) `paired_fingerprint` → nieistniejący fp → wiersz normalny +
-     plakietka "osierocony".
-  d) stary upscale z jednostronnym wskazaniem po re-parowaniu → baza
-     paruje z nowym upscale, stary upscale wiersz normalny + plakietka
-     "osierocony".
-  e) `is_upscale_target` brak po którejś stronie → oba wiersze normalne,
-     BEZ plakietki (role-unknown, nie osierocony).
-  f) wpis bez `paired_fingerprint` → identyczny kształt wiersza jak przed
-     zmianą (star + label + created, nic więcej).
-  g) `lastUsedFingerprint` = fp strony upscale ważnej pary → podświetlenie
-     na wierszu bazowym.
-- Pełny pytest (guard regresji, żaden plik .py nie ruszony):
-  **303 passed** (`conda run -n comfyenv python -m pytest -q`).
-- Pliki weryfikacji: scratchpad sesji `verify_dualres_ui.txt`,
-  `test.mjs`, `setup-dom.mjs`, `hook.mjs`, `stub-*.mjs` (nietrackowane).
+  realny render checkboxa `generate_upscale_cond` w obu node'ach,
+  zachowanie grafu gdy `positive_upscale`/`latent_upscale` = `None` trafia
+  do podłączonego (nie zbypassowanego) konsumenta, potwierdzenie w logu
+  serwera że przy `False` linia "Requested to load MiniMaxH3TEModel_" nie
+  pojawia się drugi raz.
 
 ## Sugestie (nie polecenia)
-- Skrajny, nieobsłużony przypadek (świadomie, zgodnie z ZLECENIEM
-  "continue" bez wyjątków): jeśli strona bazowa ważnej pary wypadnie z
-  `filtered` przez filtr tekstowy/tag, a strona upscale przejdzie (bo
-  metadane `user` są per-fingerprint i mogą się różnić), to upscale
-  dostaje `continue` i nic się nie renderuje mimo `filtered.length > 0`
-  (brak komunikatu "brak wyników"). Rzadkie; do rozważenia osobno.
-- `inconsistent` wpis będący stroną bazową pary: renderuje się jako
-  wiersz inconsistent (bez plakietki rescale), upscale nadal ukryty.
-  Nietknięte - poza zakresem.
+- Ewentualny follow-up: analogiczny log INFO w `execute()` przy
+  `generate_upscale_cond=False` ("upscale encode skipped by
+  generate_upscale_cond=False") - spójne z zasadą projektu "jasno
+  wypisuj którą ścieżką poszło wykonanie". Świadomie pominięte teraz, bo
+  ZLECENIE ograniczało diff do INPUT_TYPES/execute/docstringów i nie
+  wspominało o logowaniu.
