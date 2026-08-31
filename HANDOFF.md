@@ -1,93 +1,103 @@
 # HANDOFF
 
-## Stan na: 2026-08-31 / branch master / commit (po tej sesji)
+## Stan na: 2026-09-01 / branch master / commit c88e315
 
-## Ostatnio zrobione
-- **Nowy opcjonalny bool `generate_upscale_cond` (default True) w obu
-  klasach DualRes** (`MiniMaxH3CLIPCachedFL2VADualRes`,
-  `MiniMaxH3CLIPCachedRef2VADualRes`).
-  - Gdy `False`: drugie wywołanie `_execute_*_once` (rozdzielczość
-    upscale) NIE wykonuje się w ogóle - zero kosztu encode/VRAM.
-    `execute()` zwraca `(cond, latent, None, None)` natychmiast po
-    pierwszym (bazowym) wywołaniu. `_pair_verbose_entries()` też się nie
-    woła (brak drugiego fingerprintu do sparowania), nie powstaje żaden
-    sidecar z `paired_fingerprint`.
-  - Gdy `True` / pominięty: zachowanie identyczne jak przed zmianą (drugie
-    wywołanie + parowanie).
-  - Powód istnienia przełącznika: dual-res node to jedno atomowe wywołanie
-    Pythona zwracające 4 wyjścia naraz. ComfyUI nie umie wykonać go
-    "częściowo", więc bypass konsumenta `positive_upscale`/`latent_upscale`
-    w dół grafu (np. cały łańcuch upscalera z mode=4) NIE oszczędza kosztu
-    encode'u - node i tak musi się wykonać w całości dla pozostałych
-    wyjść. Ten bool jest jedynym mechanizmem, który faktycznie pomija ten
-    encode. Udokumentowane w docstringach obu klas ("Do not fix this by
-    making the second encode conditional on something else").
-- `git diff nodes.py` ograniczony do: docstringów obu klas DualRes, ich
-  `INPUT_TYPES()` (nowy wpis `generate_upscale_cond` w `optional`, przed
-  `cache_mode`) i ich `execute()` (nowy parametr + wczesny return). Zero
-  zmian w `_execute_fl2va_once` / `_execute_ref2va_once` /
-  `_pair_verbose_entries`.
-- Tooltip nowego wejścia (dosłownie, oba node'y): "When off, the second
-  (upscale-resolution) encode is skipped entirely - positive_upscale/
-  latent_upscale come back as None. Turn off for a plain generation where
-  nothing downstream uses the upscale outputs; turn on when you actually
-  need them. Bypassing the upscale consumer downstream does NOT skip this
-  encode by itself - this is the only thing that does, because the node
-  runs as one atomic call."
+## Ostatnio zrobione (sesja porządkowa — 3 niezależne zadania)
 
-## Testy (workflow test-first: nowe testy napisane i widziane jako FAIL przed implementacją)
-- `tests/test_node_fl2va_dual.py` i `tests/test_node_ref2va_dual.py`, po 3
-  nowe testy każdy:
-  - `test_dual_generate_upscale_cond_false_skips_the_second_encode` - na
-    input zależnym od rozdzielczości (normalnie 2 realne encode): przy
-    `generate_upscale_cond=False` `real_clip.encode_calls == 1`,
-    `unload_calls == 1`, zwrócone `(cond_upscale, latent_upscale) ==
-    (None, None)`.
-  - `test_dual_generate_upscale_cond_false_does_not_pair` - spy na
-    `node_module._pair_verbose_entries`: `call_count == 0`, powstaje
-    dokładnie 1 sidecar `.verbose.json`, bez `paired_fingerprint`.
-  - `test_dual_generate_upscale_cond_true_is_the_default` - jawne
-    `=True` == pominięcie: 2 encode, parowanie wołane raz.
-- Zaktualizowane (schema faktycznie się zmieniła - dodane wejście
-  opcjonalne): `test_dual_input_types_adds_second_resolution_only` w obu
-  plikach - oczekiwany zbiór `optional` powiększony o
-  `generate_upscale_cond`, plus asercje typu (`BOOLEAN`), default (`True`)
-  i obecności tooltipa. Testy behawioralne dual (encode-count, pairing,
-  shared-inputs) NIE ruszane.
-- `python -m py_compile nodes.py` - OK.
-- Pełny pytest: **309 passed, 0 skipped, 0 failed** (`conda run -n
-  comfyenv python -m pytest`). Przed sesją: 303 passed.
-- Output zapisany w scratchpadzie sesji:
-  `generate_upscale_cond_result.txt`.
+### 1. Log INFO przy generate_upscale_cond=False (commit 7bce233)
+- `execute()` obu klas DualRes: tuż przed `return (cond, latent, None,
+  None)` dodane:
+  ```
+  logger.info(
+      "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
+      "positive_upscale/latent_upscale not computed", fp1[:12],
+  )
+  ```
+  Format zgodny z realną konwencją pliku (bracket-tag + `%s: ` opis +
+  `- ` konsekwencja, jak `[CACHE HIT]` / `[VERBOSE PAIRING FAILED]` w
+  proxy.py/nodes.py). Tekst loga NIE zmieniony względem propozycji
+  ZLECENIA.
+- `git diff nodes.py` = tylko te dwa bloki logu (4 linie każdy), nic
+  więcej.
+- Nowe testy caplog (po 1 w każdym pliku dual):
+  `test_dual_generate_upscale_cond_false_logs_one_info_line` — przy
+  `False` dokładnie jeden rekord INFO z tagiem `[UPSCALE COND SKIPPED]`
+  zawierający pierwsze 12 znaków fingerprintu bazowego (czytane z
+  zapisanego sidecara `*.verbose.json`); przy `True` (default) tego
+  rekordu NIE ma.
+
+### 2. README.md — tekst, bez screenshotów (commit 7782e31)
+- Sekcja Installation: "Two new nodes" -> "Five new nodes" + lista 5
+  node'ów z linkami do nowych sekcji.
+- Nowa sekcja `## The CLIP Name node` — jeden widget (ten sam dropdown
+  `models/text_encoders`), jedno wyjście, do podpięcia w wielu FL2VA/
+  Ref2VA/DualRes przez "Convert widget to Input"; wzmianka że output
+  dopasowuje się do dowolnej listy plików encodera bez restartu (bez
+  wchodzenia w `_ComboType`).
+- Nowa sekcja `## Dual Resolution variants` — tabelka wejść
+  (`width_upscale`/`height_upscale`, `generate_upscale_cond`),
+  wyjaśnienie że to feature spójności a NIE optymalizacja (fingerprint i
+  tak dedupuje gdy piksele wychodzą identyczne), podsekcja
+  `### generate_upscale_cond` z wyraźnym akapitem że bypass downstream
+  konsumenta NIE pomija drugiego encode (atomowe wywołanie, 4 wyjścia
+  naraz), wzmianka o logu `[UPSCALE COND SKIPPED]`.
+- `## Cache Manager` — nowy akapit "Dual-resolution pairing": składanie
+  dwóch wpisów w jeden wiersz (bazowy) z plakietką "+ rescaled to WxH",
+  Delete NIE kaskaduje.
+- Istniejące sekcje FL2VA/Ref2VA/How the cache works — nietknięte.
+
+### 3. TODO.md — nowy plik w korzeniu repo (commit c88e315)
+Backlog świadomie odłożonych wątków (żeby nie zniknęły z pamięci
+projektu). 6 pozycji:
+- decoupling `scripts/test_proxy_gate.py` (rola gate vs. moduł fixtur —
+  4 importerzy: test_stock_vs_cache, test_ref2video_equivalence,
+  test_clip_unload_isolation, test_vae_memory_isolation) — z ZLECENIA.
+- 2 edge case'y UI pairing (search chowa base a pokazuje upscale ->
+  pusty render; wpis `inconsistent` jako base pary -> brak plakietki
+  rescale) — z ZLECENIA, zweryfikowane w web/main.js
+  (`renderList`/`buildInconsistentRow`, commit 576b0c4).
+- opcjonalny explicit paired-delete — z ZLECENIA.
+- dynamiczne sloty referencji Ref2VA zamiast stałych 9/3/3/3 — z
+  ZLECENIA (zweryfikowane: stock używa `io.Autogrow.Input` +
+  `minimax_ref_items=`).
+- **[dodane przeze mnie, nie z ZLECENIA]** `cache_mode="cache_only"` —
+  wspomniane jako planned w README "Limitations", niezaimplementowane.
+- **[dodane przeze mnie, nie z ZLECENIA]** śledzenie nazw plików
+  referencji przez dedykowane wrappery loaderów — wskaźnik do pełnego
+  uzasadnienia w sekcji "Rozważone i ODŁOŻONE" CLAUDE.md.
 
 ## Ustalenia istotne dla Chat
-- `MiniMaxH3CLIPCached{FL2VA,Ref2VA}DualRes.execute()` mają teraz sygnaturę
-  z `generate_upscale_cond=True` jako ostatnim parametrem
-  (nodes.py, po `cache_mode="auto"`).
-- Wczesny return `(cond, latent, None, None)` przy `False` - konsumenci
-  `positive_upscale`/`latent_upscale` w grafie muszą tolerować `None`
-  (ComfyUI standardowo pozwala nie podłączać wyjścia; podłączony
-  konsument dostanie `None`).
-- `IS_CHANGED` NIE zmieniane: `generate_upscale_cond` to literalne wejście
-  node'a, więc własny execution-cache ComfyUI i tak wymusza re-exec przy
-  jego zmianie - nie trzeba go składać do sygnatury.
-- Nowe wejście jest w `optional`, tuż przed `cache_mode`. Dla Ref2VA
-  dodane w `INPUT_TYPES()` po `_ref_slots_input_spec()`, przed
-  `optional["cache_mode"]`.
+- Finalny tekst loga (obie klasy DualRes, nodes.py, tuż przed early
+  return przy `generate_upscale_cond=False`): tag `[UPSCALE COND
+  SKIPPED]`, poziom INFO, format `"[UPSCALE COND SKIPPED] %s:
+  generate_upscale_cond=False - positive_upscale/latent_upscale not
+  computed"` z argumentem `fp1[:12]`. Bez zmian względem propozycji
+  ZLECENIA.
+- Log NIE wchodzi do fingerprintu ani HIT/MISS — czysto informacyjny,
+  spójny z zasadą projektu "jasno wypisuj którą ścieżką poszło
+  wykonanie".
+- `python -m py_compile nodes.py` — OK.
+- Pełny pytest: **311 passed, 0 skipped, 0 failed** (przed sesją
+  porządkową: 309). Nowe: 2 testy caplog.
+- Output sesji: scratchpad `session_cleanup_result.txt`.
+- Commity tej sesji: 72f8c9c (generate_upscale_cond — poprzednie
+  ZLECENIE), 7bce233 (log), 7782e31 (README), c88e315 (TODO.md).
 
 ## Otwarte pytania
 - brak.
 - **Do sprawdzenia przez użytkownika w żywym ComfyUI** (CC nie może):
-  realny render checkboxa `generate_upscale_cond` w obu node'ach,
-  zachowanie grafu gdy `positive_upscale`/`latent_upscale` = `None` trafia
-  do podłączonego (nie zbypassowanego) konsumenta, potwierdzenie w logu
-  serwera że przy `False` linia "Requested to load MiniMaxH3TEModel_" nie
-  pojawia się drugi raz.
+  linia `[UPSCALE COND SKIPPED]` faktycznie w logu serwera przy
+  `generate_upscale_cond=False` + brak drugiego "Requested to load
+  MiniMaxH3TEModel_"; render checkboxa w obu node'ach DualRes; render
+  nowych sekcji README (Markdown na GitHub — kotwice `#the-clip-name-node`,
+  `#dual-resolution-variants`).
+- Wciąż zaległe (nie z tej sesji): screenshoty RAM/VRAM MISS vs HIT do
+  README (CLAUDE.md "R10 prep" / komentarz `<!-- TODO ... -->` w README) —
+  task dla użytkownika, wymaga nvitop przy żywej generacji.
 
 ## Sugestie (nie polecenia)
-- Ewentualny follow-up: analogiczny log INFO w `execute()` przy
-  `generate_upscale_cond=False` ("upscale encode skipped by
-  generate_upscale_cond=False") - spójne z zasadą projektu "jasno
-  wypisuj którą ścieżką poszło wykonanie". Świadomie pominięte teraz, bo
-  ZLECENIE ograniczało diff do INPUT_TYPES/execute/docstringów i nie
-  wspominało o logowaniu.
+- Rozważyć przeniesienie sekcji "No cache-only mode" z README
+  "Limitations" do jednego miejsca — teraz jest i w README, i w TODO.md
+  (świadoma duplikacja: README = user-facing limitation, TODO.md =
+  backlog dev). Jeśli kiedyś `cache_only` powstanie, usunąć obie wzmianki
+  razem.
