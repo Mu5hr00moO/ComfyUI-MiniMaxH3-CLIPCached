@@ -56,6 +56,43 @@ def _hash_tensor(h, tensor):
     h.update(memoryview(byte_array))
 
 
+def _feed_embedding_tensors(h, embedding_tensors):
+    """Feed an ordered list of resolved textual-inversion embedding tensors
+    into hash ``h``.
+
+    Order is significant -- it is the order the vectors appear in the prompt
+    and enter the encoder -- so the list is never sorted, exactly like the
+    list/tuple handling in ``_hash_value``. A falsy ``embedding_tensors``
+    (``None`` or ``[]``) feeds nothing at all, so a prompt that resolves no
+    embedding hashes byte-for-byte the same as it did before this component
+    existed (see ``compute_fingerprint``).
+    """
+    if not embedding_tensors:
+        return
+    h.update(b"E")
+    h.update(len(embedding_tensors).to_bytes(8, "big"))
+    for tensor in embedding_tensors:
+        _hash_tensor(h, tensor)
+
+
+def hash_embedding_tensors(embedding_tensors):
+    """Standalone sha256 hex digest of ``_feed_embedding_tensors``'s stream,
+    or ``None`` for a falsy list.
+
+    ``nodes._is_changed_common`` folds this into ComfyUI's own
+    execution-cache signature so a textual-inversion file swapped under an
+    unchanged name forces a re-execution, mirroring how ``compute_fingerprint``
+    folds the same tensors into the on-disk cache key. Returns ``None`` (not
+    the digest of an empty stream) so a prompt with no resolvable embedding
+    leaves the IS_CHANGED return value unchanged.
+    """
+    if not embedding_tensors:
+        return None
+    h = hashlib.sha256()
+    _feed_embedding_tensors(h, embedding_tensors)
+    return h.hexdigest()
+
+
 def _hash_value(h, value):
     """Recursively feed one kwargs value into the hash, preserving list/tuple order.
 
@@ -86,7 +123,7 @@ def _hash_value(h, value):
 
 def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
                          cache_schema_version=CACHE_SCHEMA_VERSION, *, encoder_abi_id,
-                         clip_ctime_ns=None):
+                         clip_ctime_ns=None, embedding_tensors=None):
     """Deterministic sha256 hex digest identifying one cacheable encode request.
 
     Two calls with equal arguments always produce the same digest (tensors
@@ -113,6 +150,16 @@ def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip
     ref2va path (MiniMaxH3CLIPCachedRef2VA) using minimax_ref_items instead).
     Treating those as different avoids ever conflating two different call
     signatures under one cache key.
+
+    embedding_tensors is the ordered list of textual-inversion embedding
+    tensors the prompt resolves to (minimaxh3_clipcache.embeddings.
+    resolve_prompt_embedding_tensors), folded in as Codex audit point
+    MEDIUM #1 so a textual-inversion file swapped under an unchanged name
+    invalidates old entries instead of being served as a stale HIT. It is
+    hashed only when non-empty: None / [] (the overwhelmingly common case --
+    no embedding: in the prompt, or a referenced file that does not exist)
+    feeds nothing, so those fingerprints are byte-for-byte identical to the
+    pre-embedding format and the existing on-disk cache is not invalidated.
     """
     metadata = {
         "cache_schema_version": cache_schema_version,
@@ -132,5 +179,7 @@ def compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip
         h.update(b"K")
         _hash_blob(h, key.encode("utf-8"))
         _hash_value(h, tokenize_kwargs[key])
+
+    _feed_embedding_tensors(h, embedding_tensors)
 
     return h.hexdigest()

@@ -206,12 +206,15 @@ def test_m_compute_fingerprint_has_no_sampling_parameters():
     # and compute_fingerprint() has no parameter to receive them. This is the
     # structural reason changing them is always a HIT (same as FL2VA). Guard
     # the signature so a future refactor can't quietly add one. encoder_abi_id
-    # (plan audit point 1) is a legitimate, deliberate addition -- an encoder
-    # identity component, not a sampling parameter.
+    # (plan audit point 1) and embedding_tensors (Codex audit MEDIUM #1) are
+    # legitimate, deliberate additions -- an encoder-implementation identity
+    # component and the prompt's resolved textual-inversion content
+    # respectively, neither a sampling parameter.
     import inspect
 
     params = list(inspect.signature(compute_fingerprint).parameters)
     assert params == [
         "prompt", "tokenize_kwargs", "clip_name", "clip_file_size",
         "clip_mtime_ns", "cache_schema_version", "encoder_abi_id", "clip_ctime_ns",
+        "embedding_tensors",
     ]
