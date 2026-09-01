@@ -149,7 +149,18 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
             created_at = _resolve_created_at(existing_verbose, core_path, fresh_miss_written)
 
             references = _build_references(fingerprint, items, labels)
-            system = {
+            # Start from the existing system block (shallow copy) and overwrite
+            # only the keys this function owns. save_verbose() replaces the
+            # whole "system" block wholesale, so building from {} here would
+            # silently drop any system key written elsewhere -- e.g. the
+            # pairing pointers add_pairing() records (paired_fingerprint /
+            # paired_width / paired_height / is_upscale_target) -- every time a
+            # later HIT lands on the backfill path for a sidecar that has no
+            # "created_at". "Preserve whatever I don't set myself" generalises;
+            # listing the foreign keys by name would just break again the next
+            # time one is added somewhere else.
+            system = dict(existing_system) if isinstance(existing_system, dict) else {}
+            system.update({
                 "prompt": prompt,
                 "clip_name": clip_name,
                 "clip_file_size": clip_file_size,
@@ -158,7 +169,7 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                 "node_variant": node_variant,
                 "created_at": created_at,
                 "references": references,
-            }
+            })
             if width is not None and height is not None:
                 system["width"] = width
                 system["height"] = height

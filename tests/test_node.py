@@ -1038,3 +1038,83 @@ def test_ab_sync_verbose_omits_generation_size_when_not_supplied(monkeypatch, tm
     assert "width" not in system
     assert "height" not in system
     assert "megapixels" not in system
+
+
+# --- backfill must not drop foreign system keys (Grok finding) --------------
+
+
+def test_ac_backfill_preserves_pairing_keys_on_a_sidecar_missing_created_at(monkeypatch, tmp_path):
+    """The reported loss scenario: add_pairing() records the four
+    paired_* / is_upscale_target keys, then a later HIT lands on the
+    backfill path because the sidecar has no "created_at" (a legacy or
+    truncated entry). _sync_verbose_metadata() must refresh the keys it
+    owns without wiping the pairing pointers it does not."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import add_pairing, load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    # A sidecar with no "created_at" -- older/truncated shape.
+    save_verbose("a" * 64, {"prompt": "p", "node_variant": "fl2va", "references": []}, tmp_path)
+    add_pairing("a" * 64, tmp_path, paired_fingerprint="b" * 64,
+                paired_width=1344, paired_height=768, is_upscale_target=False)
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "p", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    # The backfill happened...
+    assert system["created_at"]
+    # ...and the pairing pointers add_pairing() wrote are still there.
+    assert system["paired_fingerprint"] == "b" * 64
+    assert system["paired_width"] == 1344
+    assert system["paired_height"] == 768
+    assert system["is_upscale_target"] is False
+
+
+def test_ad_fresh_miss_without_existing_system_is_unaffected(monkeypatch, tmp_path):
+    """No existing sidecar -> system is built from exactly the owned keys,
+    with no stray keys leaking in from the (absent) existing block."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+    proxy = _FakeProxy(last_hit=False, last_core_cache_written=True)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        [("image", torch.zeros(1, 4, 4, 3))], labels=["first_frame"])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert set(system) == {
+        "prompt", "clip_name", "clip_file_size", "clip_mtime_ns",
+        "cache_schema_version", "node_variant", "created_at", "references",
+        "comfyui_version",
+    }
+    assert "paired_fingerprint" not in system
+
+
+def test_ae_normal_legacy_backfill_without_foreign_keys_is_unchanged(monkeypatch, tmp_path):
+    """A plain legacy sidecar (no pairing keys, no created_at) still
+    backfills exactly as before: created_at appears, the refreshed owned
+    keys are written, and nothing spurious is added."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {"prompt": "legacy", "node_variant": "fl2va", "references": []}, tmp_path)
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "refreshed prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS, [])
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["created_at"]
+    assert system["prompt"] == "refreshed prompt"
+    assert set(system) == {
+        "prompt", "clip_name", "clip_file_size", "clip_mtime_ns",
+        "cache_schema_version", "node_variant", "created_at", "references",
+        "comfyui_version",
+    }
