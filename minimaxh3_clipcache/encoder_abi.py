@@ -54,11 +54,12 @@ def get_encoder_abi_id():
         if not _warned:
             logger.warning(
                 "[ENCODER ABI UNAVAILABLE] could not determine the MiniMax H3 "
-                "encoder ABI identity (%s) - disk caching is disabled for this "
-                "session (every run will be a real encode, cache_mode is "
-                "ignored) until this is resolved, to avoid ever serving a HIT "
-                "computed under a different, unverified tokenizer "
-                "implementation", e,
+                "encoder ABI identity (%s) - cache HIT/reuse is disabled for "
+                "this session: every run encodes for real regardless of "
+                "cache_mode, to avoid ever serving a HIT computed under a "
+                "different, unverified tokenizer implementation. A successful "
+                "encode may still write cache files, under a sentinel "
+                "fingerprint for this unknown ABI", e,
             )
             _warned = True
         _cached_abi_id, _cached_available = None, False

@@ -286,8 +286,10 @@ def _is_changed_common(clip_name, cache_mode):
     if cache_mode == "refresh":
         return float("nan")
     # If the encoder ABI identity can't be determined (plan audit point 1),
-    # disk caching is unsafe this session: return a fresh NaN so ComfyUI
-    # always re-executes, and execute() below forces a real encode too.
+    # a cache HIT/reuse is unsafe this session: return a fresh NaN so ComfyUI
+    # always re-executes, and execute() below forces a real encode too (a
+    # successful encode may still write cache files under a sentinel
+    # fingerprint -- only reuse is suppressed).
     abi_id, abi_available = get_encoder_abi_id()
     if not abi_available:
         return float("nan")
