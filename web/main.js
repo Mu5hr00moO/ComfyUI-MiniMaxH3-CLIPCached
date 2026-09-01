@@ -754,19 +754,26 @@ function buildNormalRow(entry, generation, lastUsedFingerprint, pairing = null) 
 // panel from the DOM. Any caller that re-renders on its own (the search / tag /
 // favorite listeners go straight to renderList(), not through runCheck()) would
 // otherwise leave the panel orphaned. Re-attach it here, after the rows exist:
-// if its entry survived the current filter, rebuild + re-attach it; if the
-// filter now hides that entry, close it.
-function reattachOpenDetailAfterRender(filtered) {
+// if a row was actually rendered for its entry, rebuild + re-attach it;
+// otherwise close it.
+//
+// The re-attach must key off a row *actually being in the DOM*, not off the
+// entry surviving the filter: renderList() emits no row for the upscale side
+// of a valid dual-resolution pair, so an open detail panel whose entry has
+// just become that hidden side (a later dual-res run paired it) is still in
+// `filtered` but has nowhere to anchor. Anchoring is what attachDetailAfterRow()
+// now reports back -- a false return means "no row", i.e. close the panel
+// rather than leave it detached from the DOM showing stale data.
+function reattachOpenDetailAfterRender() {
   if (!openDetailFingerprint) return;
   const entry = findNormalEntry(openDetailFingerprint);
-  const stillListed = filtered.some((e) => e.fingerprint === openDetailFingerprint);
-  if (entry && stillListed) {
+  if (entry) {
     // Background re-render: keep any unsaved name / notes / tags / favorite
     // edit the user has in progress -- only openDetail() (an explicit click)
     // resets those.
     populateDetail(entry, { preserveEditableFields: true });
-    attachDetailAfterRow(openDetailFingerprint);
-  } else {
+  }
+  if (!entry || !attachDetailAfterRow(openDetailFingerprint)) {
     closeDetail();
   }
 }
@@ -803,7 +810,7 @@ function renderList() {
       ? "No cache entries found."
       : "No entries match the current search / filters.";
     panel.listEl.appendChild(empty);
-    reattachOpenDetailAfterRender(filtered);
+    reattachOpenDetailAfterRender();
     return;
   }
 
@@ -832,7 +839,7 @@ function renderList() {
     );
   }
 
-  reattachOpenDetailAfterRender(filtered);
+  reattachOpenDetailAfterRender();
 }
 
 // --- check ---------------------------------------------------------------
@@ -850,8 +857,8 @@ async function runCheck() {
     panel.statusEl.textContent = `Cache: ${count} entries / ${formatBytes(data.total_size_bytes)}`;
 
     refreshTagFilterOptions();
-    renderList(); // also re-attaches the open detail panel, or closes it if
-    // that entry is gone / now filtered out -- see reattachOpenDetailAfterRender()
+    renderList(); // also re-attaches the open detail panel, or closes it when
+    // that entry has no rendered row -- see reattachOpenDetailAfterRender()
   } catch (err) {
     if (generation !== checkGeneration) return;
     lastCheckResult = null;
@@ -996,14 +1003,17 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
   detailEl.hidden = false;
 }
 
-// Move the single detail node so it sits right after the row it describes.
-// .after() detaches it from wherever it currently is first, so there is
-// never a duplicate -- it is always the same one node from the template.
+// Move the single detail node so it sits right after the row it describes,
+// and report whether that row exists. .after() detaches the node from
+// wherever it currently is first, so there is never a duplicate -- it is
+// always the same one node from the template. A false return means the list
+// has no row for this fingerprint (see reattachOpenDetailAfterRender()).
 function attachDetailAfterRow(fingerprint) {
   const rowEl = panel.listEl.querySelector(
     `[data-fingerprint="${CSS.escape(fingerprint)}"]`,
   );
   if (rowEl) rowEl.after(panel.detailEl);
+  return rowEl !== null;
 }
 
 function openDetail(fingerprint) {
