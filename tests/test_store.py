@@ -185,16 +185,65 @@ def test_d_safe_open_oserror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
     assert any("failed to read metadata" in r.getMessage() for r in caplog.records)
 
 
-def test_d_load_file_runtimeerror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+def test_d_load_file_safetensorerror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    # SafetensorError is the confirmed-corruption type for this call site
+    # (see the WHY comment on _SAFETENSOR_READ_ERRORS in store.py, backed by
+    # empirically probing safe_open()/load_file() against 13 corruption
+    # scenarios) -- this must still be a clean, logged MISS.
     save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
 
     def failing_load(*args, **kwargs):
-        raise RuntimeError("simulated torch/safetensors runtime failure")
+        raise store.SafetensorError("simulated header corruption")
 
     monkeypatch.setattr(store, "load_file", failing_load)
     with caplog.at_level(logging.WARNING):
         assert load_conditioning(FINGERPRINT_A, tmp_path) is None
     assert any("failed to load" in r.getMessage() for r in caplog.records)
+
+
+def test_d_unrelated_runtimeerror_from_load_file_is_not_swallowed(tmp_path, monkeypatch):
+    # The inverse of the test above: a RuntimeError unrelated to file
+    # corruption (e.g. a CUDA/allocation failure surfacing through this
+    # call for some other reason) was never observed from load_file() in
+    # any real corruption scenario, so it is NOT in _SAFETENSOR_READ_ERRORS
+    # and must propagate instead of becoming a silent MISS that triggers a
+    # needless ~27GB re-encode.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_load(*args, **kwargs):
+        raise RuntimeError("simulated CUDA allocation failure")
+
+    monkeypatch.setattr(store, "load_file", failing_load)
+    with pytest.raises(RuntimeError, match="simulated CUDA allocation failure"):
+        load_conditioning(FINGERPRINT_A, tmp_path)
+
+
+def test_d_unrelated_runtimeerror_from_safe_open_metadata_read_is_not_swallowed(tmp_path, monkeypatch):
+    # Same distinction as above, but for the earlier safe_open() metadata
+    # read in load_conditioning() (the generation-id gate), which shares
+    # the same _SAFETENSOR_READ_ERRORS tuple.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_safe_open(*args, **kwargs):
+        raise RuntimeError("simulated unrelated runtime failure")
+
+    monkeypatch.setattr(store, "safe_open", failing_safe_open)
+    with pytest.raises(RuntimeError, match="simulated unrelated runtime failure"):
+        load_conditioning(FINGERPRINT_A, tmp_path)
+
+
+def test_d_unrelated_runtimeerror_from_pair_inspection_is_not_swallowed(tmp_path, monkeypatch):
+    # inspect_conditioning_pair() duplicates the same generation-id gate
+    # (see its docstring) and shares _SAFETENSOR_READ_ERRORS -- verify the
+    # same distinction holds there too.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_safe_open(*args, **kwargs):
+        raise RuntimeError("simulated unrelated runtime failure")
+
+    monkeypatch.setattr(store, "safe_open", failing_safe_open)
+    with pytest.raises(RuntimeError, match="simulated unrelated runtime failure"):
+        inspect_conditioning_pair(FINGERPRINT_A, tmp_path)
 
 
 def test_d_pair_inspection_checks_generation_without_loading_tensors(tmp_path, monkeypatch):

@@ -51,7 +51,32 @@ from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 logger = logging.getLogger(__name__)
 
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
-_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError, RuntimeError)
+# WHY these two and no others: verified empirically against the installed
+# safetensors 0.8.0 (not assumed from docs -- see project rule against
+# speculative exception handling), by probing safe_open()'s header read and
+# load_file()'s get_tensors() against 13 corruption scenarios -- an empty
+# file, truncation at every stage of the header, an absurd header-length
+# prefix, invalid JSON in the header, an unknown dtype string, a
+# shape/byte-count mismatch, a negative shape dimension, inverted
+# data_offsets, a missing dtype field, a bit-flipped tensor payload, a
+# missing file, and a directory in place of a file. Every one of them
+# raised either SafetensorError (all header/JSON/dtype/shape validation
+# happens in the safetensors Rust core) or OSError (FileNotFoundError for a
+# missing file, "No such device" for a directory) -- never RuntimeError.
+# Source inspection of the installed safetensors/torch.py confirms this
+# isn't a probing gap: load_file() is a thin
+# `with safe_open(...) as f: return f.get_tensors()` wrapper, and the only
+# three RuntimeError raise sites in that module live in load_model()'s
+# strict-key check and save_file()/_remove_duplicate_names()'s
+# shared-tensor check -- none reachable from the read path we call here.
+# (Bit-flipped tensor *payload* bytes are NOT caught by this gate:
+# safetensors has no checksum, so silently-wrong values from disk-level
+# corruption load as "OK" -- catching that is not this gate's job.) An
+# unrelated RuntimeError (e.g. a CUDA/allocation failure surfacing through
+# this call for some other reason) is intentionally left to propagate
+# instead of being swallowed into a silent MISS that triggers a costly
+# ~27GB re-encode.
+_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError)
 
 
 def _tmp_name(path: Path) -> Path:
