@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a reproducible problem with ComfyUI-MiniMaxH3-CLIPCached
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        Please do not include credentials, API keys, private prompts, or other sensitive data.
+        Security vulnerabilities should be reported through GitHub Private Vulnerability Reporting instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable sequence of steps that reproduces the problem.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: comfyui_version
+    attributes:
+      label: ComfyUI version
+      placeholder: e.g. v0.34.2
+    validations:
+      required: true
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: ComfyUI-MiniMaxH3-CLIPCached version or commit
+      placeholder: e.g. v1.0.0 or commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.14.6
+
+  - type: input
+    id: pytorch_version
+    attributes:
+      label: PyTorch version
+      placeholder: e.g. 2.13.0+cu130
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: e.g. NVIDIA RTX 4080 16 GB
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the relevant error or traceback. Remove unrelated private paths, prompts, credentials, and personal data.
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add screenshots, workflow details, or anything else that may help reproduce the issue.
