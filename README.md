@@ -119,6 +119,11 @@ this node targets.
   file; `ctime_ns` catches ordinary replacements even when size and mtime
   are preserved),
 - the exact prompt text,
+- the content of any textual-inversion embeddings the prompt references
+  through `embedding:<name>` — the tensors the stock tokenizer resolves are
+  hashed in, so swapping an embedding file under an unchanged name is a
+  cache miss (a prompt that references no embedding, or one whose file is
+  missing, hashes exactly as before this was added),
 - the exact list of images the stock node's frame-resize step produced
   (i.e. already resized to your requested `width`/`height` — hashing this
   is equivalent to hashing exactly what the encoder would see, without
