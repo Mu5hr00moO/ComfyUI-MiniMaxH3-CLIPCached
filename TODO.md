@@ -22,23 +22,18 @@ remaining reason to exist), cleanly separating "shared test infrastructure"
 from "one-off historical verification." Not done because nothing is broken
 today -- the coupling is just a little unusual to read.
 
-## Cache Manager UI -- two known edge cases in dual-resolution pairing display
+## Cache Manager UI -- one known edge case in dual-resolution pairing display
 
-Both from the pairing UI (commit 576b0c4, "Fold dual-resolution pairs into
-one row in the Cache Manager"), both rare, neither loses data or crashes:
+From the pairing UI (commit 576b0c4, "Fold dual-resolution pairs into one
+row in the Cache Manager"); rare, does not lose data or crash:
 
-1. If a text/tag search filters out the BASE side of a valid pair but the
-   UPSCALE side happens to still match (their `user` metadata -- tags,
-   name -- is independent per fingerprint, even though the prompt is
-   shared), the upscale side still gets `continue`d in `renderList()` (per
-   design: valid pairs never render their upscale side standalone), so
-   nothing renders for that pair even though `filtered.length > 0`.
-   Confusing, not harmful.
-2. An entry classified `"inconsistent"` (corrupt/mismatched core files) that
-   happens to be the base side of an otherwise-valid pairing renders via
-   `buildInconsistentRow()`, which does not know about pairing at all --
-   no rescale badge, and the upscale side is still hidden (nothing points
-   the user at it).
+- If a text/tag search filters out the BASE side of a valid pair but the
+  UPSCALE side happens to still match (their `user` metadata -- tags,
+  name -- is independent per fingerprint, even though the prompt is
+  shared), the upscale side still gets `continue`d in `renderList()` (per
+  design: valid pairs never render their upscale side standalone), so
+  nothing renders for that pair even though `filtered.length > 0`.
+  Confusing, not harmful.
 
 ## Cache Manager -- optional future feature: explicit paired-delete
 
