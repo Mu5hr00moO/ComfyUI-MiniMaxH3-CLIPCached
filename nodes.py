@@ -25,6 +25,7 @@ import nodes
 import comfy.model_management
 import folder_paths
 
+from minimaxh3_clipcache.embeddings import embedding_identity_digest
 from minimaxh3_clipcache.encoder_abi import get_encoder_abi_id
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.last_used import record_last_used
@@ -260,7 +261,7 @@ def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b,
         )
 
 
-def _is_changed_common(clip_name, cache_mode):
+def _is_changed_common(clip_name, cache_mode, prompt=None):
     """Shared body of both nodes' IS_CHANGED classmethod -- the two were
     byte-for-byte identical. Returns the value ComfyUI folds into its own
     execution-cache signature for this node.
@@ -282,6 +283,17 @@ def _is_changed_common(clip_name, cache_mode):
     which point our own on-disk cache does its normal fingerprint-based
     HIT/MISS. clip_name is only absent when a test calls IS_CHANGED directly
     without it; real graphs always supply it.
+
+    prompt is folded in the same way, but only through its resolved
+    embedding: (textual inversion) content: embedding_identity_digest()
+    returns None for the overwhelmingly common prompt with no resolvable
+    embedding, and only then is the return value byte-for-byte what it was
+    before this component existed. A non-None digest is appended as the last
+    element so a textual-inversion file swapped under an unchanged name --
+    prompt string and checkpoint untouched -- still forces a re-execution
+    (Codex audit MEDIUM #1). prompt is None when the STRING widget has been
+    converted to an unconnected input, the same known degradation as
+    clip_name is None -- no new error path, embeddings just not folded in.
     """
     if cache_mode == "refresh":
         return float("nan")
@@ -293,8 +305,9 @@ def _is_changed_common(clip_name, cache_mode):
     abi_id, abi_available = get_encoder_abi_id()
     if not abi_available:
         return float("nan")
+    embedding_digest = embedding_identity_digest(prompt)
     if clip_name is None:
-        return cache_mode
+        return cache_mode if embedding_digest is None else (cache_mode, embedding_digest)
     try:
         file_size, mtime_ns, ctime_ns = resolve_clip_stat(clip_name)
     except FileNotFoundError:
@@ -305,7 +318,10 @@ def _is_changed_common(clip_name, cache_mode):
         # runs -- execute() will raise the same FileNotFoundError, but from
         # inside the node, where ComfyUI reports it as this node's error.
         return float("nan")
-    return (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
+    result = (cache_mode, clip_name, file_size, mtime_ns, ctime_ns, abi_id)
+    if embedding_digest is not None:
+        result = result + (embedding_digest,)
+    return result
 
 
 def _build_cached_proxy(clip_name, cache_mode):
@@ -542,7 +558,7 @@ class MiniMaxH3CLIPCachedFL2VA:
         # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
         # only name the ones we care about and swallow the rest. The body is
         # shared with MiniMaxH3CLIPCachedRef2VA in _is_changed_common().
-        return _is_changed_common(clip_name, cache_mode)
+        return _is_changed_common(clip_name, cache_mode, kwargs.get("prompt"))
 
     def execute(self, clip_name, vae, prompt, width, height, length,
                 first_frame=None, last_frame=None, cache_mode="auto"):
@@ -646,9 +662,10 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
     @classmethod
     def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # Same contract as the single-resolution node: IS_CHANGED tracks the
-        # CLIP checkpoint's identity and the refresh flag, neither of which
-        # depends on how many resolutions this run computes.
-        return _is_changed_common(clip_name, cache_mode)
+        # CLIP checkpoint's identity, the refresh flag and the prompt's
+        # resolved embedding: content, none of which depends on how many
+        # resolutions this run computes.
+        return _is_changed_common(clip_name, cache_mode, kwargs.get("prompt"))
 
     def execute(self, clip_name, vae, prompt, width, height, width_upscale, height_upscale,
                 length, first_frame=None, last_frame=None, cache_mode="auto",
@@ -879,7 +896,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         # ComfyUI calls IS_CHANGED with every graph input as a kwarg, so we
         # only name the ones we care about and swallow the rest. The body is
         # shared with MiniMaxH3CLIPCachedFL2VA in _is_changed_common().
-        return _is_changed_common(clip_name, cache_mode)
+        return _is_changed_common(clip_name, cache_mode, kwargs.get("prompt"))
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, length,
                 ref_image_size="match",
@@ -1003,9 +1020,10 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
     @classmethod
     def IS_CHANGED(cls, clip_name=None, cache_mode="auto", **kwargs):
         # Same contract as the single-resolution node: IS_CHANGED tracks the
-        # CLIP checkpoint's identity and the refresh flag, neither of which
-        # depends on how many resolutions this run computes.
-        return _is_changed_common(clip_name, cache_mode)
+        # CLIP checkpoint's identity, the refresh flag and the prompt's
+        # resolved embedding: content, none of which depends on how many
+        # resolutions this run computes.
+        return _is_changed_common(clip_name, cache_mode, kwargs.get("prompt"))
 
     def execute(self, clip_name, vae, audio_vae, prompt, width, height, width_upscale, height_upscale,
                 length, ref_image_size="match",

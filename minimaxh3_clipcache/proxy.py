@@ -13,6 +13,7 @@ MiniMaxH3ImageToVideo node hands the tokens straight back to us.
 import logging
 import threading
 
+from minimaxh3_clipcache.embeddings import resolve_prompt_embedding_tensors
 from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION, compute_fingerprint
 from minimaxh3_clipcache.locking import get_lock
 from minimaxh3_clipcache.store import load_conditioning, save_conditioning
@@ -117,10 +118,18 @@ class CachedClipProxy:
                 "key first."
             )
         prompt, kwargs = tokens
+        # Resolve any embedding: (textual inversion) references the same way
+        # the real CLIP will, and fold the resolved tensors into the key --
+        # otherwise a swapped embedding file under an unchanged name, with an
+        # unchanged prompt string, is a stale HIT (Codex audit MEDIUM #1).
+        # resolve_prompt_embedding_tensors() never raises and returns [] when
+        # there is nothing to resolve, so this leaves the common no-embedding
+        # fingerprint byte-for-byte unchanged.
+        embedding_tensors = resolve_prompt_embedding_tensors(prompt)
         fingerprint = compute_fingerprint(
             prompt, kwargs, self.clip_name, self.clip_file_size, self.clip_mtime_ns,
             CACHE_SCHEMA_VERSION, encoder_abi_id=self.encoder_abi_id,
-            clip_ctime_ns=self.clip_ctime_ns,
+            clip_ctime_ns=self.clip_ctime_ns, embedding_tensors=embedding_tensors,
         )
         self.last_fingerprint = fingerprint
 
