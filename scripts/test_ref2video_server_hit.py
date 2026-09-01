@@ -30,8 +30,6 @@ Run under a hard timeout:
 """
 
 import json
-import os
-import signal
 import subprocess
 import sys
 import time
@@ -40,7 +38,11 @@ from pathlib import Path
 import psutil
 import requests
 
-from _live_server import forward_termination, stop_live_server
+from _live_server import (
+    OrchestratorShutdownSignal,
+    install_shutdown_signal_handler,
+    stop_live_server,
+)
 
 COMFYUI_ROOT = "/home/kamil/ComfyUI"
 HOST, PORT = "127.0.0.1", 8188
@@ -61,13 +63,6 @@ PROMPT_TEXT = "a test prompt with <Picture 1>"
 WIDTH, HEIGHT, LENGTH = 1344, 768, 124
 REF_IMAGE_SIZE = "match"
 REF_IMAGE_HW = 256
-
-_server_proc_for_cleanup = None
-
-
-def _sig(signum, frame):
-    forward_termination(_server_proc_for_cleanup)
-    os._exit(1)
 
 
 def nvidia_smi():
@@ -133,9 +128,7 @@ def wait_for_completion(prompt_id):
 
 
 def main():
-    global _server_proc_for_cleanup
-    signal.signal(signal.SIGTERM, _sig)
-    signal.signal(signal.SIGINT, _sig)
+    install_shutdown_signal_handler()
 
     if not FINGERPRINT_HANDOFF_PATH.is_file():
         print("!!! No fingerprint handoff file at {} -- run "
@@ -161,10 +154,10 @@ def main():
     proc = subprocess.Popen([sys.executable, "main.py"], cwd=COMFYUI_ROOT,
                             stdout=log_f, stderr=subprocess.STDOUT)
     pid = proc.pid
-    _server_proc_for_cleanup = proc
     print("=== Server PID={} ===".format(pid), flush=True)
 
     result = {}
+    shutdown_signum = None
     try:
         if not wait_for_server_ready():
             raise RuntimeError("server not ready -- see {}".format(SERVER_LOG_PATH))
@@ -210,13 +203,20 @@ def main():
             "exec_lines": exec_lines,
             "vram_before": vram_before, "vram_after": vram_after,
         }
+    except OrchestratorShutdownSignal as sig:
+        shutdown_signum = sig.signum
+        print("!!! Orchestrator received signal {} -- stopping the server through the "
+              "normal teardown, not a bare exit !!!".format(sig.signum), flush=True)
     finally:
         print("=== Stopping server ===", flush=True)
         exited = stop_live_server(proc) is not None
-        if exited:
-            _server_proc_for_cleanup = None
         print("=== Server exited: {} ===".format(exited), flush=True)
         log_f.close()
+
+    if shutdown_signum is not None:
+        print("=== Run interrupted by signal {}; server stopped via normal teardown. ===".format(
+            shutdown_signum), flush=True)
+        sys.exit(128 + shutdown_signum)
 
     print("\n" + "=" * 70)
     print("=== R7 HIT-PATH RESULT ===")

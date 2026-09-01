@@ -12,29 +12,78 @@ until its own deadline on every clean shutdown.
 `subprocess.Popen` already solves both problems: `send_signal()` polls first
 and refuses to signal a process whose exit status has been collected
 (CPython bpo-38630 / bpo-40550), and `wait(timeout=...)` reaps the child.
-These helpers route the whole escalation through the Popen object so the
-call sites never touch a raw PID.
+`stop_live_server()` routes the whole SIGINT -> SIGTERM -> SIGKILL
+escalation through the Popen object so the call sites never touch a raw PID,
+and `install_shutdown_signal_handler()` makes a SIGINT/SIGTERM delivered to
+the orchestrator itself unwind into that same escalation (via
+`OrchestratorShutdownSignal`) rather than a bare `os._exit()` that would
+abandon a slow or stubborn child.
+
+Residual, accepted limitation -- deliberately NOT closed with pidfd.
+CPython's `Popen.send_signal()` still ends in a plain `os.kill(self.pid,
+sig)` *after* its `poll()` guard (see the final paragraph of the comment in
+CPython's own subprocess.py: "The race condition can still happen if the
+race condition described above happens between the returncode test and the
+kill() call"). If the child exits AND the OS recycles its exact PID inside
+the sub-millisecond gap between that guard and the `os.kill()`, the signal
+can land on the new holder of the PID. Every waitpid in these scripts goes
+through a Popen method, all serialised on `Popen._waitpid_lock` and all
+re-checking `returncode` under it, so the only actor that can even reach
+this gap is a concurrent `poll()`/`wait()` racing one `send_signal()`; and
+Linux allocates PIDs sequentially up to `pid_max` (~4M), so re-hitting the
+same number inside a microsecond window is not a realistic event on a dev
+box. Closing it anyway would mean bypassing `Popen.send_signal()` and
+driving a `pidfd` we open and own -- and `os.pidfd_open` is not even exposed
+in this project's interpreter (Python 3.14 / comfyenv). Reimplementing
+around a proven stdlib mechanism for a developer-only script (own machine,
+PID reuse, microsecond timing) is not worth it; treated as documented
+residual risk, to be revisited only if the window is ever shown to be
+practically reachable.
 """
 
 import signal
 import subprocess
 
 
-def forward_termination(proc):
-    """Best-effort SIGTERM to the launched server, safe from a signal handler.
+class OrchestratorShutdownSignal(BaseException):
+    """Raised in an orchestrator's main thread when SIGINT/SIGTERM arrives.
 
-    `proc` is the `subprocess.Popen` for `python main.py` (or None if the
-    server was never launched). Safe to call more than once and after the
-    child has already exited: `Popen.send_signal()` collects the exit status
-    first and skips signalling a dead — possibly PID-recycled — process.
+    Subclasses `BaseException`, not `Exception`, for the same reason
+    `KeyboardInterrupt` does: a `try/except Exception` somewhere in the
+    middle of the run must not be able to swallow a shutdown request. The
+    orchestrator's `main()` catches it explicitly and lets its `finally:`
+    run `stop_live_server()`, so the launched ComfyUI child gets the full
+    SIGINT -> SIGTERM -> SIGKILL escalation and is reaped -- never left as an
+    orphan by a bare `os._exit()` from inside the signal handler.
     """
-    if proc is None:
-        return
-    try:
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-    except Exception:
-        pass
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def install_shutdown_signal_handler():
+    """Route SIGINT and SIGTERM into `OrchestratorShutdownSignal`.
+
+    The handler does the absolute minimum the CPython signal machinery
+    allows: it raises, and nothing else. No printing, no I/O, no subprocess
+    calls, no blocking wait -- all of that is the main thread's job, in the
+    `finally:` that runs `stop_live_server()`.
+
+    A repeat signal (an impatient second Ctrl-C) that arrives while teardown
+    is already running unwinds `stop_live_server()` and propagates out of
+    `main()`; by then the child has already had at least one SIGINT, so that
+    is an acceptable "I really mean it" exit, not a fresh orphan risk.
+
+    Must be called from the main thread (like `signal.signal` itself), which
+    is where every orchestrator invokes it, at the top of `main()`.
+    """
+
+    def _raise_shutdown(signum, frame):
+        raise OrchestratorShutdownSignal(signum)
+
+    signal.signal(signal.SIGINT, _raise_shutdown)
+    signal.signal(signal.SIGTERM, _raise_shutdown)
 
 
 def stop_live_server(proc, *, skip_sigint=False, sigint_grace_s=45.0,

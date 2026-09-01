@@ -45,7 +45,6 @@ Run with the comfyenv conda environment from anywhere, under a hard timeout
 """
 
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -56,7 +55,11 @@ from pathlib import Path
 import psutil
 import requests
 
-from _live_server import forward_termination, stop_live_server
+from _live_server import (
+    OrchestratorShutdownSignal,
+    install_shutdown_signal_handler,
+    stop_live_server,
+)
 
 COMFYUI_ROOT = "/home/kamil/ComfyUI"
 
@@ -98,15 +101,6 @@ PROMPTS = [
     "r9 ref2va memory trend, iteration four, delta, with <Picture 1>",
     "r9 ref2va memory trend, iteration five, echo, with <Picture 1>",
 ]
-
-_server_proc_for_cleanup = None
-
-
-def _forwarding_signal_handler(signum, frame):
-    print("!!! Orchestrator received signal {} (likely external timeout/Ctrl-C) -- forwarding SIGTERM to "
-          "the server before exit, so it is never left orphaned !!!".format(signum), flush=True)
-    forward_termination(_server_proc_for_cleanup)
-    os._exit(1)
 
 
 def _read_proc_field_kb(path, field):
@@ -263,9 +257,7 @@ def server_cache_lines():
 
 
 def main():
-    global _server_proc_for_cleanup
-    signal.signal(signal.SIGTERM, _forwarding_signal_handler)
-    signal.signal(signal.SIGINT, _forwarding_signal_handler)
+    install_shutdown_signal_handler()
 
     Path(SERVER_LOG_PATH).write_text("")
     Path(WATCHDOG_LOG_PATH).write_text("")
@@ -277,12 +269,12 @@ def main():
         stdout=server_log_f, stderr=subprocess.STDOUT,
     )
     server_pid = server_proc.pid
-    _server_proc_for_cleanup = server_proc
     print("=== Server subprocess launched, PID={} ===".format(server_pid), flush=True)
 
     rows = []
     watchdog = None
     stopped_by_watchdog = False
+    shutdown_signum = None
 
     try:
         print("=== Waiting for server readiness (polling {}/system_stats) ===".format(BASE_URL), flush=True)
@@ -352,16 +344,25 @@ def main():
                 stopped_by_watchdog = True
                 break
 
+    except OrchestratorShutdownSignal as sig:
+        shutdown_signum = sig.signum
+        print("!!! Orchestrator received signal {} -- stopping the server through the "
+              "normal teardown (SIGINT->SIGTERM->SIGKILL), not a bare exit !!!".format(
+                  sig.signum), flush=True)
     finally:
         if watchdog is not None:
             watchdog.stop()
 
         print(flush=True)
-        if stop_live_server(server_proc, skip_sigint=stopped_by_watchdog,
-                            sigint_grace_s=60) is not None:
-            _server_proc_for_cleanup = None
+        stop_live_server(server_proc, skip_sigint=stopped_by_watchdog,
+                         sigint_grace_s=60)
 
         server_log_f.close()
+
+    if shutdown_signum is not None:
+        print("=== Run interrupted by signal {}; server stopped via normal teardown. ===".format(
+            shutdown_signum), flush=True)
+        sys.exit(128 + shutdown_signum)
 
     print()
     print("=== Summary table ===")
