@@ -232,6 +232,18 @@ export function sortEntries(entries, mode) {
 //                   role is not trustworthy, so both sides render as plain
 //                   separate rows -- the role is NEVER guessed from
 //                   paired_width * paired_height.
+//   "inconsistent-pair"
+//                   Mutual pointer confirmed, but at least one side is not a
+//                   plain "normal" entry with a readable verbose sidecar (it
+//                   is "inconsistent", "legacy", or its verbose.json failed
+//                   to load). The pair is NOT folded: folding would paint a
+//                   misleading "+ rescaled to WxH" badge for a partner that
+//                   store.load_conditioning() would reject, and it would hide
+//                   an otherwise-good "normal" side behind a base row drawn by
+//                   buildInconsistentRow() (which knows nothing about
+//                   pairing). Both sides render as their own explicit rows --
+//                   the non-normal side through its legacy/inconsistent row,
+//                   the normal side as an ordinary standalone entry.
 //
 // `entriesByFingerprint` MUST be built from the full entry list of the last
 // /check, not from the post-search/tag/favorite subset -- otherwise an
@@ -251,6 +263,18 @@ export function resolvePairing(entry, entriesByFingerprint) {
   if (partnerSystem.paired_fingerprint !== entry.fingerprint) {
     return { status: "orphaned" };
   }
+
+  // Fold only when BOTH sides are ordinary "normal" entries with a readable
+  // verbose sidecar. If either is "inconsistent" / "legacy" / has an
+  // unreadable sidecar, folding would mislead (a "+ rescaled to" badge for an
+  // unservable partner) or hide a good entry -- see the "inconsistent-pair"
+  // note above. Render both sides plainly instead.
+  const bothNormal =
+    entry.classification === "normal" &&
+    !!entry.verbose &&
+    partner.classification === "normal" &&
+    !!partner.verbose;
+  if (!bothNormal) return { status: "inconsistent-pair" };
 
   const entryIsUpscale = system.is_upscale_target;
   const partnerIsUpscale = partnerSystem.is_upscale_target;
