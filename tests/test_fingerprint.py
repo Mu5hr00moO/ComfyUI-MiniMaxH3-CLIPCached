@@ -10,7 +10,11 @@ import torch
 
 import pytest
 
-from minimaxh3_clipcache.fingerprint import _hash_tensor, compute_fingerprint
+from minimaxh3_clipcache.fingerprint import (
+    _hash_tensor,
+    compute_fingerprint,
+    hash_embedding_tensors,
+)
 
 CLIP_NAME = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
 FILE_SIZE = 27141342152
@@ -21,12 +25,12 @@ ABI_ID = "test-abi-id"
 
 def _fp(prompt="a test prompt", tokenize_kwargs=None, clip_name=CLIP_NAME,
         clip_file_size=FILE_SIZE, clip_mtime_ns=MTIME_NS, cache_schema_version=1,
-        encoder_abi_id=ABI_ID, clip_ctime_ns=CTIME_NS):
+        encoder_abi_id=ABI_ID, clip_ctime_ns=CTIME_NS, embedding_tensors=None):
     if tokenize_kwargs is None:
         tokenize_kwargs = {}
     return compute_fingerprint(prompt, tokenize_kwargs, clip_name, clip_file_size, clip_mtime_ns,
                                 cache_schema_version, encoder_abi_id=encoder_abi_id,
-                                clip_ctime_ns=clip_ctime_ns)
+                                clip_ctime_ns=clip_ctime_ns, embedding_tensors=embedding_tensors)
 
 
 def test_a_identical_inputs_same_hash():
@@ -228,3 +232,61 @@ def test_n_bfloat16_image_fingerprint_stable_and_pixel_sensitive():
     changed = img.clone()
     changed[0, 0, 0, 0] = changed[0, 0, 0, 0] + 5.0
     assert _fp(tokenize_kwargs={"images": [changed]}) != fp1
+
+
+# ---- embedding: textual-inversion identity (Codex audit MEDIUM #1) ----
+
+# Digests computed on the pre-fix code (HANDOFF commit 993ac03), before
+# compute_fingerprint() grew the embedding_tensors parameter. A prompt that
+# resolves no textual inversion must still hash to exactly these values, so
+# rolling this change out does not invalidate the existing on-disk cache.
+_PRE_EMBEDDING_GOLDEN_NO_KWARGS = "b68a2be61b1cbf33b921a69dd34f036b5f98208f0ee7c73404a31efe9d535148"
+_PRE_EMBEDDING_GOLDEN_EMPTY_IMAGES = "9649ea79c4640149b97767b9f9dd6026ff7cec7ad8cf30a294b167c351b2f03e"
+
+
+def test_o_no_embedding_tensors_is_byte_for_byte_pre_embedding_format():
+    assert _fp() == _PRE_EMBEDDING_GOLDEN_NO_KWARGS
+    assert _fp(embedding_tensors=None) == _PRE_EMBEDDING_GOLDEN_NO_KWARGS
+    assert _fp(embedding_tensors=[]) == _PRE_EMBEDDING_GOLDEN_NO_KWARGS
+    assert _fp(tokenize_kwargs={"images": []}) == _PRE_EMBEDDING_GOLDEN_EMPTY_IMAGES
+    assert _fp(tokenize_kwargs={"images": []}, embedding_tensors=[]) == _PRE_EMBEDDING_GOLDEN_EMPTY_IMAGES
+
+
+def test_o_swapped_embedding_content_changes_hash():
+    # Same prompt + kwargs, different resolved textual-inversion content
+    # (an embedding file swapped under an unchanged name) must not collide,
+    # and must also differ from the no-embedding fingerprint.
+    g = torch.Generator().manual_seed(0)
+    ti_a = torch.randn(5120, generator=g)
+    ti_b = torch.randn(5120, generator=g)
+    fp_a = _fp(tokenize_kwargs={"images": []}, embedding_tensors=[ti_a])
+    fp_b = _fp(tokenize_kwargs={"images": []}, embedding_tensors=[ti_b])
+    assert fp_a != fp_b
+    assert fp_a != _fp(tokenize_kwargs={"images": []})
+
+
+def test_o_embedding_tensor_order_is_significant():
+    g = torch.Generator().manual_seed(1)
+    a = torch.randn(5120, generator=g)
+    b = torch.randn(5120, generator=g)
+    assert _fp(embedding_tensors=[a, b]) != _fp(embedding_tensors=[b, a])
+
+
+def test_o_embedding_tensor_count_is_significant():
+    g = torch.Generator().manual_seed(2)
+    a = torch.randn(5120, generator=g)
+    b = torch.randn(5120, generator=g)
+    assert _fp(embedding_tensors=[a]) != _fp(embedding_tensors=[a, b])
+
+
+def test_o_hash_embedding_tensors_none_for_empty_digest_otherwise():
+    assert hash_embedding_tensors(None) is None
+    assert hash_embedding_tensors([]) is None
+
+    g = torch.Generator().manual_seed(3)
+    t = torch.randn(5120, generator=g)
+    digest = hash_embedding_tensors([t])
+    assert isinstance(digest, str) and len(digest) == 64
+    int(digest, 16)
+    assert hash_embedding_tensors([t.clone()]) == digest
+    assert hash_embedding_tensors([t, t]) != digest

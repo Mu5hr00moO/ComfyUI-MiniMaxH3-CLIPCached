@@ -448,6 +448,51 @@ def test_i_is_changed_auto_folds_in_abi_id_and_stays_stable(monkeypatch):
     assert after_abi_change != first
 
 
+def test_i_is_changed_auto_reflects_embedding_file_content(monkeypatch):
+    """A textual-inversion file swapped under an unchanged name -- same
+    prompt string, same checkpoint -- must change IS_CHANGED so ComfyUI's
+    own execution cache re-runs the node (Codex audit MEDIUM #1). A prompt
+    that resolves no embedding must leave IS_CHANGED byte-for-byte as it was
+    before this component existed."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedFL2VA
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222, 333))
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:deadbeef", True))
+
+    digest = {"value": None}
+    monkeypatch.setattr(node_module, "embedding_identity_digest", lambda prompt: digest["value"])
+
+    no_emb = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="a plain prompt")
+    assert no_emb == ("auto", CLIP_NAME, 111, 222, 333, "0.34.2:deadbeef")
+
+    digest["value"] = "a" * 64
+    with_emb_a = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p embedding:ti")
+    assert with_emb_a != no_emb
+    assert with_emb_a[:6] == no_emb  # checkpoint identity untouched, digest appended
+    # stable while the embedding content is unchanged
+    assert cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p embedding:ti") == with_emb_a
+
+    digest["value"] = "b" * 64
+    with_emb_b = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME, prompt="p embedding:ti")
+    assert with_emb_b != with_emb_a
+    assert with_emb_b != no_emb
+
+
+def test_i_is_changed_prompt_none_does_not_raise_and_ignores_embeddings(monkeypatch):
+    """prompt=None (the STRING widget converted to an unconnected input) is
+    the same known degradation as clip_name=None -- no new error class, the
+    embedding component is simply not folded in."""
+    node_module = _load_node_module()
+    cls = node_module.MiniMaxH3CLIPCachedFL2VA
+
+    monkeypatch.setattr(node_module, "resolve_clip_stat", lambda clip_name: (111, 222, 333))
+    monkeypatch.setattr(node_module, "get_encoder_abi_id", lambda: ("0.34.2:deadbeef", True))
+
+    result = cls.IS_CHANGED(cache_mode="auto", clip_name=CLIP_NAME)  # no prompt kwarg at all
+    assert result == ("auto", CLIP_NAME, 111, 222, 333, "0.34.2:deadbeef")
+
+
 def test_j_encoder_unloaded_before_stock_nodes_post_encode_work(monkeypatch, tmp_path):
     """The real encoder must be released as soon as encode_from_tokens_scheduled()
     returns, before any work the stock node still does afterwards (e.g. FL2VA's
