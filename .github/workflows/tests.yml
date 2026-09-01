@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Clone ComfyUI baseline
+        run: |
+          git clone --depth 1 --branch v0.34.2 \
+            https://github.com/Comfy-Org/ComfyUI.git \
+            "$RUNNER_TEMP/ComfyUI"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            torch torchvision torchaudio
+          python -m pip install \
+            -r "$RUNNER_TEMP/ComfyUI/requirements.txt" \
+            pytest
+
+      - name: Compile Python sources
+        run: |
+          python -m py_compile \
+            __init__.py \
+            nodes.py \
+            minimaxh3_clipcache/*.py
+
+      - name: Run tests
+        env:
+          COMFYUI_ROOT: ${{ runner.temp }}/ComfyUI
+        run: python -m pytest -q
