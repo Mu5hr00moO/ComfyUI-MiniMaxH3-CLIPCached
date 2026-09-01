@@ -1,79 +1,92 @@
 # HANDOFF
 
-## Stan na: 2026-09-01 / branch master / commit c161d9c
+## Stan na: 2026-09-01 / branch master / commit cdbde7e
 
-## Ostatnio zrobione (audyt runda 2 -- warstwa trwałości, dwie niezależne poprawki poprawności)
+## Ostatnio zrobione (Codex LOW #3 + #4 -- domknięcie luki w zamykaniu serwera dev-scriptów)
 
-Dwa osobne commity, dwie różne przyczyny, ten sam gatunek co pierwsza sesja
-hardeningowa store.py. Pełny suite: 397 passed (było 379). py_compile /
-`git diff --check` czyste.
+Jeden commit kodu (`cdbde7e`), zakres: 4 skrypty orchestratora +
+`scripts/_live_server.py` + `tests/test_live_server_stop_pid_reuse.py`.
+Pełny suite: 398 passed (było 397). `py_compile` / `git diff --check` czyste.
 
-### Część A -- `6e0bf8a` store: zawężenie OSError w read-gate do FileNotFoundError
+### LOW #3 -- handler sygnału omijał eskalację/reap z `stop_live_server()`
 
-Codex MEDIUM #2. `_SAFETENSOR_READ_ERRORS` oraz dwa miejsca odczytu JSON
-(`load_conditioning` + `inspect_conditioning_pair`) łapały goły `OSError`,
-więc EMFILE / EACCES / EIO / ENOSPC zamieniały się w cichy cache MISS i
-zbędny ~27 GB re-encode -- ta sama klasa za-szerokiego łapania co
-`RuntimeError` usunięty w rundzie 1, tylko dla innego typu.
+Cztery skrypty live-server (`test_ref2video_server_e2e.py`,
+`test_ref2video_server_hit.py`, `test_server_memory_trend_phase17.py`,
+`test_ref2video_memory_trend.py`) instalowały handler SIGINT/SIGTERM
+(`_forwarding_signal_handler` / `_sig`), który robił jeden best-effort
+SIGTERM do dziecka przez `forward_termination()` i natychmiast `os._exit(1)`.
+To pomijało eskalację SIGINT -> SIGTERM -> SIGKILL i `proc.wait()`-reap
+dodane w `0582ef8`: dziecko ignorujące ten jeden SIGTERM (albo tylko
+potrzebujące chwili) było porzucane jako sierota.
 
-- Empiryczne re-probowanie zainstalowanego safetensors 0.8.0 (skrypt w
-  scratchpadzie, nie w repo): jedyny `OSError` znaczący "plik tego wpisu
-  naprawdę zniknął, re-encode to naprawia" to `FileNotFoundError` --
-  podnoszony jednolicie przez `open()` (przez `read_bytes()`),
-  `safe_open()` i `load_file()` gdy plik znika między strażnikiem
-  `.exists()` a odczytem (race z Cache Manager Delete albo przerwany
-  zapis).
-- Każda awaria zasobowa/uprawnieniowa ma inny typ: goły `OSError` dla
-  EMFILE/EIO/ENOSPC oraz `safe_open()`-na-katalogu ("No such device"),
-  `PermissionError` dla EACCES/EPERM, `IsADirectoryError` z `read_bytes()`
-  na katalogu. Dopasowanie na poziomie klasy wystarcza -- zero inspekcji
-  errno.
-- Korupcja treści bez zmian: to `SafetensorError` albo `ValueError` (zły
-  JSON / nie-UTF-8), nie `OSError`, dalej czysty MISS.
-- `_SAFETENSOR_READ_ERRORS = (SafetensorError, FileNotFoundError)`.
-- 15 nowych testów w `tests/test_store.py`: symulowany
-  EMFILE/EACCES/EIO/ENOSPC/katalog `OSError` propaguje się ze wszystkich
-  czterech miejsc odczytu; prawdziwy race zniknięcia pliku (unlink między
-  `.exists()` a `read_bytes()`) nadal daje czysty, zalogowany MISS.
+- Nowy `install_shutdown_signal_handler()` w `scripts/_live_server.py`
+  kieruje oba sygnały w `OrchestratorShutdownSignal` -- podklasa
+  `BaseException` (jak `KeyboardInterrupt`, więc `except Exception` w środku
+  runu jej nie połknie). Handler NIE robi nic poza `raise` -- zero I/O, zero
+  wywołań subprocess, zero czekania.
+- Każdy `main()` łapie ten wyjątek w nowej klauzuli `except
+  OrchestratorShutdownSignal` (przed istniejącym `finally:`), zapisuje
+  `signum`, pozwala `finally:` wykonać tę samą `stop_live_server()` co
+  normalne zamknięcie, a potem `sys.exit(128 + signum)` przed sekcją
+  raportu. Jedna ścieżka zamknięcia, nie druga równoległa.
+- Usunięte: `_server_proc_for_cleanup` (moduł-level uchwyt istniejący
+  wyłącznie po to, żeby handler miał co złapać), `forward_termination()`
+  z `_live_server.py` (jedyny użytkownik to była ścieżka bare-exit), oraz
+  martwe po tej zmianie importy `os` (4 skrypty) i `signal` (tylko
+  `test_ref2video_server_hit.py` -- nie ma watchdoga).
 
-### Część B -- `c161d9c` nodes: backfill verbose nie może kasować obcych kluczy `system`
+### LOW #4 -- resztkowy wyścig w `Popen.send_signal()`: udokumentowany, NIE naprawiany
 
-Grok finding. `_sync_verbose_metadata()` (`nodes.py`) budował blok `system`
-od zera z pustego literału i oddawał do `save_verbose()`, która podmienia
-cały blok. `add_pairing()` (`verbose_store.py:141`) zapisuje
-`paired_fingerprint` / `paired_width` / `paired_height` /
-`is_upscale_target` wprost w `system`; gdy PÓŹNIEJ HIT tego samego fp
-trafiał na ścieżkę backfillu (sidecar obecny, ale bez `created_at` --
-starszy/obcięty wpis), te cztery klucze znikały po cichu. HIT/MISS bez
-zmian -- czysta utrata danych w indeksie Cache Managera.
+Zbadane; zgadzam się z rekomendacją Codex (dokumentować, nie wdrażać pidfd).
+Dopisane wprost w docstringu modułu `scripts/_live_server.py` obok
+odwołania do bpo-38630/40550:
 
-- Fix: `system` startuje od PŁYTKIEJ KOPII istniejącego bloku
-  (`dict(existing_system) if isinstance(existing_system, dict) else {}`),
-  potem `.update()` nadpisuje tylko klucze, które ta funkcja posiada.
-  NIE hardkodujemy czterech kluczy pairingu po nazwie -- ogólne "zachowaj
-  to, czego sam nie ustawiam" jest solidniejsze.
-- 3 nowe testy w `tests/test_node.py`: dokładny zgłoszony scenariusz
-  (`add_pairing` -> backfill wpisu bez `created_at` -> klucze pairingu
-  przeżywają); świeży MISS bez istniejącego sidecaru bez zmian; zwykły
-  backfill legacy bez obcych kluczy bez zmian.
+- CPython `Popen.send_signal()` po swoim `poll()`-guardzie i tak kończy
+  gołym `os.kill(self.pid, sig)` (ostatni akapit komentarza w subprocess.py
+  CPythona to wprost mówi). Jeśli dziecko zakończy się I OS zrecykluje jego
+  dokładny PID w sub-milisekundowym oknie między guardem a `os.kill()`,
+  sygnał trafi w nowego właściciela PID.
+- Dlaczego to zaakceptowane, nie naprawiane: każdy `waitpid` w tych
+  skryptach idzie przez metodę `Popen`, wszystkie serializowane na
+  `Popen._waitpid_lock` i wszystkie re-sprawdzające `returncode` pod nim,
+  więc jedyny aktor mogący w ogóle dojść do tego okna to równoległy
+  `poll()`/`wait()` ścigający się z jednym `send_signal()`. Linux alokuje
+  PID-y sekwencyjnie do `pid_max` (~4M), więc trafienie w ten sam numer w
+  oknie mikrosekundowym nie jest realnym zdarzeniem na maszynie
+  deweloperskiej. `os.pidfd_open` nie jest nawet wyeksponowane w
+  interpreterze tego projektu (Python 3.14 / comfyenv) -- naprawa
+  wymagałaby ominięcia `Popen.send_signal()` i własnego pidfd.
+  Guideline #34: brak spekulatywnej złożoności bez potwierdzonego
+  praktycznego wpływu.
 
 ## Ustalenia istotne dla Chat
 
-- `store._SAFETENSOR_READ_ERRORS` to teraz `(SafetensorError,
-  FileNotFoundError)` -- `store.py:92`. Oba miejsca odczytu JSON łapią
-  `(FileNotFoundError, ValueError)` -- `store.py:218`, `store.py:278`.
-- `_sync_verbose_metadata()` seeduje `system` z płytkiej kopii
-  `existing_system` -- `nodes.py:152-163`. Funkcja "posiada": prompt,
-  clip_name, clip_file_size, clip_mtime_ns, cache_schema_version,
-  node_variant, created_at, references, (width/height/megapixels gdy
-  podane), (clip_ctime_ns gdy podane), (comfyui_version best-effort).
-  Wszystko inne w `system` jest zachowywane.
-- Efekt uboczny Części B: wartości width/height/megapixels/clip_ctime_ns
-  z wcześniejszego sidecaru są teraz zachowywane przy backfillu, który
-  ich nie dostał. Dla danego wariantu węzła są stałe (FL2VA zawsze podaje
-  width/height, Ref2VA nigdy), więc to nie wprowadza niespójności.
-- Skrypt probujący OSError: `scratchpad/probe_oserror.py` (poza repo,
-  artefakt diagnostyczny, nie commitowany).
+- `OrchestratorShutdownSignal(BaseException)` w `scripts/_live_server.py:48`,
+  `install_shutdown_signal_handler()` w `scripts/_live_server.py:65`.
+  Handler to `_raise_shutdown(signum, frame): raise
+  OrchestratorShutdownSignal(signum)` -- nic więcej.
+- Wzorzec w każdym `main()`: `shutdown_signum = None` przed `try`,
+  `except OrchestratorShutdownSignal as sig: shutdown_signum = sig.signum`
+  przed `finally`, `finally` woła `stop_live_server(...)` bez zmian, po
+  bloku `if shutdown_signum is not None: sys.exit(128 + shutdown_signum)`.
+- `forward_termination()` NIE ISTNIEJE już w `_live_server.py`. Eksporty
+  modułu: `OrchestratorShutdownSignal`, `install_shutdown_signal_handler`,
+  `stop_live_server`.
+- `stop_live_server()` (eskalacja + reap) bez zmian merytorycznych --
+  `scripts/_live_server.py:89`.
+- Watchdog (3 skrypty z nim) bez zmian: dalej `self.server_proc.send_signal(
+  signal.SIGTERM)` + flaga `triggered` + `stopped_by_watchdog` ->
+  `skip_sigint`. Ścieżka sygnału i ścieżka watchdoga schodzą się w tym
+  samym `finally`.
+- Testy: `tests/test_live_server_stop_pid_reuse.py` -- usunięte 3 testy
+  `forward_termination`; dodane: handler tylko rzuca (`os._exit`
+  zastubowany na fail), `OrchestratorShutdownSignal` jest BaseException-
+  nie-Exception, regresja `raise_signal()`-driven teardown eskaluje przez
+  zignorowany SIGTERM do SIGKILL i reapuje `FakePopen`. Statyczny guard
+  orchestratora zabrania teraz `os._exit(` / `forward_termination` /
+  `_server_proc_for_cleanup` i wymaga `install_shutdown_signal_handler()`
+  + `except OrchestratorShutdownSignal`; guard AST trzyma sam
+  `_live_server.py` wolny od `os._exit` / `os.kill`.
 
 ## Otwarte pytania
 
