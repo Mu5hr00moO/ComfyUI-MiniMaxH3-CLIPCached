@@ -163,11 +163,18 @@ def test_h_mixed_directory_classifies_and_sizes_correctly(tmp_path):
 
 
 def test_i_generation_mismatch_is_reported_as_inconsistent(tmp_path):
+    # A well-formed but genuinely different uuid4 hex -- store.py's
+    # generation-id format gate (inspect_conditioning_pair()) now catches a
+    # malformed value like the previous "torn-refresh-generation" earlier,
+    # under the "invalid_json_envelope" reason instead. This test targets
+    # the true mismatch path specifically, so it needs a value that passes
+    # format validation but still disagrees with the real id.
     _core(tmp_path, FP1)
     _verbose(tmp_path, FP1)
     json_path = tmp_path / "{}.json".format(FP1)
     payload = json.loads(json_path.read_bytes())
-    payload["generation_id"] = "torn-refresh-generation"
+    real_id = payload["generation_id"]
+    payload["generation_id"] = "0" * 32 if real_id != "0" * 32 else "1" * 32
     json_path.write_bytes(json.dumps(payload).encode("utf-8"))
 
     (entry,) = scan_cache(tmp_path)["entries"]
