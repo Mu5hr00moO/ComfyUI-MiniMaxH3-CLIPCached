@@ -3,6 +3,7 @@
 Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 """
 
+import errno
 import json
 import logging
 import os
@@ -174,16 +175,161 @@ def test_d_safetensors_from_a_different_entry_returns_none(tmp_path, caplog):
     assert any(FINGERPRINT_A in r.getMessage() for r in caplog.records)
 
 
-def test_d_safe_open_oserror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+def test_d_safe_open_filenotfounderror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    # FileNotFoundError is the one OSError this gate still swallows: the
+    # .safetensors vanished between load_conditioning()'s .exists() check and
+    # the header read (a Cache Manager Delete race, or an interrupted write).
+    # safe_open() raises the FileNotFoundError subclass for a missing file
+    # (verified by probing the installed safetensors 0.8.0).
     save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
 
-    def unreadable_header(*args, **kwargs):
-        raise OSError("simulated filesystem read failure")
+    def missing_file(*args, **kwargs):
+        raise FileNotFoundError("No such file or directory")
 
-    monkeypatch.setattr(store, "safe_open", unreadable_header)
+    monkeypatch.setattr(store, "safe_open", missing_file)
     with caplog.at_level(logging.WARNING):
         assert load_conditioning(FINGERPRINT_A, tmp_path) is None
     assert any("failed to read metadata" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("exc", [
+    OSError(errno.EMFILE, "Too many open files"),
+    OSError(errno.EIO, "Input/output error"),
+    OSError(errno.ENOSPC, "No space left on device"),
+    PermissionError(errno.EACCES, "Permission denied"),
+    OSError("No such device (os error 19)"),  # safe_open() given a directory
+])
+def test_d_resource_oserror_from_safe_open_metadata_read_propagates(tmp_path, monkeypatch, exc):
+    # A resource/permission failure (or a directory in place of the file) is
+    # NOT a re-encodable MISS -- swallowing it would mask a real problem
+    # behind a needless ~27GB re-encode. Only FileNotFoundError is tolerated;
+    # everything else propagates from the safe_open() metadata read.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_safe_open(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(store, "safe_open", failing_safe_open)
+    with pytest.raises(OSError) as caught:
+        load_conditioning(FINGERPRINT_A, tmp_path)
+    assert caught.value is exc
+
+
+@pytest.mark.parametrize("exc", [
+    OSError(errno.EMFILE, "Too many open files"),
+    PermissionError(errno.EACCES, "Permission denied"),
+])
+def test_d_resource_oserror_from_load_file_propagates(tmp_path, monkeypatch, exc):
+    # Same distinction for the load_file() tensor read: FileNotFoundError is
+    # a clean MISS, any other OSError propagates.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_load(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(store, "load_file", failing_load)
+    with pytest.raises(OSError) as caught:
+        load_conditioning(FINGERPRINT_A, tmp_path)
+    assert caught.value is exc
+
+
+def test_d_load_file_filenotfounderror_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    # The .safetensors passed every earlier gate but is gone by the time
+    # load_file() opens it -- a Delete race. Still a clean, logged MISS.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def missing_file(*args, **kwargs):
+        raise FileNotFoundError("No such file or directory")
+
+    monkeypatch.setattr(store, "load_file", missing_file)
+    with caplog.at_level(logging.WARNING):
+        assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert any("failed to load" in r.getMessage() for r in caplog.records)
+
+
+def test_d_json_read_vanishing_between_exists_and_read_is_a_clean_miss(tmp_path, monkeypatch, caplog):
+    # A genuine race: the core <fp>.json passes load_conditioning()'s
+    # .exists() check, then a concurrent Cache Manager Delete removes it
+    # before read_bytes() opens it. The real open() raises FileNotFoundError
+    # -- swallowed into a clean, logged MISS.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+
+    real_read_bytes = Path.read_bytes
+
+    def racing_read_bytes(self):
+        if self == json_path:
+            self.unlink()  # vanishes right after the .exists() gate
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    with caplog.at_level(logging.WARNING):
+        assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert any("failed to read/parse" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("exc", [
+    OSError(errno.EMFILE, "Too many open files"),
+    PermissionError(errno.EACCES, "Permission denied"),
+    IsADirectoryError(errno.EISDIR, "Is a directory"),
+])
+def test_d_resource_oserror_from_core_json_read_propagates(tmp_path, monkeypatch, exc):
+    # Any OSError other than FileNotFoundError from the core <fp>.json read
+    # (permission, EMFILE, a directory in place) propagates rather than
+    # becoming a silent MISS.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+
+    real_read_bytes = Path.read_bytes
+
+    def failing_read_bytes(self):
+        if self == json_path:
+            raise exc
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+    with pytest.raises(OSError) as caught:
+        load_conditioning(FINGERPRINT_A, tmp_path)
+    assert caught.value is exc
+
+
+@pytest.mark.parametrize("exc", [
+    OSError(errno.EMFILE, "Too many open files"),
+    PermissionError(errno.EACCES, "Permission denied"),
+])
+def test_d_resource_oserror_from_pair_inspection_propagates(tmp_path, monkeypatch, exc):
+    # inspect_conditioning_pair() (Cache Manager scan) shares the same gate:
+    # a resource/permission failure must propagate and abort the scan loudly
+    # rather than misclassify a healthy entry as "unreadable" -- which the
+    # user could then delete.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+
+    def failing_safe_open(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(store, "safe_open", failing_safe_open)
+    with pytest.raises(OSError) as caught:
+        inspect_conditioning_pair(FINGERPRINT_A, tmp_path)
+    assert caught.value is exc
+
+
+def test_d_pair_inspection_core_json_vanishing_is_reported_not_raised(tmp_path, monkeypatch):
+    # The inspect_conditioning_pair() JSON read narrows to FileNotFoundError
+    # the same way: a vanished core <fp>.json is a benign race, reported as
+    # "json_unreadable" (the next scan re-evaluates), not raised.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+
+    real_read_bytes = Path.read_bytes
+
+    def racing_read_bytes(self):
+        if self == json_path:
+            self.unlink()
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    valid, reason = inspect_conditioning_pair(FINGERPRINT_A, tmp_path)
+    assert (valid, reason) == (False, "json_unreadable")
 
 
 def test_d_load_file_safetensorerror_is_a_clean_miss(tmp_path, monkeypatch, caplog):

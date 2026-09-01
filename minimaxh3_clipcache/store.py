@@ -51,32 +51,44 @@ from minimaxh3_clipcache.serialize import flatten_tensors, unflatten_tensors
 logger = logging.getLogger(__name__)
 
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
-# WHY these two and no others: verified empirically against the installed
-# safetensors 0.8.0 (not assumed from docs -- see project rule against
-# speculative exception handling), by probing safe_open()'s header read and
-# load_file()'s get_tensors() against 13 corruption scenarios -- an empty
-# file, truncation at every stage of the header, an absurd header-length
-# prefix, invalid JSON in the header, an unknown dtype string, a
-# shape/byte-count mismatch, a negative shape dimension, inverted
-# data_offsets, a missing dtype field, a bit-flipped tensor payload, a
-# missing file, and a directory in place of a file. Every one of them
-# raised either SafetensorError (all header/JSON/dtype/shape validation
-# happens in the safetensors Rust core) or OSError (FileNotFoundError for a
-# missing file, "No such device" for a directory) -- never RuntimeError.
-# Source inspection of the installed safetensors/torch.py confirms this
-# isn't a probing gap: load_file() is a thin
-# `with safe_open(...) as f: return f.get_tensors()` wrapper, and the only
-# three RuntimeError raise sites in that module live in load_model()'s
-# strict-key check and save_file()/_remove_duplicate_names()'s
-# shared-tensor check -- none reachable from the read path we call here.
-# (Bit-flipped tensor *payload* bytes are NOT caught by this gate:
-# safetensors has no checksum, so silently-wrong values from disk-level
-# corruption load as "OK" -- catching that is not this gate's job.) An
-# unrelated RuntimeError (e.g. a CUDA/allocation failure surfacing through
-# this call for some other reason) is intentionally left to propagate
-# instead of being swallowed into a silent MISS that triggers a costly
-# ~27GB re-encode.
-_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError)
+# WHY exactly these two: this gate turns a read failure into a silent cache
+# MISS (and a costly ~27GB re-encode), so it must only swallow failures a
+# re-encode actually fixes -- a file that is corrupt or genuinely gone -- and
+# must let every "the process/filesystem is degraded" failure propagate.
+#
+# SafetensorError: verified empirically against the installed safetensors
+# 0.8.0 (not assumed from docs -- see project rule against speculative
+# exception handling), by probing safe_open()'s header read and load_file()'s
+# get_tensors() against 13 corruption scenarios -- an empty file, truncation
+# at every stage of the header, an absurd header-length prefix, invalid JSON
+# in the header, an unknown dtype string, a shape/byte-count mismatch, a
+# negative shape dimension, inverted data_offsets, a missing dtype field, a
+# bit-flipped tensor payload, a missing file, and a directory in place of a
+# file. Every content-corruption case raised SafetensorError (all
+# header/JSON/dtype/shape validation happens in the safetensors Rust core);
+# none raised RuntimeError. Source inspection of the installed
+# safetensors/torch.py confirms this isn't a probing gap: load_file() is a
+# thin `with safe_open(...) as f: return f.get_tensors()` wrapper, and its
+# only three RuntimeError raise sites live in load_model()/save_file() paths
+# we never call. (A bit-flipped tensor *payload* is NOT caught here:
+# safetensors has no checksum, so wrong-but-well-formed bytes load as "OK" --
+# not this gate's job.)
+#
+# FileNotFoundError and no other OSError (Codex audit round 2, MEDIUM #2 --
+# the earlier bare `OSError` here was too broad): re-probing the same call
+# sites, the ONLY OSError that means "this entry's file is legitimately gone,
+# re-encode it" is FileNotFoundError -- raised uniformly by open() (through
+# read_bytes()), safe_open() and load_file() when the file vanishes between
+# the .exists() guard above and the read (a Cache Manager Delete race, or an
+# interrupted write). Every resource/permission failure surfaces as a
+# different type: EMFILE ("Too many open files"), EIO and ENOSPC as a bare
+# OSError, EACCES/EPERM as PermissionError, a directory in place of the file
+# as a bare OSError ("No such device") from safe_open() or IsADirectoryError
+# from read_bytes(). None of those is fixed by a silent MISS, so they now
+# propagate instead of hiding a real problem behind a ~27GB re-encode.
+# Class-level matching is enough: the race always surfaces as the
+# FileNotFoundError subclass, whether or not errno happens to be set.
+_SAFETENSOR_READ_ERRORS = (SafetensorError, FileNotFoundError)
 _GENERATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -203,7 +215,13 @@ def inspect_conditioning_pair(fingerprint: str, cache_dir: Path):
         return False, "missing_json"
     try:
         payload = json.loads(json_path.read_bytes())
-    except (OSError, ValueError):
+    except (FileNotFoundError, ValueError):
+        # Same split as _SAFETENSOR_READ_ERRORS: ValueError is content
+        # corruption (bad JSON / non-UTF-8), FileNotFoundError is the file
+        # vanishing between the .exists() check above and this read. Any
+        # other OSError (permission, EMFILE, EIO, a directory in place) is a
+        # degraded-environment problem and must propagate, not be reported
+        # as a normal "unreadable entry".
         return False, "json_unreadable"
     if not isinstance(payload, dict) or "generation_id" not in payload or "skeleton" not in payload:
         return False, "invalid_json_envelope"
@@ -257,10 +275,15 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
 
     try:
         payload = json.loads(json_path.read_bytes())
-    except (OSError, ValueError) as e:
+    except (FileNotFoundError, ValueError) as e:
         # ValueError covers both json.JSONDecodeError (malformed JSON) and
         # UnicodeDecodeError (bytes that aren't even valid UTF-8, e.g. a
-        # .json file overwritten with random garbage).
+        # .json file overwritten with random garbage). FileNotFoundError is
+        # the file vanishing between the .exists() check above and this read
+        # (a Cache Manager Delete race, or an interrupted write). Any other
+        # OSError -- permission, EMFILE, EIO, a directory in place -- is a
+        # degraded environment, not a re-encodable MISS, so it propagates
+        # (same rationale as _SAFETENSOR_READ_ERRORS above).
         logger.warning("Cache MISS for fingerprint %s: failed to read/parse %s: %s",
                         fingerprint, json_path, e)
         return None
