@@ -1,89 +1,72 @@
 # HANDOFF
 
-## Stan na: 2026-09-01 / branch master / commit 94130b0
+## Stan na: 2026-09-01 / branch master / commit 5c5b2f1
 
-## Ostatnio zrobione (store.py hardening przed v0.1.0 — z ZLECENIA, audyt Grok+Codex)
+## Ostatnio zrobione (3 poprawki wording/dokumentacja z finalnego audytu Grok+Codex)
 
-Dwa niezależnie zweryfikowane znaleziska audytu, referencja master@83629c7.
-Trzy commity:
+Żadna nie zmienia zachowania kodu produkcyjnego — tylko treść README,
+jednego loga WARNING, jednego komentarza i skryptu testowego. Trzy commity,
+po jednym na punkt. Pełny pytest 349 passed przed i po.
 
-### 1. `_SAFETENSOR_READ_ERRORS` zawężone (commit 3b7e95e)
-- Przed: `(SafetensorError, OSError, RuntimeError)`. `RuntimeError` był
-  niezweryfikowany — test `test_d_load_file_runtimeerror_is_a_clean_miss`
-  explicite asercjował, że dowolny `RuntimeError` z `load_file()` staje
-  się cichym MISS-em.
-- Zbadano empirycznie (skrypt diagnostyczny w scratchpadzie, NIE
-  scommitowany — jednorazowy probe, nie test regresyjny): 13 scenariuszy
-  korupcji `.safetensors` (pusty plik, obcięcie na każdym etapie nagłówka,
-  absurdalny prefiks długości nagłówka, niepoprawny JSON w nagłówku,
-  nieznany dtype, niezgodność shape/data_offsets, ujemny wymiar shape,
-  odwrócone data_offsets, brakujące pole dtype, bit-flip w danych tensora,
-  brakujący plik, katalog zamiast pliku) — zawsze `SafetensorError` albo
-  `OSError`, nigdy `RuntimeError`. Inspekcja źródeł zainstalowanego
-  `safetensors/torch.py` (0.8.0) potwierdza: `load_file()` to cienki
-  wrapper `safe_open(...).get_tensors()`; jedyne trzy miejsca rzucające
-  `RuntimeError` w tym module są w `load_model()`/`save_file()` (ścieżki
-  nieużywane przez nasz kod odczytu).
-- `_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError)` + obszerny
-  komentarz WHY przy stałej (`store.py:54-77`).
-- Stary test zastąpiony (nie tylko dopisany obok):
-  `test_d_load_file_safetensorerror_is_a_clean_miss` (potwierdzona
-  korupcja nadal MISS-em) + 3 nowe testy że NIEPOWIĄZANY `RuntimeError`
-  PROPAGUJE się (nie staje MISS-em) z trzech miejsc dzielących tę stałą:
-  `load_file()`, `safe_open()` w `load_conditioning()`, `safe_open()` w
-  `inspect_conditioning_pair()`.
+### 1. DualRes: "encoder loads at most once" tylko dla cache_mode="auto" (commit 550b2cb)
+- README (tabela `width_upscale`/`height_upscale` + akapit "This is a
+  consistency feature") oraz docstringi obu węzłów DualRes
+  (`nodes.py` `MiniMaxH3CLIPCachedFL2VADualRes` / `...Ref2VADualRes`) i
+  4 tooltipy `width_upscale`/`height_upscale` twierdziły, że druga
+  rozdzielczość to zwykły cache HIT i encoder ładuje się co najwyżej raz.
+- To prawda WYŁĄCZNIE dla `cache_mode="auto"`. Przy `cache_mode="refresh"`
+  proxy jest budowane z `force_refresh=True` (`nodes.py:330`), więc obie
+  rozdzielczości idą ścieżką REFRESH (`proxy.py:141-142`) i re-enkodują
+  niezależnie od zgodności fingerprintu — encoder ładuje się dwa razy.
+- Dopisane jawne zdanie o tym w README (nowy akapit) i w obu docstringach;
+  tooltipy przeformułowane na "with cache_mode auto ... ; cache_mode
+  refresh always re-encodes".
 
-### 2. Walidacja formatu `generation_id` przed porównaniem (commit b36c1bb)
-- Przed: `load_conditioning()` (~linia 249) i `inspect_conditioning_pair()`
-  (~linia 175) sprawdzały tylko obecność klucza `"generation_id" in
-  payload`, potem porównywały `!=` wprost. Spreparowany JSON
-  `{"generation_id": null}` + `.safetensors` bez klucza
-  `cache_generation_id` w metadata (więc `.get()` też zwraca `None`)
-  przechodziły jako dopasowanie (`None != None -> False`).
-- Dodano `_is_valid_generation_id()`: wymaga niepustego stringa
-  pasującego do `^[0-9a-f]{32}$` (dokładny kształt `uuid.uuid4().hex`).
-  Obie strony (JSON i metadata safetensors) walidowane PRZED
-  porównaniem, w obu funkcjach. Niepoprawna wartość (None, brak pola,
-  pusty string, nie-string, zły format/case/długość/myślniki) -> jawny
-  MISS z konkretnym logiem w `load_conditioning()`, `"invalid_json_envelope"`
-  (strona JSON) lub `"generation_mismatch"` (strona safetensors) w
-  `inspect_conditioning_pair()` — reużyte istniejące kody powodów, ŻADNYCH
-  zmian w Cache Managerze/web/main.js w tym zadaniu (poza kolateralną
-  poprawką testu, patrz niżej).
-- ~15 nowych testów parametryzowanych (`store.py:54` docstring) w
-  `test_store.py`: None/None (dokładny scenariusz z audytu), brak pola,
-  pusty string, nie-string (int/list), malformed-niepusty, non-hex chars,
-  za krótki, uppercase, prawdziwy uuid4 z myślnikami — dla obu funkcji,
-  po obu stronach (JSON i safetensors metadata).
+### 2. Log ENCODER ABI UNAVAILABLE — realny efekt, nie "cache wyłączony" (commit 28d142d)
+- `encoder_abi.py:55-63`: było "disk caching is disabled for this session
+  (every run will be a real encode, cache_mode is ignored)". Sugerowało
+  całkowite wyłączenie cache'a.
+- Realnie (potwierdzone w `proxy.py:132-231`): wyłączony jest tylko
+  HIT/reuse. Przy `available=False` oba węzły wymuszają `force_refresh=True`
+  + `encoder_abi_id="unavailable"`; udany encode NADAL woła
+  `save_conditioning()` (`proxy.py:223`) — zapisuje pliki cache pod
+  fingerprintem z sentinelową wartością ABI.
+- Nowa treść: "cache HIT/reuse is disabled for this session: every run
+  encodes for real regardless of cache_mode ... A successful encode may
+  still write cache files, under a sentinel fingerprint for this unknown
+  ABI". Prefiks `[ENCODER ABI UNAVAILABLE]` i `(%s)` z wyjątkiem
+  zachowane — test `test_encoder_abi.py::test_d_...` asercjuje tylko
+  prefiks, nie wymagał zmiany.
+- Ten sam/równoważny komentarz w `nodes.py:288-292` (`_is_changed_common`)
+  też poprawiony ("a cache HIT/reuse is unsafe this session ... a
+  successful encode may still write cache files ... only reuse is
+  suppressed").
 
-### 3. Kolateralna poprawka testu (commit 94130b0)
-- `tests/test_scanner.py::test_i_generation_mismatch_is_reported_as_inconsistent`
-  używał `"torn-refresh-generation"` (niepoprawny format) do
-  przetestowania ścieżki `generation_mismatch` przez `scan_cache()` ->
-  `inspect_conditioning_pair()`. Po zmianie #2 ta wartość jest łapana
-  wcześniej jako `invalid_json_envelope`. Podmieniono na
-  poprawny-formatowo-ale-inny uuid4 hex (ten sam wzorzec co analogiczna
-  poprawka w `test_store.py`). Jedyny plik poza `store.py`/
-  `tests/test_store.py` dotknięty w tej sesji — konieczna konsekwencja
-  zmiany #2, nie scope creep.
+### 3. test_ref2video_server_e2e.py — usunięta fałszywa asercja wewnątrz-sesyjnego HIT-a (commit 5c5b2f1)
+- Druga iteracja wysyłała bajt-identyczny graf w tej samej sesji serwera
+  i asercjowała `[CACHE HIT]`. Własny execution cache ComfyUI
+  ("Prompt executed in 0.00 seconds") przechwytuje to ZANIM nasz węzeł
+  wykona się drugi raz — ten "HIT" nie dowodził niczego o CachedClipProxy.
+- `test_ref2video_server_hit.py` już poprawnie dowodzi realnego proxy
+  HIT-a przez ŚWIEŻY serwer (pusty execution cache) na fingerprincie z
+  `/tmp/r7_last_fingerprint.txt`.
+- Skrypt teraz: jedna submisja, weryfikacja rejestracji węzłów + realnego
+  MISS-a, zapis fingerprintu dla follow-upu. Docstring i verdict opisują
+  zawężony zakres i wskazują `test_ref2video_server_hit.py` jako dowód
+  HIT-a.
 
 ## Ustalenia istotne dla Chat
-- `python -m py_compile` na wszystkich zmienionych plikach — OK.
-- `git diff --check` — czysty, po każdym z 3 commitów.
-- Pełny pytest: **349 passed, 0 skipped, 0 failed** (przed sesją: 348,
-  jeden test naprawiony zamiast dodany netto +1 zbiorczo licząc nowe
-  testy minus brak zmiany liczby plików testowych — patrz commity dla
-  dokładnych liczb per plik).
-- `git diff --stat` całej sesji (83629c7..HEAD): `minimaxh3_clipcache/store.py`
-  (+80/-2), `tests/test_scanner.py` (+8/-1), `tests/test_store.py`
-  (+197/-4) — dokładnie w zakresie store.py + jego testy, plus jeden
-  wymuszony plik testowy.
-- Diagnostyczne skrypty probe (`probe_safetensors_errors.py`,
-  `probe_safetensors_errors2.py`) zostały w scratchpadzie sesji, NIE
-  scommitowane — jednorazowe narzędzie do zbadania faktycznych wyjątków
-  safetensors 0.8.0, nie część projektu.
-- Commity tej sesji: 3b7e95e (zawężenie wyjątków), b36c1bb (walidacja
-  generation_id), 94130b0 (poprawka test_scanner.py).
+- `python -m py_compile` na wszystkich zmienionych `.py` — OK po każdym commicie.
+- `git diff --check` — czysty po każdym z 3 commitów.
+- `pytest tests/test_encoder_abi.py` — 5 passed (punktowo, po commicie 2).
+- Pełny pytest (`conda run -n comfyenv python -m pytest -q`): **349 passed**,
+  identycznie przed i po sesji (zmiany są doc-only).
+- Commity tej sesji: 550b2cb (DualRes auto vs refresh), 28d142d (log ABI),
+  5c5b2f1 (e2e script scope).
+- `MiniMaxH3ImageToVideo.execute()` w tej wersji ComfyUI ma sygnaturę
+  keyword-based (`clip=`, `vae=`, `prompt=`, `width=`, `height=`,
+  `length=`, `first_frame=`, `last_frame=`) — `_execute_fl2va_once`
+  (`nodes.py:470`) wywołuje ją tak.
 
 ## Otwarte pytania
 - brak.
