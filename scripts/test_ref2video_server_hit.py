@@ -40,6 +40,8 @@ from pathlib import Path
 import psutil
 import requests
 
+from _live_server import forward_termination, stop_live_server
+
 COMFYUI_ROOT = "/home/kamil/ComfyUI"
 HOST, PORT = "127.0.0.1", 8188
 BASE_URL = "http://{}:{}".format(HOST, PORT)
@@ -60,15 +62,11 @@ WIDTH, HEIGHT, LENGTH = 1344, 768, 124
 REF_IMAGE_SIZE = "match"
 REF_IMAGE_HW = 256
 
-_server_pid_for_cleanup = None
+_server_proc_for_cleanup = None
 
 
 def _sig(signum, frame):
-    if _server_pid_for_cleanup:
-        try:
-            os.kill(_server_pid_for_cleanup, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+    forward_termination(_server_proc_for_cleanup)
     os._exit(1)
 
 
@@ -134,26 +132,8 @@ def wait_for_completion(prompt_id):
     return "timeout", None
 
 
-def stop_server(pid):
-    try:
-        os.kill(pid, signal.SIGINT)
-    except ProcessLookupError:
-        return
-    for _grace, sig in ((45, signal.SIGTERM), (5, signal.SIGKILL)):
-        deadline = time.time() + _grace
-        while time.time() < deadline and psutil.pid_exists(pid):
-            time.sleep(1)
-        if not psutil.pid_exists(pid):
-            break
-        print("  escalating -> {}".format(sig), flush=True)
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            break
-
-
 def main():
-    global _server_pid_for_cleanup
+    global _server_proc_for_cleanup
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
 
@@ -181,7 +161,7 @@ def main():
     proc = subprocess.Popen([sys.executable, "main.py"], cwd=COMFYUI_ROOT,
                             stdout=log_f, stderr=subprocess.STDOUT)
     pid = proc.pid
-    _server_pid_for_cleanup = pid
+    _server_proc_for_cleanup = proc
     print("=== Server PID={} ===".format(pid), flush=True)
 
     result = {}
@@ -232,8 +212,10 @@ def main():
         }
     finally:
         print("=== Stopping server ===", flush=True)
-        stop_server(pid)
-        print("=== Server exited: {} ===".format(not psutil.pid_exists(pid)), flush=True)
+        exited = stop_live_server(proc) is not None
+        if exited:
+            _server_proc_for_cleanup = None
+        print("=== Server exited: {} ===".format(exited), flush=True)
         log_f.close()
 
     print("\n" + "=" * 70)

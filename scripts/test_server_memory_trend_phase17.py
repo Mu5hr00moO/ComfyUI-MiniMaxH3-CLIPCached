@@ -51,6 +51,8 @@ from pathlib import Path
 import psutil
 import requests
 
+from _live_server import forward_termination, stop_live_server
+
 COMFYUI_ROOT = "/home/kamil/ComfyUI"
 
 HOST = "127.0.0.1"
@@ -87,18 +89,13 @@ PROMPTS = [
     "phase17 closeout server memory trend, iteration ten, juliett",
 ]
 
-_server_pid_for_cleanup = None
+_server_proc_for_cleanup = None
 
 
 def _forwarding_signal_handler(signum, frame):
     print("!!! Orchestrator received signal {} (likely external timeout/Ctrl-C) -- forwarding SIGTERM to "
-          "server PID {} before exit, so it is never left orphaned !!!".format(
-              signum, _server_pid_for_cleanup), flush=True)
-    if _server_pid_for_cleanup is not None:
-        try:
-            os.kill(_server_pid_for_cleanup, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+          "the server before exit, so it is never left orphaned !!!".format(signum), flush=True)
+    forward_termination(_server_proc_for_cleanup)
     os._exit(1)
 
 
@@ -114,8 +111,11 @@ def _read_proc_field_kb(path, field):
 
 
 class Watchdog:
-    def __init__(self, server_pid):
-        self.server_pid = server_pid
+    def __init__(self, server_proc):
+        self.server_proc = server_proc
+        # Captured now, so a PID the OS later recycles fails the identity
+        # check in psutil.Process.is_running() instead of being read/signalled.
+        self._ps = psutil.Process(server_proc.pid)
         self.stop_event = threading.Event()
         self.triggered = False
         self.reason = None
@@ -132,21 +132,22 @@ class Watchdog:
             while not self.stop_event.is_set():
                 ram_pct = psutil.virtual_memory().percent
                 try:
-                    server_rss = psutil.Process(self.server_pid).memory_info().rss
-                except psutil.NoSuchProcess:
-                    server_rss = None
+                    running = self.server_proc.poll() is None and self._ps.is_running()
+                    server_rss = self._ps.memory_info().rss if running else None
+                except psutil.Error:
+                    running, server_rss = False, None
 
                 f.write("{} ram_pct={:.1f} server_rss_bytes={}\n".format(
                     time.strftime("%Y-%m-%d %H:%M:%S"), ram_pct, server_rss))
                 f.flush()
 
-                if ram_pct > RAM_HARD_STOP_PCT:
+                if ram_pct > RAM_HARD_STOP_PCT and running:
                     self.reason = "RAM {:.1f}% > {:.0f}% -- sending SIGTERM to server PID {}".format(
-                        ram_pct, RAM_HARD_STOP_PCT, self.server_pid)
+                        ram_pct, RAM_HARD_STOP_PCT, self.server_proc.pid)
                     print("!!! WATCHDOG: {} !!!".format(self.reason), flush=True)
                     try:
-                        os.kill(self.server_pid, signal.SIGTERM)
-                    except ProcessLookupError:
+                        self.server_proc.send_signal(signal.SIGTERM)
+                    except Exception:
                         pass
                     self.triggered = True
                     self.stop_event.set()
@@ -214,7 +215,7 @@ def wait_for_prompt_completion(prompt_id):
 
 
 def main():
-    global _server_pid_for_cleanup
+    global _server_proc_for_cleanup
     signal.signal(signal.SIGTERM, _forwarding_signal_handler)
     signal.signal(signal.SIGINT, _forwarding_signal_handler)
 
@@ -228,7 +229,7 @@ def main():
         stdout=server_log_f, stderr=subprocess.STDOUT,
     )
     server_pid = server_proc.pid
-    _server_pid_for_cleanup = server_pid
+    _server_proc_for_cleanup = server_proc
     print("=== Server subprocess launched, PID={} ===".format(server_pid), flush=True)
 
     rows = []
@@ -258,7 +259,7 @@ def main():
                     PORT, sorted(bound_pids), server_pid)
             )
 
-        watchdog = Watchdog(server_pid)
+        watchdog = Watchdog(server_proc)
         watchdog.start()
         print("=== External watchdog started: RAM hard-stop > {:.0f}%, polling every {}s, "
               "monitoring server PID {} ===".format(RAM_HARD_STOP_PCT, RAM_WATCHDOG_INTERVAL_S, server_pid),
@@ -303,37 +304,10 @@ def main():
         if watchdog is not None:
             watchdog.stop()
 
-        if stopped_by_watchdog:
-            print()
-            print("=== Watchdog already sent SIGTERM -- skipping the clean-stop step ===", flush=True)
-        else:
-            print()
-            print("=== Stopping server cleanly (SIGINT), PID={} ===".format(server_pid), flush=True)
-            try:
-                os.kill(server_pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
-
-        deadline = time.time() + 60
-        while time.time() < deadline and psutil.pid_exists(server_pid):
-            time.sleep(1)
-        if psutil.pid_exists(server_pid):
-            print("!!! Server PID {} still alive after 60s -- escalating to SIGTERM !!!".format(server_pid),
-                  flush=True)
-            try:
-                os.kill(server_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            time.sleep(5)
-        if psutil.pid_exists(server_pid):
-            print("!!! Server PID {} still alive after SIGTERM -- escalating to SIGKILL !!!".format(server_pid),
-                  flush=True)
-            try:
-                os.kill(server_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            print("=== Server PID {} confirmed exited ===".format(server_pid), flush=True)
+        print(flush=True)
+        if stop_live_server(server_proc, skip_sigint=stopped_by_watchdog,
+                            sigint_grace_s=60) is not None:
+            _server_proc_for_cleanup = None
 
         server_log_f.close()
 
