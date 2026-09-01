@@ -77,6 +77,25 @@ _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 # instead of being swallowed into a silent MISS that triggers a costly
 # ~27GB re-encode.
 _SAFETENSOR_READ_ERRORS = (SafetensorError, OSError)
+_GENERATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _is_valid_generation_id(value) -> bool:
+    """True iff `value` has the exact shape `uuid.uuid4().hex` produces: a
+    32-character lowercase-hex string, no dashes. save_conditioning() only
+    ever writes ids in this shape into either artifact.
+
+    The generation-id gate below only means anything if both sides are
+    verified genuine ids before they are compared -- otherwise two absent
+    or malformed values (e.g. a JSON payload doctored to `"generation_id":
+    null` paired with a .safetensors that legitimately has no
+    "cache_generation_id" metadata key, so `.get()` also returns `None`)
+    would compare `None != None -> False` and be accepted as a match. Any
+    id failing this check -- missing, `None`, empty, a non-string, or a
+    malformed string -- can never be a genuine id this module wrote and
+    must be rejected outright rather than compared.
+    """
+    return isinstance(value, str) and _GENERATION_ID_RE.fullmatch(value) is not None
 
 
 def _tmp_name(path: Path) -> Path:
@@ -188,6 +207,12 @@ def inspect_conditioning_pair(fingerprint: str, cache_dir: Path):
         return False, "json_unreadable"
     if not isinstance(payload, dict) or "generation_id" not in payload or "skeleton" not in payload:
         return False, "invalid_json_envelope"
+    if not _is_valid_generation_id(payload["generation_id"]):
+        # A malformed generation_id (None, empty, wrong type, wrong shape)
+        # is a defect in the envelope itself, same class as the missing-key
+        # case just above -- see _is_valid_generation_id() for why this
+        # can't just fall through to the equality check below.
+        return False, "invalid_json_envelope"
 
     if not safetensors_path.exists():
         return False, "missing_safetensors"
@@ -197,7 +222,8 @@ def inspect_conditioning_pair(fingerprint: str, cache_dir: Path):
     except _SAFETENSOR_READ_ERRORS:
         return False, "safetensors_unreadable"
 
-    if st_metadata.get("cache_generation_id") != payload["generation_id"]:
+    st_generation_id = st_metadata.get("cache_generation_id")
+    if not _is_valid_generation_id(st_generation_id) or st_generation_id != payload["generation_id"]:
         return False, "generation_mismatch"
     return True, None
 
@@ -253,6 +279,18 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
     json_generation_id = payload["generation_id"]
     skeleton = payload["skeleton"]
 
+    if not _is_valid_generation_id(json_generation_id):
+        # Same defect class as the missing-key case just above -- a
+        # doctored or hand-mangled generation_id (None, empty, wrong type,
+        # wrong shape) is not a genuine id save_conditioning() wrote. See
+        # _is_valid_generation_id() for why this can't be allowed to reach
+        # the equality check below.
+        logger.warning(
+            "Cache MISS for fingerprint %s: generation_id in %s is not a "
+            "valid uuid4 hex string (%r)", fingerprint, json_path, json_generation_id,
+        )
+        return None
+
     if not safetensors_path.exists():
         logger.warning("Cache MISS for fingerprint %s: %s exists but %s is missing",
                         fingerprint, json_path, safetensors_path)
@@ -271,12 +309,21 @@ def load_conditioning(fingerprint: str, cache_dir: Path):
                         fingerprint, safetensors_path, e)
         return None
 
-    if st_metadata.get("cache_generation_id") != json_generation_id:
+    st_generation_id = st_metadata.get("cache_generation_id")
+    if not _is_valid_generation_id(st_generation_id):
+        logger.warning(
+            "Cache MISS for fingerprint %s: cache_generation_id metadata in "
+            "%s is missing or not a valid uuid4 hex string (%r)",
+            fingerprint, safetensors_path, st_generation_id,
+        )
+        return None
+
+    if st_generation_id != json_generation_id:
         logger.warning(
             "Cache MISS for fingerprint %s: generation_id mismatch between "
             "%s (%s) and %s (%s) - likely a partially published refresh, "
             "not a corrupt entry", fingerprint, json_path, json_generation_id,
-            safetensors_path, st_metadata.get("cache_generation_id"),
+            safetensors_path, st_generation_id,
         )
         return None
 

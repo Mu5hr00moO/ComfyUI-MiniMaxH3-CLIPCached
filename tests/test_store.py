@@ -6,6 +6,7 @@ Pure torch.rand/torch.zeros stand-ins -- no GPU, no ComfyUI.
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -255,12 +256,153 @@ def test_d_pair_inspection_checks_generation_without_loading_tensors(tmp_path, m
     monkeypatch.setattr(store, "load_file", must_not_load)
     assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (True, None)
 
+    # A well-formed but genuinely different uuid4 hex -- as opposed to a
+    # malformed value, which is now caught by the format gate below and
+    # reported as "invalid_json_envelope" instead (see
+    # test_generation_id_validation_rejects_* below).
     payload_path = tmp_path / "{}.json".format(FINGERPRINT_A)
     payload = json.loads(payload_path.read_bytes())
-    payload["generation_id"] = "different-generation"
+    real_id = payload["generation_id"]
+    payload["generation_id"] = "0" * 32 if real_id != "0" * 32 else "1" * 32
     payload_path.write_bytes(json.dumps(payload).encode("utf-8"))
     assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
         False, "generation_mismatch",
+    )
+
+
+# Values that are NOT a genuine uuid.uuid4().hex (32 lowercase hex chars, no
+# dashes) -- covering the "None/None", "missing/None", "empty string",
+# "non-string", and "malformed-but-non-empty" categories called out in the
+# audit finding. Every one of these must be rejected, never silently
+# compared/matched.
+_MALFORMED_GENERATION_IDS = [
+    pytest.param(None, id="none"),
+    pytest.param("", id="empty-string"),
+    pytest.param(12345, id="non-string-int"),
+    pytest.param(["not", "a", "string"], id="non-string-list"),
+    pytest.param("not-a-valid-id", id="malformed-non-empty"),
+    pytest.param("g" * 32, id="non-hex-chars-right-length"),
+    pytest.param("a" * 31, id="one-char-short"),
+    pytest.param("A" * 32, id="uppercase-hex"),
+    pytest.param(str(uuid.uuid4()), id="real-uuid4-but-with-dashes"),
+]
+
+
+@pytest.mark.parametrize("bad_value", _MALFORMED_GENERATION_IDS)
+def test_load_conditioning_rejects_malformed_json_side_generation_id(tmp_path, bad_value):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(json_path.read_bytes())
+    payload["generation_id"] = bad_value
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+
+
+@pytest.mark.parametrize("bad_value", _MALFORMED_GENERATION_IDS)
+def test_pair_inspection_rejects_malformed_json_side_generation_id(tmp_path, bad_value):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(json_path.read_bytes())
+    payload["generation_id"] = bad_value
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
+        False, "invalid_json_envelope",
+    )
+
+
+def test_load_conditioning_rejects_json_with_generation_id_field_removed(tmp_path, caplog):
+    # "brak pola" -- the key itself absent, not merely None-valued. Already
+    # handled by the pre-existing schema-v2-envelope check, but not
+    # previously exercised by a dedicated mutation -- kept here alongside
+    # the format-validation tests for complete coverage of the audit's
+    # "missing/None" category.
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(json_path.read_bytes())
+    del payload["generation_id"]
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    with caplog.at_level(logging.WARNING):
+        assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert any("not a valid schema v2 payload" in r.getMessage() for r in caplog.records)
+
+
+def test_pair_inspection_rejects_json_with_generation_id_field_removed(tmp_path):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    payload = json.loads(json_path.read_bytes())
+    del payload["generation_id"]
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
+        False, "invalid_json_envelope",
+    )
+
+
+def _rewrite_safetensors_metadata(safetensors_path, bad_value):
+    """Rewrite an existing .safetensors file in place, keeping its tensor
+    payload but replacing its metadata -- `bad_value=None` means the
+    "cache_generation_id" key is left out of the metadata dict entirely
+    (the "missing/None" case: even a legitimate older or hand-crafted
+    entry with no such key at all makes `.get()` return None)."""
+    tensors = store.load_file(str(safetensors_path))
+    metadata = {} if bad_value is None else {"cache_generation_id": bad_value}
+    store.save_file(tensors, str(safetensors_path), metadata=metadata)
+
+
+# Same malformed-value set as above, minus the two non-string cases:
+# safetensors header metadata is a str->str map, so a non-string value
+# cannot reach disk through save_file() in the first place -- there is no
+# reachable code path in this module that would hand a non-string
+# generation_id to safetensors metadata, unlike the JSON side above which
+# is plain user-editable text.
+_MALFORMED_SAFETENSORS_GENERATION_IDS = [
+    v for v in _MALFORMED_GENERATION_IDS
+    if v.id not in ("non-string-int", "non-string-list")
+]
+
+
+@pytest.mark.parametrize("bad_value", _MALFORMED_SAFETENSORS_GENERATION_IDS)
+def test_load_conditioning_rejects_malformed_safetensors_side_generation_id(tmp_path, bad_value):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    safetensors_path = tmp_path / "{}.safetensors".format(FINGERPRINT_A)
+    _rewrite_safetensors_metadata(safetensors_path, bad_value)
+
+    assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+
+
+@pytest.mark.parametrize("bad_value", _MALFORMED_SAFETENSORS_GENERATION_IDS)
+def test_pair_inspection_rejects_malformed_safetensors_side_generation_id(tmp_path, bad_value):
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    safetensors_path = tmp_path / "{}.safetensors".format(FINGERPRINT_A)
+    _rewrite_safetensors_metadata(safetensors_path, bad_value)
+
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
+        False, "generation_mismatch",
+    )
+
+
+def test_load_conditioning_rejects_the_audit_none_none_collision(tmp_path):
+    """The exact scenario from the audit finding: JSON payload doctored to
+    `{"generation_id": null}`, paired with a .safetensors that legitimately
+    has no "cache_generation_id" metadata key at all -- so `.get()` returns
+    None on both sides. Before format validation, `None != None -> False`
+    made this compare as a MATCH and return a HIT built from unverified
+    data. It must now be an unambiguous MISS."""
+    save_conditioning(FINGERPRINT_A, _cond_variant_a(), tmp_path)
+    json_path = tmp_path / "{}.json".format(FINGERPRINT_A)
+    safetensors_path = tmp_path / "{}.safetensors".format(FINGERPRINT_A)
+
+    payload = json.loads(json_path.read_bytes())
+    payload["generation_id"] = None
+    json_path.write_bytes(json.dumps(payload).encode("utf-8"))
+    _rewrite_safetensors_metadata(safetensors_path, None)
+
+    assert load_conditioning(FINGERPRINT_A, tmp_path) is None
+    assert inspect_conditioning_pair(FINGERPRINT_A, tmp_path) == (
+        False, "invalid_json_envelope",
     )
 
 
