@@ -3,6 +3,18 @@ LIVE ComfyUI server (python main.py, so aimdo / DynamicVRAM is actually
 active -- see CLAUDE.md phase 24), monitored by an EXTERNAL watchdog thread
 in this orchestrator process.
 
+Scope: this script proves only (a) both cached nodes register in a real
+server and (b) a real cache MISS runs end to end -- a genuine [CACHE MISS]
+line, a real Qwen3-VL encode, and a written cache entry. It deliberately
+does NOT try to prove the proxy HIT path. Resubmitting a byte-identical
+graph in the SAME server session is short-circuited by ComfyUI's own
+execution cache ("Prompt executed in 0.00 seconds") before our node ever
+re-runs, so a "[CACHE HIT]" seen that way would say nothing about our
+CachedClipProxy. The real HIT proof is
+scripts/test_ref2video_server_hit.py: it starts a FRESH server (empty
+execution cache) and submits the graph this MISS run wrote an entry for,
+reading back the fingerprint recorded here via /tmp/r7_last_fingerprint.txt.
+
 Flow:
   1. Launch `python main.py` (same interpreter as this orchestrator, so the
      already-activated comfyenv carries over) as a subprocess, log to
@@ -12,17 +24,16 @@ Flow:
      module + any traceback, and GET /object_info/<node_id> for each.
   3. External watchdog thread: every 2s log server RSS + RAM %; if RAM > 70%
      SIGTERM the server and stop.
-  4. Iteration 1 -- submit a minimal Ref2VA graph
+  4. Submit a minimal Ref2VA graph
      (EmptyImage -> MiniMaxH3CLIPCachedRef2VA -> PreviewAny) with one
      ref_image_0, cache_mode="auto". This is a guaranteed cache MISS: expect
      a real Qwen3-VL encode (~20s+, maybe more with the second VAE loaded)
-     and a [CACHE MISS] line in the server log.
-  5. Iteration 2 -- submit the byte-identical graph again. Expect [CACHE HIT]
-     and a near-zero execution time (the ~27 GB encoder is never loaded).
-  6. Stop the server cleanly: SIGINT, escalating SIGINT -> SIGTERM -> SIGKILL
+     and a [CACHE MISS] line in the server log. Record the observed
+     fingerprint to /tmp/r7_last_fingerprint.txt for the HIT-path follow-up.
+  5. Stop the server cleanly: SIGINT, escalating SIGINT -> SIGTERM -> SIGKILL
      on a grace timer so a slow graceful shutdown never hangs the run.
-  7. Print: startup-log fragment (both nodes), the [CACHE MISS] fragment +
-     timing, the [CACHE HIT] fragment + timing, and final nvidia-smi.
+  6. Print: startup-log fragment (both nodes), the [CACHE MISS] fragment +
+     timing, and final nvidia-smi.
 
 Run with the comfyenv conda environment from anywhere, under a hard timeout:
     timeout 1200 conda run -n comfyenv --no-capture-output python -u \
@@ -346,11 +357,15 @@ def main():
         if not nodes_ok:
             raise RuntimeError("one or both cached nodes did NOT register -- see startup log above")
 
-        for label, iteration in (("MISS", 1), ("HIT", 2)):
-            if watchdog.triggered:
-                stopped_by_watchdog = True
-                break
-            print("\n=== Iteration {} (expect {}) ===".format(iteration, label), flush=True)
+        # A SINGLE submission -- the guaranteed cache MISS. A second identical
+        # submission in this same session would be intercepted by ComfyUI's own
+        # execution cache before our node re-runs, so it cannot demonstrate a
+        # proxy HIT; that is what scripts/test_ref2video_server_hit.py does,
+        # from a fresh server, using the fingerprint recorded below.
+        if watchdog.triggered:
+            stopped_by_watchdog = True
+        else:
+            print("\n=== Submitting Ref2VA graph (expect a real cache MISS) ===", flush=True)
             cache_before, _ = server_log_cache_lines()
             t0 = time.time()
             prompt_id = submit_prompt()
@@ -360,13 +375,13 @@ def main():
             print("  status={} round-trip {:.1f}s".format(status_str, dt), flush=True)
             if status_str != "success":
                 print(json.dumps(entry, indent=2)[:3000] if entry else "(no history entry)", flush=True)
-                raise RuntimeError("iteration {} did not succeed (status={})".format(iteration, status_str))
+                raise RuntimeError("MISS submission did not succeed (status={})".format(status_str))
 
             cache_after, executed = server_log_cache_lines()
             new_cache = cache_after[len(cache_before):]
             server_rss_kb = _read_proc_field_kb("/proc/{}/status".format(server_pid), "VmRSS")
             mem_available_kb = _read_proc_field_kb("/proc/meminfo", "MemAvailable")
-            results[label] = {
+            results["MISS"] = {
                 "round_trip_s": dt,
                 "new_cache_lines": new_cache,
                 "last_executed_line": executed[-1] if executed else None,
@@ -399,12 +414,11 @@ def main():
     print("  /object_info: " + ", ".join(
         "{}={}".format(nid, "OK" if results.get("nodes_registered") else "?") for nid in OUR_NODE_IDS))
 
-    for label in ("MISS", "HIT"):
-        d = results.get(label)
-        print("\n--- iteration: expected {} ---".format(label))
-        if not d:
-            print("  (not reached)")
-            continue
+    d = results.get("MISS")
+    print("\n--- MISS submission ---")
+    if not d:
+        print("  (not reached)")
+    else:
         print("  round-trip:        {:.1f}s".format(d["round_trip_s"]))
         print("  [CACHE ...] lines: {}".format(d["new_cache_lines"] or "(NONE)"))
         print("  server exec line:  {}".format(d["last_executed_line"]))
@@ -416,7 +430,6 @@ def main():
 
     # verdict
     miss = results.get("MISS", {})
-    hit = results.get("HIT", {})
     miss_ok = any("[CACHE MISS]" in ln for ln in miss.get("new_cache_lines", []))
 
     # Hand the fingerprint this run actually observed to the HIT-path follow-up
@@ -432,13 +445,14 @@ def main():
         print("=== Wrote observed fingerprint {} to {} for the HIT-path "
               "follow-up script ===".format(miss_fp, FINGERPRINT_HANDOFF_PATH), flush=True)
 
-    hit_ok = any("[CACHE HIT]" in ln for ln in hit.get("new_cache_lines", []))
-    ok = results.get("nodes_registered") and miss_ok and hit_ok
+    ok = results.get("nodes_registered") and miss_ok
     if stopped_by_watchdog:
         ok = False
         print("\n!!! run aborted by RAM watchdog: {} !!!".format(watchdog.reason if watchdog else "?"))
     print("\n=== VERDICT: {} ===".format(
-        "PASS (both nodes registered, MISS then HIT observed)" if ok else "FAIL / INCOMPLETE"))
+        "PASS (both nodes registered, real cache MISS observed; run "
+        "test_ref2video_server_hit.py next for the HIT path)"
+        if ok else "FAIL / INCOMPLETE"))
     sys.exit(0 if ok else 1)
 
 
