@@ -1,103 +1,92 @@
 # HANDOFF
 
-## Stan na: 2026-09-01 / branch master / commit c88e315
+## Stan na: 2026-09-01 / branch master / commit 94130b0
 
-## Ostatnio zrobione (sesja porządkowa — 3 niezależne zadania)
+## Ostatnio zrobione (store.py hardening przed v0.1.0 — z ZLECENIA, audyt Grok+Codex)
 
-### 1. Log INFO przy generate_upscale_cond=False (commit 7bce233)
-- `execute()` obu klas DualRes: tuż przed `return (cond, latent, None,
-  None)` dodane:
-  ```
-  logger.info(
-      "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
-      "positive_upscale/latent_upscale not computed", fp1[:12],
-  )
-  ```
-  Format zgodny z realną konwencją pliku (bracket-tag + `%s: ` opis +
-  `- ` konsekwencja, jak `[CACHE HIT]` / `[VERBOSE PAIRING FAILED]` w
-  proxy.py/nodes.py). Tekst loga NIE zmieniony względem propozycji
-  ZLECENIA.
-- `git diff nodes.py` = tylko te dwa bloki logu (4 linie każdy), nic
-  więcej.
-- Nowe testy caplog (po 1 w każdym pliku dual):
-  `test_dual_generate_upscale_cond_false_logs_one_info_line` — przy
-  `False` dokładnie jeden rekord INFO z tagiem `[UPSCALE COND SKIPPED]`
-  zawierający pierwsze 12 znaków fingerprintu bazowego (czytane z
-  zapisanego sidecara `*.verbose.json`); przy `True` (default) tego
-  rekordu NIE ma.
+Dwa niezależnie zweryfikowane znaleziska audytu, referencja master@83629c7.
+Trzy commity:
 
-### 2. README.md — tekst, bez screenshotów (commit 7782e31)
-- Sekcja Installation: "Two new nodes" -> "Five new nodes" + lista 5
-  node'ów z linkami do nowych sekcji.
-- Nowa sekcja `## The CLIP Name node` — jeden widget (ten sam dropdown
-  `models/text_encoders`), jedno wyjście, do podpięcia w wielu FL2VA/
-  Ref2VA/DualRes przez "Convert widget to Input"; wzmianka że output
-  dopasowuje się do dowolnej listy plików encodera bez restartu (bez
-  wchodzenia w `_ComboType`).
-- Nowa sekcja `## Dual Resolution variants` — tabelka wejść
-  (`width_upscale`/`height_upscale`, `generate_upscale_cond`),
-  wyjaśnienie że to feature spójności a NIE optymalizacja (fingerprint i
-  tak dedupuje gdy piksele wychodzą identyczne), podsekcja
-  `### generate_upscale_cond` z wyraźnym akapitem że bypass downstream
-  konsumenta NIE pomija drugiego encode (atomowe wywołanie, 4 wyjścia
-  naraz), wzmianka o logu `[UPSCALE COND SKIPPED]`.
-- `## Cache Manager` — nowy akapit "Dual-resolution pairing": składanie
-  dwóch wpisów w jeden wiersz (bazowy) z plakietką "+ rescaled to WxH",
-  Delete NIE kaskaduje.
-- Istniejące sekcje FL2VA/Ref2VA/How the cache works — nietknięte.
+### 1. `_SAFETENSOR_READ_ERRORS` zawężone (commit 3b7e95e)
+- Przed: `(SafetensorError, OSError, RuntimeError)`. `RuntimeError` był
+  niezweryfikowany — test `test_d_load_file_runtimeerror_is_a_clean_miss`
+  explicite asercjował, że dowolny `RuntimeError` z `load_file()` staje
+  się cichym MISS-em.
+- Zbadano empirycznie (skrypt diagnostyczny w scratchpadzie, NIE
+  scommitowany — jednorazowy probe, nie test regresyjny): 13 scenariuszy
+  korupcji `.safetensors` (pusty plik, obcięcie na każdym etapie nagłówka,
+  absurdalny prefiks długości nagłówka, niepoprawny JSON w nagłówku,
+  nieznany dtype, niezgodność shape/data_offsets, ujemny wymiar shape,
+  odwrócone data_offsets, brakujące pole dtype, bit-flip w danych tensora,
+  brakujący plik, katalog zamiast pliku) — zawsze `SafetensorError` albo
+  `OSError`, nigdy `RuntimeError`. Inspekcja źródeł zainstalowanego
+  `safetensors/torch.py` (0.8.0) potwierdza: `load_file()` to cienki
+  wrapper `safe_open(...).get_tensors()`; jedyne trzy miejsca rzucające
+  `RuntimeError` w tym module są w `load_model()`/`save_file()` (ścieżki
+  nieużywane przez nasz kod odczytu).
+- `_SAFETENSOR_READ_ERRORS = (SafetensorError, OSError)` + obszerny
+  komentarz WHY przy stałej (`store.py:54-77`).
+- Stary test zastąpiony (nie tylko dopisany obok):
+  `test_d_load_file_safetensorerror_is_a_clean_miss` (potwierdzona
+  korupcja nadal MISS-em) + 3 nowe testy że NIEPOWIĄZANY `RuntimeError`
+  PROPAGUJE się (nie staje MISS-em) z trzech miejsc dzielących tę stałą:
+  `load_file()`, `safe_open()` w `load_conditioning()`, `safe_open()` w
+  `inspect_conditioning_pair()`.
 
-### 3. TODO.md — nowy plik w korzeniu repo (commit c88e315)
-Backlog świadomie odłożonych wątków (żeby nie zniknęły z pamięci
-projektu). 6 pozycji:
-- decoupling `scripts/test_proxy_gate.py` (rola gate vs. moduł fixtur —
-  4 importerzy: test_stock_vs_cache, test_ref2video_equivalence,
-  test_clip_unload_isolation, test_vae_memory_isolation) — z ZLECENIA.
-- 2 edge case'y UI pairing (search chowa base a pokazuje upscale ->
-  pusty render; wpis `inconsistent` jako base pary -> brak plakietki
-  rescale) — z ZLECENIA, zweryfikowane w web/main.js
-  (`renderList`/`buildInconsistentRow`, commit 576b0c4).
-- opcjonalny explicit paired-delete — z ZLECENIA.
-- dynamiczne sloty referencji Ref2VA zamiast stałych 9/3/3/3 — z
-  ZLECENIA (zweryfikowane: stock używa `io.Autogrow.Input` +
-  `minimax_ref_items=`).
-- **[dodane przeze mnie, nie z ZLECENIA]** `cache_mode="cache_only"` —
-  wspomniane jako planned w README "Limitations", niezaimplementowane.
-- **[dodane przeze mnie, nie z ZLECENIA]** śledzenie nazw plików
-  referencji przez dedykowane wrappery loaderów — wskaźnik do pełnego
-  uzasadnienia w sekcji "Rozważone i ODŁOŻONE" CLAUDE.md.
+### 2. Walidacja formatu `generation_id` przed porównaniem (commit b36c1bb)
+- Przed: `load_conditioning()` (~linia 249) i `inspect_conditioning_pair()`
+  (~linia 175) sprawdzały tylko obecność klucza `"generation_id" in
+  payload`, potem porównywały `!=` wprost. Spreparowany JSON
+  `{"generation_id": null}` + `.safetensors` bez klucza
+  `cache_generation_id` w metadata (więc `.get()` też zwraca `None`)
+  przechodziły jako dopasowanie (`None != None -> False`).
+- Dodano `_is_valid_generation_id()`: wymaga niepustego stringa
+  pasującego do `^[0-9a-f]{32}$` (dokładny kształt `uuid.uuid4().hex`).
+  Obie strony (JSON i metadata safetensors) walidowane PRZED
+  porównaniem, w obu funkcjach. Niepoprawna wartość (None, brak pola,
+  pusty string, nie-string, zły format/case/długość/myślniki) -> jawny
+  MISS z konkretnym logiem w `load_conditioning()`, `"invalid_json_envelope"`
+  (strona JSON) lub `"generation_mismatch"` (strona safetensors) w
+  `inspect_conditioning_pair()` — reużyte istniejące kody powodów, ŻADNYCH
+  zmian w Cache Managerze/web/main.js w tym zadaniu (poza kolateralną
+  poprawką testu, patrz niżej).
+- ~15 nowych testów parametryzowanych (`store.py:54` docstring) w
+  `test_store.py`: None/None (dokładny scenariusz z audytu), brak pola,
+  pusty string, nie-string (int/list), malformed-niepusty, non-hex chars,
+  za krótki, uppercase, prawdziwy uuid4 z myślnikami — dla obu funkcji,
+  po obu stronach (JSON i safetensors metadata).
+
+### 3. Kolateralna poprawka testu (commit 94130b0)
+- `tests/test_scanner.py::test_i_generation_mismatch_is_reported_as_inconsistent`
+  używał `"torn-refresh-generation"` (niepoprawny format) do
+  przetestowania ścieżki `generation_mismatch` przez `scan_cache()` ->
+  `inspect_conditioning_pair()`. Po zmianie #2 ta wartość jest łapana
+  wcześniej jako `invalid_json_envelope`. Podmieniono na
+  poprawny-formatowo-ale-inny uuid4 hex (ten sam wzorzec co analogiczna
+  poprawka w `test_store.py`). Jedyny plik poza `store.py`/
+  `tests/test_store.py` dotknięty w tej sesji — konieczna konsekwencja
+  zmiany #2, nie scope creep.
 
 ## Ustalenia istotne dla Chat
-- Finalny tekst loga (obie klasy DualRes, nodes.py, tuż przed early
-  return przy `generate_upscale_cond=False`): tag `[UPSCALE COND
-  SKIPPED]`, poziom INFO, format `"[UPSCALE COND SKIPPED] %s:
-  generate_upscale_cond=False - positive_upscale/latent_upscale not
-  computed"` z argumentem `fp1[:12]`. Bez zmian względem propozycji
-  ZLECENIA.
-- Log NIE wchodzi do fingerprintu ani HIT/MISS — czysto informacyjny,
-  spójny z zasadą projektu "jasno wypisuj którą ścieżką poszło
-  wykonanie".
-- `python -m py_compile nodes.py` — OK.
-- Pełny pytest: **311 passed, 0 skipped, 0 failed** (przed sesją
-  porządkową: 309). Nowe: 2 testy caplog.
-- Output sesji: scratchpad `session_cleanup_result.txt`.
-- Commity tej sesji: 72f8c9c (generate_upscale_cond — poprzednie
-  ZLECENIE), 7bce233 (log), 7782e31 (README), c88e315 (TODO.md).
+- `python -m py_compile` na wszystkich zmienionych plikach — OK.
+- `git diff --check` — czysty, po każdym z 3 commitów.
+- Pełny pytest: **349 passed, 0 skipped, 0 failed** (przed sesją: 348,
+  jeden test naprawiony zamiast dodany netto +1 zbiorczo licząc nowe
+  testy minus brak zmiany liczby plików testowych — patrz commity dla
+  dokładnych liczb per plik).
+- `git diff --stat` całej sesji (83629c7..HEAD): `minimaxh3_clipcache/store.py`
+  (+80/-2), `tests/test_scanner.py` (+8/-1), `tests/test_store.py`
+  (+197/-4) — dokładnie w zakresie store.py + jego testy, plus jeden
+  wymuszony plik testowy.
+- Diagnostyczne skrypty probe (`probe_safetensors_errors.py`,
+  `probe_safetensors_errors2.py`) zostały w scratchpadzie sesji, NIE
+  scommitowane — jednorazowe narzędzie do zbadania faktycznych wyjątków
+  safetensors 0.8.0, nie część projektu.
+- Commity tej sesji: 3b7e95e (zawężenie wyjątków), b36c1bb (walidacja
+  generation_id), 94130b0 (poprawka test_scanner.py).
 
 ## Otwarte pytania
 - brak.
-- **Do sprawdzenia przez użytkownika w żywym ComfyUI** (CC nie może):
-  linia `[UPSCALE COND SKIPPED]` faktycznie w logu serwera przy
-  `generate_upscale_cond=False` + brak drugiego "Requested to load
-  MiniMaxH3TEModel_"; render checkboxa w obu node'ach DualRes; render
-  nowych sekcji README (Markdown na GitHub — kotwice `#the-clip-name-node`,
-  `#dual-resolution-variants`).
-- Wciąż zaległe (nie z tej sesji): screenshoty RAM/VRAM MISS vs HIT do
-  README (CLAUDE.md "R10 prep" / komentarz `<!-- TODO ... -->` w README) —
-  task dla użytkownika, wymaga nvitop przy żywej generacji.
 
 ## Sugestie (nie polecenia)
-- Rozważyć przeniesienie sekcji "No cache-only mode" z README
-  "Limitations" do jednego miejsca — teraz jest i w README, i w TODO.md
-  (świadoma duplikacja: README = user-facing limitation, TODO.md =
-  backlog dev). Jeśli kiedyś `cache_only` powstanie, usunąć obie wzmianki
-  razem.
+- brak nowych w tej sesji.
