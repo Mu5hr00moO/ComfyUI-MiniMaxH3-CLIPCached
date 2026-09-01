@@ -1,92 +1,71 @@
 # HANDOFF
 
-## Stan na: 2026-09-01 / branch master / commit cdbde7e
+## Stan na: 2026-09-01 / branch master / commit 855f480
 
-## Ostatnio zrobione (Codex LOW #3 + #4 -- domknięcie luki w zamykaniu serwera dev-scriptów)
+## Ostatnio zrobione (weryfikacja README_WORKING.md względem kodu)
 
-Jeden commit kodu (`cdbde7e`), zakres: 4 skrypty orchestratora +
-`scripts/_live_server.py` + `tests/test_live_server_stop_pid_reuse.py`.
-Pełny suite: 398 passed (było 397). `py_compile` / `git diff --check` czyste.
+Zadanie kontrolne (ZLECENIE_DLA_CC): potwierdzenie, że treść
+`README_WORKING.md` (docelowy monolit README.md + docs/*.md, jeszcze
+niepublikowany -- czekamy na screeny) zgadza się z aktualnym stanem kodu.
+Bez zmian w kodzie. Pełny pytest: 398 passed (`testpaths = tests`,
+398 collected). ComfyUI runtime: `comfyui_version.__version__ == "0.34.2"`
+(pyproject "0.34.2", `git describe` = v0.34.2).
 
-### LOW #3 -- handler sygnału omijał eskalację/reap z `stop_live_server()`
-
-Cztery skrypty live-server (`test_ref2video_server_e2e.py`,
-`test_ref2video_server_hit.py`, `test_server_memory_trend_phase17.py`,
-`test_ref2video_memory_trend.py`) instalowały handler SIGINT/SIGTERM
-(`_forwarding_signal_handler` / `_sig`), który robił jeden best-effort
-SIGTERM do dziecka przez `forward_termination()` i natychmiast `os._exit(1)`.
-To pomijało eskalację SIGINT -> SIGTERM -> SIGKILL i `proc.wait()`-reap
-dodane w `0582ef8`: dziecko ignorujące ten jeden SIGTERM (albo tylko
-potrzebujące chwili) było porzucane jako sierota.
-
-- Nowy `install_shutdown_signal_handler()` w `scripts/_live_server.py`
-  kieruje oba sygnały w `OrchestratorShutdownSignal` -- podklasa
-  `BaseException` (jak `KeyboardInterrupt`, więc `except Exception` w środku
-  runu jej nie połknie). Handler NIE robi nic poza `raise` -- zero I/O, zero
-  wywołań subprocess, zero czekania.
-- Każdy `main()` łapie ten wyjątek w nowej klauzuli `except
-  OrchestratorShutdownSignal` (przed istniejącym `finally:`), zapisuje
-  `signum`, pozwala `finally:` wykonać tę samą `stop_live_server()` co
-  normalne zamknięcie, a potem `sys.exit(128 + signum)` przed sekcją
-  raportu. Jedna ścieżka zamknięcia, nie druga równoległa.
-- Usunięte: `_server_proc_for_cleanup` (moduł-level uchwyt istniejący
-  wyłącznie po to, żeby handler miał co złapać), `forward_termination()`
-  z `_live_server.py` (jedyny użytkownik to była ścieżka bare-exit), oraz
-  martwe po tej zmianie importy `os` (4 skrypty) i `signal` (tylko
-  `test_ref2video_server_hit.py` -- nie ma watchdoga).
-
-### LOW #4 -- resztkowy wyścig w `Popen.send_signal()`: udokumentowany, NIE naprawiany
-
-Zbadane; zgadzam się z rekomendacją Codex (dokumentować, nie wdrażać pidfd).
-Dopisane wprost w docstringu modułu `scripts/_live_server.py` obok
-odwołania do bpo-38630/40550:
-
-- CPython `Popen.send_signal()` po swoim `poll()`-guardzie i tak kończy
-  gołym `os.kill(self.pid, sig)` (ostatni akapit komentarza w subprocess.py
-  CPythona to wprost mówi). Jeśli dziecko zakończy się I OS zrecykluje jego
-  dokładny PID w sub-milisekundowym oknie między guardem a `os.kill()`,
-  sygnał trafi w nowego właściciela PID.
-- Dlaczego to zaakceptowane, nie naprawiane: każdy `waitpid` w tych
-  skryptach idzie przez metodę `Popen`, wszystkie serializowane na
-  `Popen._waitpid_lock` i wszystkie re-sprawdzające `returncode` pod nim,
-  więc jedyny aktor mogący w ogóle dojść do tego okna to równoległy
-  `poll()`/`wait()` ścigający się z jednym `send_signal()`. Linux alokuje
-  PID-y sekwencyjnie do `pid_max` (~4M), więc trafienie w ten sam numer w
-  oknie mikrosekundowym nie jest realnym zdarzeniem na maszynie
-  deweloperskiej. `os.pidfd_open` nie jest nawet wyeksponowane w
-  interpreterze tego projektu (Python 3.14 / comfyenv) -- naprawa
-  wymagałaby ominięcia `Popen.send_signal()` i własnego pidfd.
-  Guideline #34: brak spekulatywnej złożoności bez potwierdzonego
-  praktycznego wpływu.
+Wynik: wszystkie sprawdzane punkty ZGODNE z kodem. Szczegóły niżej.
 
 ## Ustalenia istotne dla Chat
 
-- `OrchestratorShutdownSignal(BaseException)` w `scripts/_live_server.py:48`,
-  `install_shutdown_signal_handler()` w `scripts/_live_server.py:65`.
-  Handler to `_raise_shutdown(signum, frame): raise
-  OrchestratorShutdownSignal(signum)` -- nic więcej.
-- Wzorzec w każdym `main()`: `shutdown_signum = None` przed `try`,
-  `except OrchestratorShutdownSignal as sig: shutdown_signum = sig.signum`
-  przed `finally`, `finally` woła `stop_live_server(...)` bez zmian, po
-  bloku `if shutdown_signum is not None: sys.exit(128 + shutdown_signum)`.
-- `forward_termination()` NIE ISTNIEJE już w `_live_server.py`. Eksporty
-  modułu: `OrchestratorShutdownSignal`, `install_shutdown_signal_handler`,
-  `stop_live_server`.
-- `stop_live_server()` (eskalacja + reap) bez zmian merytorycznych --
-  `scripts/_live_server.py:89`.
-- Watchdog (3 skrypty z nim) bez zmian: dalej `self.server_proc.send_signal(
-  signal.SIGTERM)` + flaga `triggered` + `stopped_by_watchdog` ->
-  `skip_sigint`. Ścieżka sygnału i ścieżka watchdoga schodzą się w tym
-  samym `finally`.
-- Testy: `tests/test_live_server_stop_pid_reuse.py` -- usunięte 3 testy
-  `forward_termination`; dodane: handler tylko rzuca (`os._exit`
-  zastubowany na fail), `OrchestratorShutdownSignal` jest BaseException-
-  nie-Exception, regresja `raise_signal()`-driven teardown eskaluje przez
-  zignorowany SIGTERM do SIGKILL i reapuje `FakePopen`. Statyczny guard
-  orchestratora zabrania teraz `os._exit(` / `forward_termination` /
-  `_server_proc_for_cleanup` i wymaga `install_shutdown_signal_handler()`
-  + `except OrchestratorShutdownSignal`; guard AST trzyma sam
-  `_live_server.py` wolny od `os._exit` / `os.kill`.
+- Display name wszystkich 5 zarejestrowanych node'ów -- `__init__.py:71-76`
+  (`NODE_DISPLAY_NAME_MAPPINGS`):
+  - `MiniMaxH3CLIPCachedFL2VA` -> "MiniMax H3 CLIP-Cached FL2VA"
+  - `MiniMaxH3CLIPCachedFL2VADualRes` -> "MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"
+  - `MiniMaxH3CLIPCachedRef2VA` -> "MiniMax H3 CLIP-Cached Ref2VA"
+  - `MiniMaxH3CLIPCachedRef2VADualRes` -> "MiniMax H3 CLIP-Cached Ref2VA (Dual Resolution)"
+  - `MiniMaxH3CLIPName` -> "MiniMax H3 CLIP Name"
+  Stare "MiniMax H3 CLIP-Cached Images to Video" NIE występuje nigdzie w kodzie.
+- Ref2VA jest w pełni cache'owane. `nodes.py:820` `_execute_ref2va_once()`
+  buduje `CachedClipProxy` przez `_build_cached_proxy()` (`nodes.py:836`)
+  i podstawia go do stockowego `MiniMaxH3ReferenceToVideo.execute()`
+  (`nodes.py:840`). `CachedClipProxy` (`proxy.py:55`) jest generyczny wobec
+  `tokenize(prompt, **kwargs)` -- ta sama ścieżka HIT/MISS/REFRESH co FL2VA.
+- Cache Manager jest w kodzie na master (backend + UI, scalone):
+  `minimaxh3_clipcache/routes.py` rejestruje 5 endpointów pod
+  `/h3_cache_manager` na `PromptServer.instance.routes`; import w
+  `__init__.py:58` (best-effort). Frontend: `WEB_DIRECTORY = "./web"`
+  (`__init__.py:80`), `web/main.js` (~59 KB), `web/styles.css`.
+- Dual Resolution: oba warianty zaimplementowane -- `MiniMaxH3CLIPCachedFL2VADualRes`
+  (`nodes.py:587`) i `MiniMaxH3CLIPCachedRef2VADualRes` (`nodes.py:941`).
+  Oba: `RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")`
+  (`nodes.py:669`, `nodes.py:1027`), input `generate_upscale_cond` BOOLEAN
+  default `True` (`nodes.py:651`, `nodes.py:987`), plus `width_upscale` /
+  `height_upscale`.
+- Testy: pytest 398 passed / 398 collected. Draft ("398 passed") aktualny;
+  "45 testów" z żywego README nieaktualne. Skrypty w `scripts/` to osobne
+  diagnostyki real-model, NIE wchodzą do `pytest` (`pytest.ini`:
+  `testpaths = tests`).
+- Wersja ComfyUI: 0.34.2 (nie 0.34.0). README_WORKING linia 102 zgodne.
+- Ścieżki plików referencjonowane w dokumentacji -- wszystkie istnieją:
+  `minimaxh3_clipcache/proxy.py`, `minimaxh3_clipcache/fingerprint.py`,
+  `scripts/test_stock_vs_cache.py`, `scripts/test_ref2video_equivalence.py`,
+  `scripts/test_clip_unload_isolation.py`, `scripts/test_vae_memory_isolation.py`.
+  Także `minimaxh3_clipcache/encoder_abi.py`, `serialize.py`, `store.py`.
+- Kategoria UI: wszystkie 5 node'ów mają
+  `CATEGORY = "model/conditioning/minimax/cached"` (`nodes.py:565,671,903,1029,1117`).
+- `cache_mode`: tylko `["auto", "refresh"]`, default `"auto"` -- w 4 node'ach
+  wykonawczych (`nodes.py:553,658,878,994`). `CLIPName` nie ma `cache_mode`.
+  Brak trzeciej wartości. Wewnętrzne `force_refresh` wymuszane też gdy ABI
+  encodera niedostępne (`nodes.py:359`) -- to jest opisane w README_WORKING
+  (sekcja "Encoder ABI"). `cache_only` nieistniejące (README: "planned, not
+  implemented").
+- Ścieżka cache: `CACHE_DIR = os.path.join(REPO_ROOT, "cache")`,
+  `REPO_ROOT = os.path.dirname(os.path.abspath(__file__))` w `nodes.py:38-39`
+  (nodes.py w korzeniu repo). `routes.py:52` liczy tę samą ścieżkę
+  (dirname o poziom wyżej z `minimaxh3_clipcache/`). Efektywnie:
+  `ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache`. Zgodne.
+- `CACHE_SCHEMA_VERSION = 2` (`fingerprint.py:20`). Zgodne z opisem "schema v2".
+- Pliki `docs/*.md` (NODE_GUIDE, CACHE_MANAGER, PERFORMANCE, TECHNICAL_DETAILS,
+  TESTING_AND_LIMITATIONS) jeszcze NIE istnieją jako osobne pliki -- treść jest
+  w monolicie `README_WORKING.md`. Oczekiwane przed splitem, nie rozbieżność.
 
 ## Otwarte pytania
 
