@@ -568,11 +568,14 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
 
     It runs the full, unmodified cached encode path (_execute_fl2va_once)
     once per resolution and lets the existing fingerprint/proxy decide HIT vs
-    MISS each time -- there is no width/height-conditional logic here. When
-    the encoder input is resolution-independent (no keyframes, or keyframes
-    that resize identically) the second call is a natural cache HIT and the
-    real encoder loads at most once; when keyframes make the pixels differ,
-    both resolutions encode for real, exactly as two separate nodes would.
+    MISS each time -- there is no width/height-conditional logic here. Under
+    ``cache_mode="auto"``, when the encoder input is resolution-independent
+    (no keyframes, or keyframes that resize identically) the second call is a
+    natural cache HIT and the real encoder loads at most once; when keyframes
+    make the pixels differ, both resolutions encode for real, exactly as two
+    separate nodes would. ``cache_mode="refresh"`` skips the HIT path on both
+    passes: each resolution re-encodes regardless of whether the fingerprints
+    match, so the encoder always loads twice.
 
     The optional ``generate_upscale_cond`` bool (default True) gates the
     upscale-resolution encode. When it is False the second
@@ -601,12 +604,14 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "width_upscale": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                                     "tooltip": "Encoded through the same fully independent cached path as "
-                                               "width -- a cache HIT if the encoder input ends up "
-                                               "identical, a real encode otherwise."}),
+                                               "width -- with cache_mode auto a cache HIT when the encoder input ends up"
+                                               " identical, otherwise a real encode; "
+                                               "cache_mode refresh always re-encodes."}),
                 "height_upscale": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                                      "tooltip": "Encoded through the same fully independent cached path as "
-                                                "height -- a cache HIT if the encoder input ends up "
-                                                "identical, a real encode otherwise."}),
+                                                "height -- with cache_mode auto a cache HIT when the encoder input ends up"
+                                                " identical, otherwise a real encode; "
+                                                "cache_mode refresh always re-encodes."}),
                 "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid "
                                                "(124 = ~5s; trained range is ~124-362, longer is untested)"}),
@@ -916,12 +921,15 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
 
     It runs the full, unmodified cached encode path (_execute_ref2va_once)
     once per resolution and lets the existing fingerprint/proxy decide HIT vs
-    MISS each time -- there is no width/height-conditional logic here. With
-    no references, small references, or ref_image_size="max" the encoder
-    input is resolution-independent and the second call is a natural cache
-    HIT (the real encoder loads at most once); with large references under
-    ref_image_size="match" the pixels handed to the encoder differ by
-    resolution and both encode for real, exactly as two separate nodes would.
+    MISS each time -- there is no width/height-conditional logic here. Under
+    ``cache_mode="auto"``, with no references, small references, or
+    ref_image_size="max" the encoder input is resolution-independent and the
+    second call is a natural cache HIT (the real encoder loads at most once);
+    with large references under ref_image_size="match" the pixels handed to
+    the encoder differ by resolution and both encode for real, exactly as two
+    separate nodes would. ``cache_mode="refresh"`` skips the HIT path on both
+    passes: each resolution re-encodes regardless of whether the fingerprints
+    match, so the encoder always loads twice.
 
     The optional ``generate_upscale_cond`` bool (default True) gates the
     upscale-resolution encode. When it is False the second
@@ -970,12 +978,14 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "width_upscale": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                                     "tooltip": "Encoded through the same fully independent cached path as "
-                                               "width -- a cache HIT if the encoder input ends up "
-                                               "identical, a real encode otherwise."}),
+                                               "width -- with cache_mode auto a cache HIT when the encoder input ends up"
+                                               " identical, otherwise a real encode; "
+                                               "cache_mode refresh always re-encodes."}),
                 "height_upscale": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                                      "tooltip": "Encoded through the same fully independent cached path as "
-                                                "height -- a cache HIT if the encoder input ends up "
-                                                "identical, a real encode otherwise."}),
+                                                "height -- with cache_mode auto a cache HIT when the encoder input ends up"
+                                                " identical, otherwise a real encode; "
+                                                "cache_mode refresh always re-encodes."}),
                 "length": ("INT", {"default": 124, "min": 5, "max": 3600, "step": 17,
                                     "tooltip": "Frame count at 24 fps, (124 = ~5s, trained range is ~124-362)"}),
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),

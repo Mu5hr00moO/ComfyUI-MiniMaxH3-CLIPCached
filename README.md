@@ -276,7 +276,7 @@ pairs.
 
 | Input | Type | Notes |
 |---|---|---|
-| `width_upscale` / `height_upscale` | int | The second target resolution. Same defaults and range as `width` / `height`. Encoded through the same cached path — a hit if the encoder input ends up identical, a real encode otherwise. |
+| `width_upscale` / `height_upscale` | int | The second target resolution. Same defaults and range as `width` / `height`. Encoded through the same cached path — with `cache_mode="auto"`, a hit if the encoder input ends up identical and a real encode otherwise; `cache_mode="refresh"` always re-encodes. |
 | `generate_upscale_cond` | bool (default on) | When off, the second encode is skipped entirely and `positive_upscale` / `latent_upscale` come back as `None`. See below. |
 
 Every other input — `prompt`, `clip_name`, `vae` (and `audio_vae`),
@@ -290,15 +290,20 @@ itself.** Two separate cached nodes, one per resolution, already share a
 cache entry automatically whenever the pixels reaching the encoder come out
 identical regardless of resolution — a plain prompt with no keyframes,
 small reference images, or `ref_image_size="max"`; the fingerprint
-mechanism deduplicates that case on its own, so the second resolution is a
-plain cache hit and the encoder still loads at most once. What two separate
-nodes cannot guarantee is that their shared inputs stay in lockstep: edit
-the prompt on one and forget the other and the two resolutions silently
-diverge. The Dual Resolution node removes that failure mode by
-construction — one prompt widget, one keyframe pair, one checkpoint. When a
-keyframe or a large reference image genuinely makes the encoder input
-differ by resolution, both passes encode for real and produce two distinct
-cache entries, exactly as two separate nodes would.
+mechanism deduplicates that case on its own, so with `cache_mode="auto"`
+the second resolution is a plain cache hit and the encoder still loads at
+most once. What two separate nodes cannot guarantee is that their shared
+inputs stay in lockstep: edit the prompt on one and forget the other and
+the two resolutions silently diverge. The Dual Resolution node removes that
+failure mode by construction — one prompt widget, one keyframe pair, one
+checkpoint. When a keyframe or a large reference image genuinely makes the
+encoder input differ by resolution, both passes encode for real and produce
+two distinct cache entries, exactly as two separate nodes would.
+
+The at-most-once encoder load is specific to `cache_mode="auto"`.
+`cache_mode="refresh"` deliberately re-encodes **both** resolutions in full
+on every run — whether or not their fingerprints match — so it always loads
+the encoder twice and overwrites both cache entries.
 
 ### `generate_upscale_cond`
 
