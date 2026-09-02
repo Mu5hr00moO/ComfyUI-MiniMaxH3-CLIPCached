@@ -164,7 +164,27 @@ def test_original_ref2va_still_delegates_a_single_encode(monkeypatch, tmp_path):
 
 def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     node_module = _load_node_module()
-    real_clip = FakeRealClip()
+
+    class ResolutionAwareClip(FakeRealClip):
+        """Test-local override of the encoder: the returned conditioning
+        carries the (width, height) it was asked to encode, recovered from
+        the reference item tensor's shape in the tokens. The module-level
+        FakeRealClip returns one constant value for every resolution, so a
+        swapped ``return (cond_upscale, latent, cond)`` in nodes.py would
+        slip past a bare ``cond2 is not None`` check. This subclass is
+        confined to this one test and does not touch the shared class."""
+
+        def encode_from_tokens_scheduled(self, tokens):
+            self.encode_calls += 1
+            _marker, _prompt, kwargs = tokens
+            data = kwargs["minimax_ref_items"][0]["data"]
+            height, width = int(data.shape[1]) * 16, int(data.shape[2]) * 16
+            main = torch.zeros(1, MINIMAX_H3_HIDDEN_DIM)
+            main[0, 0] = float(width)
+            main[0, 1] = float(height)
+            return [[main, {"pooled_output": None}]]
+
+    real_clip = ResolutionAwareClip()
     calls = []
 
     def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
@@ -188,7 +208,12 @@ def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     assert len(out) == 3
     cond, latent, cond2 = out
     assert latent == "latent_1344x768"
-    assert cond2 is not None
+    # cond (base) and cond2 (upscale) must be distinguishable AND each must
+    # carry its own resolution -- not merely non-None. This fails if the two
+    # CONDITIONING slots in the node's return tuple are swapped.
+    assert not torch.equal(cond[0][0], cond2[0][0])
+    assert (cond[0][0][0, 0].item(), cond[0][0][0, 1].item()) == (1344.0, 768.0)
+    assert (cond2[0][0][0, 0].item(), cond2[0][0][0, 1].item()) == (1920.0, 1088.0)
 
     assert len(calls) == 2
     assert (calls[0]["width"], calls[0]["height"]) == (1344, 768)
