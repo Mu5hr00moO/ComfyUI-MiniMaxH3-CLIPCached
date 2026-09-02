@@ -164,7 +164,27 @@ def test_original_ref2va_still_delegates_a_single_encode(monkeypatch, tmp_path):
 
 def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     node_module = _load_node_module()
-    real_clip = FakeRealClip()
+
+    class ResolutionAwareClip(FakeRealClip):
+        """Test-local override of the encoder: the returned conditioning
+        carries the (width, height) it was asked to encode, recovered from
+        the reference item tensor's shape in the tokens. The module-level
+        FakeRealClip returns one constant value for every resolution, so a
+        swapped ``return (cond_upscale, latent, cond)`` in nodes.py would
+        slip past a bare ``cond2 is not None`` check. This subclass is
+        confined to this one test and does not touch the shared class."""
+
+        def encode_from_tokens_scheduled(self, tokens):
+            self.encode_calls += 1
+            _marker, _prompt, kwargs = tokens
+            data = kwargs["minimax_ref_items"][0]["data"]
+            height, width = int(data.shape[1]) * 16, int(data.shape[2]) * 16
+            main = torch.zeros(1, MINIMAX_H3_HIDDEN_DIM)
+            main[0, 0] = float(width)
+            main[0, 1] = float(height)
+            return [[main, {"pooled_output": None}]]
+
+    real_clip = ResolutionAwareClip()
     calls = []
 
     def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
@@ -185,10 +205,15 @@ def test_dual_runs_both_resolutions_with_shared_inputs(monkeypatch, tmp_path):
     node = node_module.MiniMaxH3CLIPCachedRef2VADualRes()
     out = _execute(node, ref_image_0=img, ref_image_size="match")
 
-    assert len(out) == 4
-    cond, latent, cond2, latent2 = out
+    assert len(out) == 3
+    cond, latent, cond2 = out
     assert latent == "latent_1344x768"
-    assert latent2 == "latent_1920x1088"
+    # cond (base) and cond2 (upscale) must be distinguishable AND each must
+    # carry its own resolution -- not merely non-None. This fails if the two
+    # CONDITIONING slots in the node's return tuple are swapped.
+    assert not torch.equal(cond[0][0], cond2[0][0])
+    assert (cond[0][0][0, 0].item(), cond[0][0][0, 1].item()) == (1344.0, 768.0)
+    assert (cond2[0][0][0, 0].item(), cond2[0][0][0, 1].item()) == (1920.0, 1088.0)
 
     assert len(calls) == 2
     assert (calls[0]["width"], calls[0]["height"]) == (1344, 768)
@@ -344,8 +369,8 @@ def test_dual_generate_upscale_cond_false_skips_the_second_encode(monkeypatch, t
     """With generate_upscale_cond=False the upscale-resolution encode must
     not run at all: on a resolution-dependent input (a real reference under
     ref_image_size="match", which normally forces two real encodes) the real
-    encoder is loaded exactly once, and positive_upscale / latent_upscale
-    come back as None."""
+    encoder is loaded exactly once, and positive_upscale comes back as
+    None."""
     node_module = _load_node_module()
     real_clip = FakeRealClip()
 
@@ -363,10 +388,10 @@ def test_dual_generate_upscale_cond_false_skips_the_second_encode(monkeypatch, t
     out = _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
                    generate_upscale_cond=False)
 
-    assert len(out) == 4
-    cond, latent, cond_upscale, latent_upscale = out
+    assert len(out) == 3
+    cond, latent, cond_upscale = out
     assert latent == "latent_1344x768"
-    assert cond_upscale is None and latent_upscale is None
+    assert cond_upscale is None
     assert real_clip.encode_calls == 1
     assert unload_calls["count"] == 1
 
@@ -431,7 +456,7 @@ def test_dual_generate_upscale_cond_true_is_the_default(monkeypatch, tmp_path):
     out = _execute(node, ref_image_0=torch.zeros(1, 4, 4, 3), ref_image_size="match",
                    generate_upscale_cond=True)
 
-    assert out[2] is not None and out[3] is not None
+    assert out[2] is not None
     assert real_clip.encode_calls == 2
     assert pair_calls["count"] == 1
 
@@ -478,8 +503,8 @@ def test_dual_generate_upscale_cond_false_logs_one_info_line(monkeypatch, tmp_pa
 def test_dual_return_spec_and_category():
     node_module = _load_node_module()
     cls = node_module.MiniMaxH3CLIPCachedRef2VADualRes
-    assert cls.RETURN_TYPES == ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    assert cls.RETURN_NAMES == ("positive", "latent", "positive_upscale", "latent_upscale")
+    assert cls.RETURN_TYPES == ("CONDITIONING", "LATENT", "CONDITIONING")
+    assert cls.RETURN_NAMES == ("positive", "latent", "positive_upscale")
     assert cls.CATEGORY == "model/conditioning/minimax/cached"
     assert cls.FUNCTION == "execute"
 
