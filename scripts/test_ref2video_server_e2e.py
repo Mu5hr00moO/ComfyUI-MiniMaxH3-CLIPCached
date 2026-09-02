@@ -41,6 +41,7 @@ Run with the comfyenv conda environment from anywhere, under a hard timeout:
 """
 
 import json
+import os
 import re
 import signal
 import subprocess
@@ -58,7 +59,24 @@ from _live_server import (
     stop_live_server,
 )
 
-COMFYUI_ROOT = "/home/kamil/ComfyUI"
+# <ComfyUI>/custom_nodes/<this repo>/scripts/<this file> under a normal
+# install, so the ComfyUI root (the cwd `python main.py` is launched from
+# below) is four directories up from this file. Derived rather than
+# hard-coded so the script also runs from a fork checked out elsewhere;
+# COMFYUI_ROOT in the environment overrides it. Mirrors tests/conftest.py.
+#
+# os.path.abspath, not Path.resolve / os.path.realpath: a common install
+# keeps this repo outside custom_nodes/ and symlinks it in, so the
+# invocation path is <ComfyUI>/custom_nodes/<symlink>/scripts/<file>.
+# Walking that non-resolved path keeps every step inside the symlinked
+# layout and lands on the real ComfyUI root; resolving the symlink first
+# would climb four levels from the repo's true location and overshoot.
+# Do not "simplify" this back to Path.resolve().
+_here = os.path.abspath(__file__)
+COMFYUI_ROOT = os.environ.get(
+    "COMFYUI_ROOT",
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_here)))),
+)
 
 HOST = "127.0.0.1"
 PORT = 8188

@@ -18,7 +18,16 @@ import os
 import sys
 import time
 
-COMFYUI_ROOT = "/home/kamil/ComfyUI"
+# <ComfyUI>/custom_nodes/<this repo>/scripts/<this file> under a normal
+# install, so the ComfyUI root is four directories up from this file.
+# Derived rather than hard-coded so the gate also runs from a fork checked
+# out elsewhere; COMFYUI_ROOT in the environment overrides it. Mirrors
+# tests/conftest.py.
+_here = os.path.abspath(__file__)
+COMFYUI_ROOT = os.environ.get(
+    "COMFYUI_ROOT",
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_here)))),
+)
 sys.path.insert(0, COMFYUI_ROOT)
 os.chdir(COMFYUI_ROOT)  # folder_paths / nodes assume cwd == ComfyUI root
 

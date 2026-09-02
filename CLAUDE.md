@@ -14,8 +14,9 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
 
 ## Potwierdzone fakty o środowisku (nie zakładać nic ponad to bez ponownej weryfikacji)
 - ComfyUI lokalnie: v0.34.2 (aktualizowane w trakcie prac nad Ref2Video,
-  patrz notatka R1 o length), w /home/kamil/ComfyUI. Wersję sprawdzać przez
-  comfyui_version.py / pyproject.toml (oba: "0.34.2") oraz git describe.
+  patrz notatka R1 o length), w katalogu instalacji ComfyUI (ten repo to
+  jego custom_node). Wersję sprawdzać przez comfyui_version.py /
+  pyproject.toml (oba: "0.34.2") oraz git describe.
 - Wersja ComfyUI w RUNTIME: `from comfyui_version import __version__`
   (albo `import comfyui_version; comfyui_version.__version__`). To jest ten
   sam sposób, którego używa sam ComfyUI - server.py robi
@@ -26,7 +27,7 @@ minimax_keyframes). Nigdy nie kopiujemy ani nie reimplementujemy tej logiki.
   (sam string), bezpieczny do importu w node bez uruchamiania serwera.
 - UWAGA: użytkownik utrzymuje lokalne monkey-patche na czysty ComfyUI
   (git stash "MiniMax H3 local monkey patches before master update" w repo
-  ComfyUI /home/kamil/ComfyUI, NIE w tym repo). Łatki dotyczą: (a) widgetu
+  ComfyUI, NIE w tym repo). Łatki dotyczą: (a) widgetu
   length w nodes_minimax_h3.py (min=1/max=3600/step=1 zamiast stockowego
   min=5/max=3600/step=17, we wszystkich 3 node'ach: EmptyMiniMaxH3LatentAV,
   MiniMaxH3ImageToVideo, MiniMaxH3ReferenceToVideo), plus zabezpieczenia
@@ -192,8 +193,8 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
   (np. wynik `conda run -n comfyenv which python`).
 - Potwierdzone lokalnie (nie zgadywać): domyślna nieinteraktywna powłoka
   bash_tool w tej sesji CC ma CONDA_DEFAULT_ENV=base i `python` wskazujący
-  na /home/kamil/miniconda3/bin/python (base env, Python 3.14.6, BEZ
-  torch — `import torch` rzuca ModuleNotFoundError). ~/.bashrc ma tylko
+  na interpreter base env miniconda (Python 3.14.6, BEZ torch —
+  `import torch` rzuca ModuleNotFoundError). ~/.bashrc ma tylko
   standardowy blok `conda init`, bez żadnego `conda activate comfyenv`.
   Czyli samo "python main.py" bez `conda run -n comfyenv` w bash_tool
   NIE zadziała. Test end-to-end fazy 18 użył jawnie
@@ -206,7 +207,8 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
   roundtrip faza 12): RAM "available" nie wraca do stanu sprzed load po
   unload_model_and_clones - do zbadania jako PIERWSZY punkt fazy 24, nie
   incydentalnie.
-- tests/conftest.py dodaje /home/kamil/ComfyUI do sys.path, co pozwala
+- tests/conftest.py dodaje korzeń ComfyUI (COMFYUI_ROOT, domyślnie
+  wyliczany z układu katalogów) do sys.path, co pozwala
   importować comfy.nested_tensor (samodzielny moduł, tylko torch) w
   pytest BEZ uruchamiania ComfyUI czy ładowania modelu - wzorzec do
   ponownego użycia, jeśli inne moduły comfy.* okażą się podobnie lekkie.
@@ -233,8 +235,9 @@ test na 3 iteracjach wcześniej i na 10 teraz dają ten sam, płaski wynik.
   zajętość RAM/VRAM przed i po unload.
 - Żadnych `git add .` — jawnie staged pliki. Nie commitować: cache/,
   __pycache__/, plików tymczasowych.
-- Nie zgaduj API ComfyUI z pamięci/GitHuba — sprawdzaj lokalnie w tym repo
-  (/home/kamil/ComfyUI), bo lokalna wersja może się różnić.
+- Nie zgaduj API ComfyUI z pamięci/GitHuba — sprawdzaj lokalnie w repo
+  ComfyUI (katalog instalacji, ten repo to jego custom_node), bo lokalna
+  wersja może się różnić.
 - Na końcu KAŻDEJ fazy/kroku, przed przejściem do następnego: uruchom
   `git status --short`. Jeśli jest tam cokolwiek niescommitowane, co
   zostało już zweryfikowane (testy przeszły, działanie potwierdzone) -
@@ -351,7 +354,7 @@ odpalonym nvitop), nie coś do zautomatyzowania w kodzie/testach.
 
 ## Cache Manager (drugi wątek)
 
-Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
+Pełny opis w docs/CACHE_MANAGER.md. Kluczowy niezmiennik: cache jest
 source of truth, manager jest warstwą indeksującą, fingerprint = ID
 wpisu, prompt jest read-only w managerze.
 

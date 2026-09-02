@@ -6,8 +6,8 @@
 // Phase 6 part 3 (this file): "Copy prompt" puts a cached entry's prompt on
 // the clipboard (writing it into a graph widget was tried and dropped --
 // findNodesByType() does not descend into subgraphs, and a prompt converted
-// to an input has no widget to set; see CACHE_MANAGER_PLAN.md section 14),
-// still showing the image-reference notice; "Delete" removes a whole cache
+// to an input has no widget to set), still showing the image-reference
+// notice; "Delete" removes a whole cache
 // entry after a window.confirm().
 //
 // Structure follows the local convention in
@@ -1080,9 +1080,8 @@ async function saveDetail() {
 // Writing the prompt straight into a graph widget was tried and dropped:
 // app.graph.findNodesByType() does not descend into subgraphs, and a
 // "prompt" converted from a widget to an input has no widget to set. The
-// clipboard works regardless of graph structure. See CACHE_MANAGER_PLAN.md
-// section 14. Only classification="normal" reaches here (legacy has no
-// detail panel and no "Copy prompt" button).
+// clipboard works regardless of graph structure. Only classification="normal"
+// reaches here (legacy has no detail panel and no "Copy prompt" button).
 
 async function loadCopyResultThumbnail(imgEl, linkEl, dimsEl, fingerprint, index) {
   imgEl.onload = () => {
