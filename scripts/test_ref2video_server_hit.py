@@ -30,6 +30,7 @@ Run under a hard timeout:
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -44,7 +45,13 @@ from _live_server import (
     stop_live_server,
 )
 
-COMFYUI_ROOT = "/home/kamil/ComfyUI"
+# <ComfyUI>/custom_nodes/<this repo>/scripts/<this file> under a normal
+# install, so the ComfyUI root (the cwd `python main.py` is launched from
+# below) is four directories up from this file. Derived rather than
+# hard-coded so the script also runs from a fork checked out elsewhere;
+# COMFYUI_ROOT in the environment overrides it. Mirrors tests/conftest.py.
+COMFYUI_ROOT = os.environ.get(
+    "COMFYUI_ROOT", str(Path(__file__).resolve().parents[3]))
 HOST, PORT = "127.0.0.1", 8188
 BASE_URL = "http://{}:{}".format(HOST, PORT)
 
