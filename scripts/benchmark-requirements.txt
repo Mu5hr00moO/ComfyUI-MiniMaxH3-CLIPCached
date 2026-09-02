@@ -1,0 +1,13 @@
+# Extra dependency for scripts/benchmark_conditioning.py only.
+#
+# This is NOT a dependency of the ComfyUI-MiniMaxH3-CLIPCached node. The node
+# never queries NVML; only the manual benchmark does, to read device-wide VRAM
+# and enumerate compute processes. Keep it out of any node-level requirements.
+#
+# nvidia-ml-py ships the module under the import name `pynvml`. The benchmark
+# aborts with a clear RuntimeError if it is missing, so installing this file is
+# a hard prerequisite for running the benchmark.
+#
+# Install into the ComfyUI environment, e.g.:
+#     conda run -n comfyenv python -m pip install -r scripts/benchmark-requirements.txt
+nvidia-ml-py>=12
