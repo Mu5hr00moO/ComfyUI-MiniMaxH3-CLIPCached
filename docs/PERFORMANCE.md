@@ -11,7 +11,7 @@ rerun or discarded.
 
 The run was produced by [`scripts/benchmark_conditioning.py`](../scripts/benchmark_conditioning.py)
 with the benchmark-only dependencies listed in
-[`benchmark-requirements.txt`](../benchmark-requirements.txt). The numbers in
+[`benchmark-requirements.txt`](../scripts/benchmark-requirements.txt). The numbers in
 this document come from the final `conditioning_benchmark.json` report. The
 benchmark report format/schema v3 is separate from CLIPCached's **on-disk cache
 schema v2**.
