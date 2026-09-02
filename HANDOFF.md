@@ -1,89 +1,114 @@
 # HANDOFF
 
-## Stan na: 2026-09-02 / branch feature/dualres-drop-latent-upscale / commit 673cc7e
+## Stan na: 2026-09-02 / branch feature/benchmark-cold-encoder-eviction / commit 6c1893d
 
 ## Ostatnio zrobione
 
-Odpowiedź na automatyczny review greptile-apps na PR #3: wzmocnienie
-`test_dual_runs_both_resolutions_with_shared_inputs` w obu plikach testów
-dual. Wcześniej test sprawdzał tylko `cond2 is not None`, a wspólna
-`FakeRealClip.encode_from_tokens_scheduled()` zwraca jedną stałą wartość
-dla każdego wejścia, więc zamiana miejscami dwóch wyjść CONDITIONING w
-`return` któregokolwiek node'a DualRes przeszłaby niezauważona. Teraz ten
-jeden test w każdym pliku dostaje lokalną podklasę `FakeRealClip` z
-resolution-aware encode (zwracany conditioning niesie `(width, height)`
-odczytane z kształtu tensora obrazu / referencji w tokens); asercje
-wymagają, żeby `cond` i `cond2` były rozróżnialne i każdy odpowiadał
-swojej rozdzielczości. Wspólna klasa `FakeRealClip` (używana przez
-pozostałe testy) nietknięta.
+Redesign P1 dla `scripts/benchmark_conditioning.py`: encoder w ścieżkach
+Native i Cached MISS jest teraz aktywnie EWAKUOWANY z page cache tuż przed
+pomiarem, zamiast prewarmowany do pełnej rezydencji.
 
-Weryfikacja wzorcem regresyjnym: po tymczasowej zamianie
-`cond`/`cond_upscale` w `return` obu klas DualRes w `nodes.py`
-(`nodes.py:715`, `nodes.py:1095`) oba testy FAILują; po przywróceniu --
-PASS. Pełny pytest: 398 passed / 0 skip / 0 fail. `git diff` ograniczony
-do dwóch plików testowych, wyłącznie w obrębie tego jednego testu w
-każdym. `nodes.py` bez zmian.
+Poprzednio `_prewarm_file` robił mmap + touch wszystkich stron ~27 GB
+encodera i weryfikował mincore >= 99% -- chwilę przed tym, jak ComfyUI
+ładował ten sam plik do własnego procesu. Na maszynie 54 GB RAM to
+żądanie podwójnej rezydencji połowy pamięci; w smoke-teście Native był
+~6x wolniejszy (thrashing), a Cached MISS został ręcznie zabity w nvitop
+przy eksplozji RAM.
 
-- Commit 3 (673cc7e): `tests/test_node_fl2va_dual.py`,
-  `tests/test_node_ref2va_dual.py` -- wzmocnienie testu return-slot.
-- Commit 4: ten plik.
+Nowe podejście (`_evict_encoder_file`): `open(path)` ->
+`os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)` na całym pliku ->
+weryfikacja przez `mincore()`, że rezydencja spadła <= 1%
+(`ENCODER_EVICT_MAX_RESIDENCY_FRACTION`), z retry (5 prób, 0.2 s odstęp)
+gdyby kernel potrzebował chwili. Nieudana weryfikacja rzuca `RuntimeError`
+tym samym wzorcem co nieudany prewarm. Eviction NIGDY nie podnosi
+rezydencji ponad baseline.
 
----
+VAE dalej prewarmowany do warm we wszystkich ścieżkach. Cached HIT bez
+żadnej zmiany (encoder tam nigdy nie jest czytany; VAE + pliki wpisu
+cache prewarmowane jak dotąd). Czas eviction poza mierzonym wall-time
+dokładnie tak jak wcześniej czas prewarmu.
 
-Usunięcie wyjścia `latent_upscale` z obu node'ów Dual Resolution
-(`MiniMaxH3CLIPCachedFL2VADualRes`, `MiniMaxH3CLIPCachedRef2VADualRes`).
-Oba zwracają teraz trzy wyjścia -- `(positive, latent, positive_upscale)`
--- zamiast czterech. Przebieg upscale nadal wykonuje pełny cache'owany
-encode, ale jego AV latent był zawsze świeżym pustym tensorem w rozmiarze
-upscale, bez niczego przeniesionego z pierwszego przebiegu, więc realny
-workflow upscale i tak go nie używał (upscaluje odszumiony latent z
-pierwszego przebiegu zewnętrznym node'em). Zostaje tylko conditioning
-rozdzielczości upscale.
+Setup `mincore()` wyciągnięty do wspólnego helpera
+`_resident_pages_via_mincore` (prewarm i eviction weryfikują tak samo);
+metadane prewarmu VAE bajt-w-bajt bez zmian.
 
-Zmiana zbudowana na nowej gałęzi `feature/dualres-drop-latent-upscale`
-odbitej od `origin/master` (aa82610, po merge PR #2). Od teraz wszystkie
-zmiany idą przez PR, nie bezpośrednio na master.
+- Commit 1 (6c1893d): `scripts/benchmark_conditioning.py`.
+- Commit 2: ten plik.
 
-- Commit 1 (0389036): `nodes.py`, `tests/test_node_fl2va_dual.py`,
-  `tests/test_node_ref2va_dual.py`, `README.md` -- RETURN_TYPES /
-  RETURN_NAMES, docstringi klas, tooltipy `generate_upscale_cond`, linia
-  logu `[UPSCALE COND SKIPPED]`, sekcja README, testy dual.
-- Commit 2 (efe8ed6): ten plik.
+### Weryfikacja (BEZ ComfyUI, BEZ serwera, BEZ żadnego case'u benchmarku)
 
-Walidacja na gałęzi: `python -m py_compile nodes.py` OK; pełny pytest
-398 passed / 4 warnings (świeży przebieg); `grep -rn "latent_upscale"`
-po `nodes.py` + obu plikach testów dual + `README.md` -- pusty wynik.
+- `python -m py_compile scripts/benchmark_conditioning.py` -- OK.
+- Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
+  (`test_server_script_safety.py` -- ochrona reguły port-ownership
+  `benchmark_conditioning.py` dalej przechodzi; string
+  "refusing to adopt or stop it" nietknięty).
+- Izolowany probe `POSIX_FADV_DONTNEED` + `mincore()` na PRAWDZIWYM pliku
+  encodera (`qwen3vl_32b_minimax_h3_int8_convrot.safetensors`, 27 141 342 152 B,
+  6 626 305 stron 4 KiB, ext4 na /dev/sdc, 54 GB RAM):
+  - naturalna rezydencja przed: **0.000%** (0 stron) -- cache był zimny
+  - po odczycie prefiksu 512 MiB: **2.009%** (133 120 stron, ~0.51 GiB)
+  - `os.posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)`: 0.0027 s
+  - po fadvise: **0.000%** (0 stron)
+- Ten sam mechanizm przez FAKTYCZNY kod modułu (`_evict_encoder_file`,
+  `_measure_residency`): warm 256 MiB -> **0.989%** -> po fadvise ->
+  **0.000%** (0 stron), `verified=True` na 1. próbie. `_prewarm_file` na
+  małym pliku tmp: metadane VAE-path -- zestaw kluczy identyczny jak
+  przed zmianą.
+
+STOP zgodnie ze zleceniem po weryfikacji mechanizmu. Nie uruchamiano
+ComfyUI ani żadnego case'u benchmarku. Decyzja o live smoke-teście
+należy do następnej, osobnej wiadomości.
 
 ## Ustalenia istotne dla Chat
 
-- Oba node'y Dual Resolution:
-  `RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")`,
-  `RETURN_NAMES = ("positive", "latent", "positive_upscale")`
-  (`nodes.py:673-674`, `nodes.py:1038-1039` na tej gałęzi).
-- `generate_upscale_cond` BOOLEAN default `True` bez zmian
-  (`nodes.py:656`, `nodes.py:999`). Gdy `False`: `positive_upscale`
-  zwraca `None`, `_pair_verbose_entries()` pominięte, encoder ładowany
-  co najwyżej raz. Linia logu: `[UPSCALE COND SKIPPED] <fp>: ...
-  positive_upscale not computed`.
-- Gdy `generate_upscale_cond=True`: przebieg upscale nadal wywołuje
-  `_execute_fl2va_once()` / `_execute_ref2va_once()` w całości; tylko
-  zwracany AV latent jest odrzucany (`cond_upscale, _, fp2 = ...`).
-  Fingerprint / HIT-MISS / verbose pairing bez zmian.
-- Pełny pytest: 398 passed (`testpaths = tests`).
-- `test_dual_runs_both_resolutions_with_shared_inputs` (oba pliki dual)
-  po wzmocnieniu realnie chroni kolejność krotki `return` obu node'ów
-  DualRes: `cond` musi nieść `(1344, 768)`, `cond2` musi nieść
-  `(1920, 1088)`, i muszą być rozróżnialne. Marker rozdzielczości jest
-  wstrzykiwany tylko lokalnie w tym teście (podklasa `FakeRealClip`),
-  reszta testów dalej używa stałej wartości ze wspólnej klasy.
-- `.gitignore` ma niescommitowaną, niezwiązaną z tą sesją zmianę
-  (dopisany `README_WORKING.md`) -- czyjaś inna, niedokończona robota,
-  celowo nietknięta, NIE wchodzi w diff tej gałęzi.
+- Nowe stałe w `scripts/benchmark_conditioning.py:91-96`:
+  `ENCODER_EVICT_MAX_RESIDENCY_FRACTION = 0.01`,
+  `ENCODER_EVICT_VERIFY_ATTEMPTS = 5`,
+  `ENCODER_EVICT_RETRY_DELAY_SECONDS = 0.2`.
+- `_evict_encoder_file()` (`benchmark_conditioning.py:397`) -- eviction +
+  weryfikacja mincore; zwraca dict z `eviction_method`,
+  `filesystem_state: "forced_cold_read"`, `verify_attempts`, `verified`.
+- `_prewarm_files_for_run` przemianowane na
+  `_prepare_filesystem_cache_for_run` (`benchmark_conditioning.py:465`);
+  zwraca płaską listę -- najpierw wpisy eviction (encoder), potem prewarm
+  (VAE, pliki cache). Encoder w native/cached_miss idzie do eviction,
+  VAE zawsze do prewarm, HIT bez encodera.
+- Klucze w JSON raportu zmienione: `filesystem_prewarm` ->
+  `filesystem_cache_preparation`, `filesystem_prewarm_seconds` ->
+  `filesystem_cache_preparation_seconds`, `filesystem_prewarm_included` ->
+  `filesystem_cache_preparation_included`. Te pola były tylko zapisywane,
+  nigdzie nieczytane (grep potwierdzony) -- rerun/markdown/statistics ich
+  nie dotykają.
+- `schema_version` raportu NIE zmienione (dalej 2). Kształt kontraktu
+  rerun (15 runów / 5 case'ów / statistics) bez zmian; zmienił się tylko
+  audyt filesystem-cache w pojedynczym runie.
+- Czas eviction jest strukturalnie poza wall-time: prewarm/eviction
+  dzieje się w `_run_one` PRZED `_execute_until_fl2va_complete`, a
+  `started = time.perf_counter()` (start pomiaru) jest dopiero tuż przed
+  POST `/prompt`.
+- W tej sesji encoder file NIE był rezydentny w page cache na starcie
+  (`free -g` -> buff/cache ~0), fadvise DONTNEED sprowadza go do dokładnie
+  0 stron na tym ext4/WSL2.
 
 ## Otwarte pytania
 
-- brak
+- Czy `schema_version` raportu bumpnąć do 3? Argument za: `--rerun` na
+  starym raporcie v2 (prewarmed encoder) wymieszałby rekordy o różnej
+  semantyce cold/warm w jednym `markdown_summary`. `_load_rerun_report`
+  pilnuje tylko `schema_version == 2` i `server_environment`, nie
+  metodologii. Argument przeciw: małe ryzyko w praktyce (rerun i tak
+  regeneruje run od zera), a bump ma własny ripple. Zostawione do decyzji.
+- Osierocony fragment README z PR #4 (`git stash@{0}` w repo tego node'a,
+  "WIP: README benchmark_conditioning.py section") opisuje encoder jako
+  "explicitly prewarms ... verifies them with mincore" i "not a cold-disk
+  benchmark". Po tej zmianie to jest częściowo NIEAKTUALNE dla encodera
+  w native/miss. Fragment świadomie nietknięty (poza zakresem P1) -- do
+  poprawienia zanim trafi na master.
 
 ## Sugestie (nie polecenia)
 
-- brak
+- Przed live smoke-testem warto potwierdzić `free -g` / `nvidia-smi`
+  (GPU idle, brak innego serwera na 8188), bo eviction odsłania pełny
+  koszt zimnego odczytu 27 GB i pierwszy Native/MISS będzie wyraźnie
+  wolniejszy niż w poprzednich (prewarmowanych) przebiegach -- to
+  oczekiwane, nie regresja.
