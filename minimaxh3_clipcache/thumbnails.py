@@ -12,7 +12,7 @@ internal _resize step -- not from the post-resize image that actually
 reaches the encoder. Reconstructing the post-resize image would mean
 duplicating stock H3 preprocessing (CLAUDE.md forbids that), and a
 memory-jog thumbnail does not need to match the encoder input pixel for
-pixel. See CACHE_MANAGER_PLAN.md section 23.2 for the full reasoning.
+pixel.
 
 Writes are atomic (temp file + os.replace), the same pattern store.py and
 verbose_store.py use. _tmp_name() is copied here rather than imported: these

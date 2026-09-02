@@ -351,7 +351,7 @@ odpalonym nvitop), nie coś do zautomatyzowania w kodzie/testach.
 
 ## Cache Manager (drugi wątek)
 
-Pełny plan w CACHE_MANAGER_PLAN.md. Kluczowy niezmiennik: cache jest
+Pełny opis w docs/CACHE_MANAGER.md. Kluczowy niezmiennik: cache jest
 source of truth, manager jest warstwą indeksującą, fingerprint = ID
 wpisu, prompt jest read-only w managerze.
 
