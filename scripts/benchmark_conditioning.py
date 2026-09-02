@@ -23,7 +23,12 @@ video encoder in either workflow.
 Tensor equality is deliberately outside this performance benchmark.  The
 repository's stock-vs-cache correctness tests cover that concern separately.
 
-Run from this repository with its existing ComfyUI environment::
+Install the benchmark-only dependency first -- it is deliberately not in any
+node-level requirements::
+
+    conda run -n comfyenv python -m pip install -r scripts/benchmark-requirements.txt
+
+Then run from this repository with its existing ComfyUI environment::
 
     conda run -n comfyenv --no-capture-output python -u \
         scripts/benchmark_conditioning.py
