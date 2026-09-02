@@ -276,19 +276,25 @@ even if that folder gains or loses a file mid-session, with no restart.
 **"MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"** and **"… Ref2VA (Dual
 Resolution)"** each run the cached encode **twice** from one set of inputs:
 once at the base `width`/`height` and once at a second
-`width_upscale`/`height_upscale`, returning two `CONDITIONING` / `LATENT`
-pairs.
+`width_upscale`/`height_upscale`. They return `positive` / `latent` for the
+base resolution and a single `positive_upscale` conditioning for the
+second.
 
 | Input | Type | Notes |
 |---|---|---|
 | `width_upscale` / `height_upscale` | int | The second target resolution. Same defaults and range as `width` / `height`. Encoded through the same cached path — with `cache_mode="auto"`, a hit if the encoder input ends up identical and a real encode otherwise; `cache_mode="refresh"` always re-encodes. |
-| `generate_upscale_cond` | bool (default on) | When off, the second encode is skipped entirely and `positive_upscale` / `latent_upscale` come back as `None`. See below. |
+| `generate_upscale_cond` | bool (default on) | When off, the second encode is skipped entirely and `positive_upscale` comes back as `None`. See below. |
 
 Every other input — `prompt`, `clip_name`, `vae` (and `audio_vae`),
 `first_frame` / `last_frame` or the `ref_*` slots, `ref_image_size`,
 `length`, `cache_mode` — matches the single-resolution node and is shared
 across both passes. Outputs are `positive` / `latent` for the base
-resolution and `positive_upscale` / `latent_upscale` for the second.
+resolution and `positive_upscale` for the second — conditioning only, no
+latent. The upscale pass never produced a useful latent: its AV latent was
+always a fresh empty tensor at the upscale size, so a real upscale workflow
+ignored it and instead upscaled the *denoised* latent from the first pass
+with an external latent-upscale node. Only the upscale-resolution
+conditioning is worth keeping.
 
 **This is a consistency feature, not a performance optimization in
 itself.** Two separate cached nodes, one per resolution, already share a
@@ -313,19 +319,19 @@ the encoder twice and overwrites both cache entries.
 ### `generate_upscale_cond`
 
 An optional bool, **on** by default. When **off**, the second
-(upscale-resolution) encode does not run at all — `positive_upscale` and
-`latent_upscale` return `None` and nothing is loaded or computed for them.
-Turn it off for a plain base-resolution generation where nothing downstream
-consumes the upscale outputs; turn it on when you actually need them.
+(upscale-resolution) encode does not run at all — `positive_upscale`
+returns `None` and nothing is loaded or computed for it. Turn it off for a
+plain base-resolution generation where nothing downstream consumes the
+upscale conditioning; turn it on when you actually need it.
 
-**Bypassing the downstream consumer of `positive_upscale` /
-`latent_upscale` does not skip the upscale encode** — this switch is the
-only thing that does. The node is a single atomic call that returns all
-four outputs together, so ComfyUI cannot partially execute it: even with a
-whole downstream upscaler chain set to bypass, the node still runs in full
-to produce the base-resolution outputs, and the upscale encode happens
-along with it unless `generate_upscale_cond` is off. A skipped upscale
-encode is logged as an `[UPSCALE COND SKIPPED]` line.
+**Bypassing the downstream consumer of `positive_upscale` does not skip
+the upscale encode** — this switch is the only thing that does. The node is
+a single atomic call that returns all three outputs together, so ComfyUI
+cannot partially execute it: even with a whole downstream upscaler chain
+set to bypass, the node still runs in full to produce the base-resolution
+outputs, and the upscale encode happens along with it unless
+`generate_upscale_cond` is off. A skipped upscale encode is logged as an
+`[UPSCALE COND SKIPPED]` line.
 
 ## Measured performance
 

@@ -587,13 +587,19 @@ class MiniMaxH3CLIPCachedFL2VA:
 class MiniMaxH3CLIPCachedFL2VADualRes:
     """Two-resolution sibling of MiniMaxH3CLIPCachedFL2VA.
 
-    Produces CONDITIONING + AV LATENT for two resolutions -- a base one
-    (width/height) and an upscale target (width_upscale/height_upscale) --
-    from a single shared set of inputs (clip_name, prompt, vae,
-    first_frame, last_frame, length, cache_mode). Driving both resolutions
-    off one node removes the risk of those shared values silently drifting
-    apart between two separate MiniMaxH3CLIPCachedFL2VA instances in the same
-    graph.
+    Produces CONDITIONING + AV LATENT for the base resolution
+    (width/height) and a second CONDITIONING (``positive_upscale``) for an
+    upscale target (width_upscale/height_upscale), from a single shared set
+    of inputs (clip_name, prompt, vae, first_frame, last_frame, length,
+    cache_mode). Driving both resolutions off one node removes the risk of
+    those shared values silently drifting apart between two separate
+    MiniMaxH3CLIPCachedFL2VA instances in the same graph.
+
+    No upscale latent is returned: the second pass's AV latent was always a
+    fresh empty tensor at the upscale size with nothing carried over from
+    the first pass, so a real upscale workflow never used it -- it takes the
+    denoised latent from the first pass and upscales that with an external
+    node instead.
 
     It runs the full, unmodified cached encode path (_execute_fl2va_once)
     once per resolution and lets the existing fingerprint/proxy decide HIT vs
@@ -608,18 +614,17 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
 
     The optional ``generate_upscale_cond`` bool (default True) gates the
     upscale-resolution encode. When it is False the second
-    _execute_fl2va_once() call does not run at all -- ``positive_upscale`` /
-    ``latent_upscale`` come back as ``None`` and _pair_verbose_entries() is
-    skipped (there is no second fingerprint to pair). This switch is the
-    ONLY way to avoid paying the upscale encode / VRAM cost, because the
-    node is a single atomic Python call that returns all four outputs at
-    once: ComfyUI cannot partially execute it, so bypassing the downstream
-    consumer of ``positive_upscale`` / ``latent_upscale`` (an entire
-    upscaler chain set to bypass, say) still forces this node to run in
-    full for the base-resolution outputs, and the upscale encode happens
-    regardless. Do not "fix" this by making the second encode conditional
-    on something else -- the node has no visibility into what downstream
-    consumes its outputs.
+    _execute_fl2va_once() call does not run at all -- ``positive_upscale``
+    comes back as ``None`` and _pair_verbose_entries() is skipped (there is
+    no second fingerprint to pair). This switch is the ONLY way to avoid
+    paying the upscale encode / VRAM cost, because the node is a single
+    atomic Python call that returns all three outputs at once: ComfyUI
+    cannot partially execute it, so bypassing the downstream consumer of
+    ``positive_upscale`` (an entire upscaler chain set to bypass, say)
+    still forces this node to run in full for the base-resolution outputs,
+    and the upscale encode happens regardless. Do not "fix" this by making
+    the second encode conditional on something else -- the node has no
+    visibility into what downstream consumes its outputs.
     """
 
     @classmethod
@@ -650,9 +655,9 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
                 "last_frame": ("IMAGE",),
                 "generate_upscale_cond": ("BOOLEAN", {"default": True, "tooltip":
                     "When off, the second (upscale-resolution) encode is skipped entirely - "
-                    "positive_upscale/latent_upscale come back as None. Turn off for a plain "
-                    "generation where nothing downstream uses the upscale outputs; turn on "
-                    "when you actually need them. Bypassing the upscale consumer downstream "
+                    "positive_upscale comes back as None. Turn off for a plain "
+                    "generation where nothing downstream uses the upscale conditioning; turn on "
+                    "when you actually need it. Bypassing the upscale consumer downstream "
                     "does NOT skip this encode by itself - this is the only thing that does, "
                     "because the node runs as one atomic call."}),
                 "cache_mode": (["auto", "refresh"], {"default": "auto",
@@ -665,8 +670,8 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")
+    RETURN_NAMES = ("positive", "latent", "positive_upscale")
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
@@ -693,10 +698,12 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
             # achieve this on its own.
             logger.info(
                 "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
-                "positive_upscale/latent_upscale not computed", fp1[:12],
+                "positive_upscale not computed", fp1[:12],
             )
-            return (cond, latent, None, None)
-        cond_upscale, latent_upscale, fp2 = _execute_fl2va_once(
+            return (cond, latent, None)
+        # The upscale pass still runs the full cached encode; only its AV
+        # latent is discarded -- see the class docstring for why.
+        cond_upscale, _, fp2 = _execute_fl2va_once(
             clip_name, vae, prompt, width_upscale, height_upscale, length,
             first_frame, last_frame, cache_mode,
         )
@@ -705,7 +712,7 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         # fp1 is the base-resolution side, fp2 the upscale-resolution side.
         _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale,
                               b_is_upscale_target=True)
-        return (cond, latent, cond_upscale, latent_upscale)
+        return (cond, latent, cond_upscale)
 
 
 # --- Ref2VA (reference images / videos / audio) -----------------------------
@@ -941,13 +948,19 @@ class MiniMaxH3CLIPCachedRef2VA:
 class MiniMaxH3CLIPCachedRef2VADualRes:
     """Two-resolution sibling of MiniMaxH3CLIPCachedRef2VA.
 
-    Produces CONDITIONING + AV LATENT for two resolutions -- a base one
-    (width/height) and an upscale target (width_upscale/height_upscale) --
-    from a single shared set of inputs (clip_name, prompt, vae,
-    audio_vae, ref_image_size, every ref_* slot, length, cache_mode).
-    Driving both resolutions off one node removes the risk of those shared
-    values silently drifting apart between two separate
-    MiniMaxH3CLIPCachedRef2VA instances in the same graph.
+    Produces CONDITIONING + AV LATENT for the base resolution
+    (width/height) and a second CONDITIONING (``positive_upscale``) for an
+    upscale target (width_upscale/height_upscale), from a single shared set
+    of inputs (clip_name, prompt, vae, audio_vae, ref_image_size, every
+    ref_* slot, length, cache_mode). Driving both resolutions off one node
+    removes the risk of those shared values silently drifting apart between
+    two separate MiniMaxH3CLIPCachedRef2VA instances in the same graph.
+
+    No upscale latent is returned: the second pass's AV latent was always a
+    fresh empty tensor at the upscale size with nothing carried over from
+    the first pass, so a real upscale workflow never used it -- it takes the
+    denoised latent from the first pass and upscales that with an external
+    node instead.
 
     It runs the full, unmodified cached encode path (_execute_ref2va_once)
     once per resolution and lets the existing fingerprint/proxy decide HIT vs
@@ -963,18 +976,17 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
 
     The optional ``generate_upscale_cond`` bool (default True) gates the
     upscale-resolution encode. When it is False the second
-    _execute_ref2va_once() call does not run at all -- ``positive_upscale`` /
-    ``latent_upscale`` come back as ``None`` and _pair_verbose_entries() is
-    skipped (there is no second fingerprint to pair). This switch is the
-    ONLY way to avoid paying the upscale encode / VRAM cost, because the
-    node is a single atomic Python call that returns all four outputs at
-    once: ComfyUI cannot partially execute it, so bypassing the downstream
-    consumer of ``positive_upscale`` / ``latent_upscale`` (an entire
-    upscaler chain set to bypass, say) still forces this node to run in
-    full for the base-resolution outputs, and the upscale encode happens
-    regardless. Do not "fix" this by making the second encode conditional
-    on something else -- the node has no visibility into what downstream
-    consumes its outputs.
+    _execute_ref2va_once() call does not run at all -- ``positive_upscale``
+    comes back as ``None`` and _pair_verbose_entries() is skipped (there is
+    no second fingerprint to pair). This switch is the ONLY way to avoid
+    paying the upscale encode / VRAM cost, because the node is a single
+    atomic Python call that returns all three outputs at once: ComfyUI
+    cannot partially execute it, so bypassing the downstream consumer of
+    ``positive_upscale`` (an entire upscaler chain set to bypass, say)
+    still forces this node to run in full for the base-resolution outputs,
+    and the upscale encode happens regardless. Do not "fix" this by making
+    the second encode conditional on something else -- the node has no
+    visibility into what downstream consumes its outputs.
     """
 
     @classmethod
@@ -986,9 +998,9 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         optional = _ref_slots_input_spec()
         optional["generate_upscale_cond"] = ("BOOLEAN", {"default": True, "tooltip":
             "When off, the second (upscale-resolution) encode is skipped entirely - "
-            "positive_upscale/latent_upscale come back as None. Turn off for a plain "
-            "generation where nothing downstream uses the upscale outputs; turn on "
-            "when you actually need them. Bypassing the upscale consumer downstream "
+            "positive_upscale comes back as None. Turn off for a plain "
+            "generation where nothing downstream uses the upscale conditioning; turn on "
+            "when you actually need it. Bypassing the upscale consumer downstream "
             "does NOT skip this encode by itself - this is the only thing that does, "
             "because the node runs as one atomic call."})
         optional["cache_mode"] = (["auto", "refresh"], {"default": "auto",
@@ -1023,8 +1035,8 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
             "optional": optional,
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING", "LATENT")
-    RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")
+    RETURN_NAMES = ("positive", "latent", "positive_upscale")
     FUNCTION = "execute"
     CATEGORY = "model/conditioning/minimax/cached"
 
@@ -1065,10 +1077,12 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
             # achieve this on its own.
             logger.info(
                 "[UPSCALE COND SKIPPED] %s: generate_upscale_cond=False - "
-                "positive_upscale/latent_upscale not computed", fp1[:12],
+                "positive_upscale not computed", fp1[:12],
             )
-            return (cond, latent, None, None)
-        cond_upscale, latent_upscale, fp2 = _execute_ref2va_once(
+            return (cond, latent, None)
+        # The upscale pass still runs the full cached encode; only its AV
+        # latent is discarded -- see the class docstring for why.
+        cond_upscale, _, fp2 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width_upscale, height_upscale, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
             cache_mode,
@@ -1078,7 +1092,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         # fp1 is the base-resolution side, fp2 the upscale-resolution side.
         _pair_verbose_entries(fp1, width, height, fp2, width_upscale, height_upscale,
                               b_is_upscale_target=True)
-        return (cond, latent, cond_upscale, latent_upscale)
+        return (cond, latent, cond_upscale)
 
 
 # --- CLIP Name (standalone encoder picker) ----------------------------------
