@@ -1,11 +1,12 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch chore/repo-cleanup-pre-v1 / commit 7663cec
+## Stan na: 2026-09-03 / branch chore/repo-cleanup-pre-v1 / commit fab353a
 
 ## Ostatnio zrobione
 
 Porządek w repo przed tagiem v1.0.0. Gałąź `chore/repo-cleanup-pre-v1`
 odcięta od `origin/master` (12f9b7e, po mergu PR #7 z katalogiem `docs/`).
+Otwarta jako PR #8 na `master` (niezmergowana).
 
 - Commit 1 (9c132f6): usunięty przedimplementacyjny dokument planistyczny
   Cache Managera z korzenia repo (zastąpiony przez `docs/`; kopia zapasowa
@@ -25,21 +26,42 @@ odcięta od `origin/master` (12f9b7e, po mergu PR #7 z katalogiem `docs/`).
   instalacji, ten sam wzorzec co `tests/conftest.py`. Dodatkowo z
   `CLAUDE.md` usunięte 5 wystąpień absolutnej ścieżki domowej tej maszyny,
   zastąpionych generycznym odwołaniem do katalogu instalacji ComfyUI.
-- Commit 3: ten plik.
+- Commit 3 (fab353a): wyliczanie `COMFYUI_ROOT` odporne na symlinki.
+  `Path(__file__).resolve()` rozwija symlink PRZED wejściem w górę po
+  katalogach, więc przy popularnej instalacji "repo poza custom_nodes/,
+  podlinkowane do środka" wyliczony korzeń wskazywał o katalog za wysoko.
+  Cztery orkiestratory `_live_server` (`test_ref2video_memory_trend.py`,
+  `test_ref2video_server_e2e.py`, `test_ref2video_server_hit.py`,
+  `test_server_memory_trend_phase17.py`) przełączone na
+  `os.path.abspath(__file__)` + leksykalne wejście w górę, 1:1 jak
+  `tests/conftest.py`; komentarz WHY w każdym wprost mówi, że `abspath`
+  (nie `resolve`) jest celowe. `scripts/benchmark_conditioning.py:81-82`
+  miał ten sam wzorzec (`REPO_ROOT` przez `.resolve()`,
+  `DEFAULT_COMFYUI_ROOT` dwa poziomy wyżej) - poprawiony tak samo. Env
+  override `COMFYUI_ROOT` NIE został tam dodany, bo skrypt bierze katalog
+  ComfyUI przez argument `--comfyui-root` i druga ścieżka nadpisania
+  tylko zaciemniłaby kolejność pierwszeństwa.
+- Commit HANDOFF: ten plik (osobno).
 
 ### Weryfikacja (BEZ ComfyUI, BEZ serwera, BEZ GPU)
 
 - `git grep` na nazwie usuniętego dokumentu planistycznego -- brak wyników.
 - `git grep` na absolutnej ścieżce domowej tej maszyny -- brak wyników.
-- `python -m py_compile` na 5 zmienionych skryptach + `thumbnails.py` -- OK.
+- `git grep -n "resolve().parents\[3\]"` w `scripts/` -- brak wyników.
+- `python -m py_compile` na wszystkich zmienionych skryptach + `thumbnails.py` -- OK.
 - `node --check` na kopii `web/main.js` (jako `.mjs`) -- składnia OK.
+- Odtworzony symlinkowany install (repo poza `custom_nodes/`, symlink do
+  środka, `main.py` jako marker): wszystkie 4 skrypty serwerowe oraz
+  domyślny `--comfyui-root` benchmarku wyliczają REALNY korzeń ComfyUI
+  (`<tmp>/ComfyUI`), podczas gdy stary `Path(__file__).resolve().parents[3]`
+  dawał katalog wyżej (`<tmp>`). Env override `COMFYUI_ROOT` nadal
+  respektowany. Lokalny install na tej maszynie (zwykły katalog, nie
+  symlink) bez zmian - fallback dalej wskazuje tę samą, właściwą
+  instalację ComfyUI co wcześniej.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
   (w tym `tests/test_server_script_safety.py` i
   `tests/test_live_server_stop_pid_reuse.py`, które pilnują skryptów
   serwerowych).
-- Runtime check rozwiązywania `COMFYUI_ROOT` we wszystkich 5 skryptach:
-  fallback z układu katalogów wskazuje właściwą lokalną instalację,
-  a env override `COMFYUI_ROOT` jest respektowany.
 
 ## Ustalenia istotne dla Chat
 
@@ -50,16 +72,20 @@ odcięta od `origin/master` (12f9b7e, po mergu PR #7 z katalogiem `docs/`).
 - Wzorzec rozwiązywania korzenia ComfyUI (jedno źródło, powielane):
   `COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT", <fallback>)`, gdzie
   fallback to cztery katalogi w górę od pliku
-  (`<ComfyUI>/custom_nodes/<repo>/scripts/<plik>`). Użyte w
-  `tests/conftest.py:39`, `tests/test_clip_name_node.py:25`,
-  `tests/test_node_fl2va_dual.py:33`, `tests/test_node_ref2va_dual.py:32`
-  oraz teraz w `scripts/test_proxy_gate.py`,
+  (`<ComfyUI>/custom_nodes/<repo>/scripts/<plik>`), liczone przez
+  `os.path.abspath(__file__)` + `os.path.dirname` (NIE `Path.resolve()`
+  ani `os.path.realpath` - te rozwijają symlink instalacji custom node'a
+  i wychodzą o katalog za wysoko). Użyte w `tests/conftest.py:38`,
+  `tests/test_clip_name_node.py`, `tests/test_node_fl2va_dual.py`,
+  `tests/test_node_ref2va_dual.py` oraz w `scripts/test_proxy_gate.py`,
   `scripts/test_ref2video_memory_trend.py`,
   `scripts/test_ref2video_server_e2e.py`,
   `scripts/test_ref2video_server_hit.py`,
   `scripts/test_server_memory_trend_phase17.py`.
-- `scripts/benchmark_conditioning.py` już wcześniej był przenośny
-  (`DEFAULT_COMFYUI_ROOT = REPO_ROOT.parent.parent`, `:82`) -- nietknięty.
+- `scripts/benchmark_conditioning.py:81-90`: `REPO_ROOT` /
+  `DEFAULT_COMFYUI_ROOT` też liczone bez `.resolve()` (odporne na
+  symlink); nadpisanie idzie WYŁĄCZNIE przez argument CLI
+  `--comfyui-root`, nie przez zmienną środowiskową.
 
 ## Otwarte pytania
 
@@ -67,6 +93,17 @@ odcięta od `origin/master` (12f9b7e, po mergu PR #7 z katalogiem `docs/`).
 
 ## Sugestie (nie polecenia)
 
+- `scripts/test_proxy_gate.py` już liczy `COMFYUI_ROOT` poprawnie
+  (`abspath` + 4x `dirname`), ale jego komentarz WHY nie wspomina wprost
+  o powodzie symlinkowym - warto dopisać to samo zdanie dla spójności
+  (celowo nietknięte w tym zleceniu: "test_proxy_gate.py jest już
+  poprawny - nie ruszać").
+- `scripts/test_ref2video_server_hit.py:148` liczy `cache_dir` przez
+  `Path(__file__).resolve().parent.parent / "cache"` - to inna ścieżka
+  (katalog cache repo, nie korzeń ComfyUI) i przy symlinku wskazuje ten
+  sam katalog cache przez realną lokalizację; I/O jest transparentne, więc
+  nie jest to błąd, ale gdyby ktoś chciał pełnej spójności - też do
+  ujednolicenia. Poza zakresem tego zlecenia.
 - `pyproject.toml` i rozdzielenie `test_proxy_gate.py` na dwie role to
   osobne pozycje (odpowiednio: osobne zlecenie i pozycja w `TODO.md`),
   celowo nietknięte tutaj.
