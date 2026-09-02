@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 *:Zone.Identifier
+README_WORKING.md
+/benchmark_results/
