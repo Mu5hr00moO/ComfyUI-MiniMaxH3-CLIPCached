@@ -78,7 +78,18 @@ from _live_server import (
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# os.path.abspath, not Path.resolve / os.path.realpath: a common install
+# keeps this repo outside custom_nodes/ and symlinks it in, so the
+# invocation path is <ComfyUI>/custom_nodes/<symlink>/scripts/<this file>.
+# Walking that non-resolved path keeps every step inside the symlinked
+# layout, so REPO_ROOT.parent.parent lands on the real ComfyUI root;
+# resolving the symlink first would climb from the repo's true location
+# and overshoot. Mirrors tests/conftest.py. There is deliberately no
+# COMFYUI_ROOT env override here (unlike the conftest-style scripts): this
+# benchmark already takes the ComfyUI checkout through --comfyui-root, and
+# a second override path would only blur the precedence.
+_here = os.path.abspath(__file__)
+REPO_ROOT = Path(_here).parent.parent
 DEFAULT_COMFYUI_ROOT = REPO_ROOT.parent.parent
 RESULT_PATH = REPO_ROOT / "benchmark_results" / "conditioning_benchmark.json"
 LOG_DIR = RESULT_PATH.parent / "logs"
