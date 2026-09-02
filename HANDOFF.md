@@ -1,71 +1,52 @@
 # HANDOFF
 
-## Stan na: 2026-09-01 / branch master / commit 855f480
+## Stan na: 2026-09-02 / branch feature/dualres-drop-latent-upscale / commit 0389036
 
-## Ostatnio zrobione (weryfikacja README_WORKING.md względem kodu)
+## Ostatnio zrobione
 
-Zadanie kontrolne (ZLECENIE_DLA_CC): potwierdzenie, że treść
-`README_WORKING.md` (docelowy monolit README.md + docs/*.md, jeszcze
-niepublikowany -- czekamy na screeny) zgadza się z aktualnym stanem kodu.
-Bez zmian w kodzie. Pełny pytest: 398 passed (`testpaths = tests`,
-398 collected). ComfyUI runtime: `comfyui_version.__version__ == "0.34.2"`
-(pyproject "0.34.2", `git describe` = v0.34.2).
+Usunięcie wyjścia `latent_upscale` z obu node'ów Dual Resolution
+(`MiniMaxH3CLIPCachedFL2VADualRes`, `MiniMaxH3CLIPCachedRef2VADualRes`).
+Oba zwracają teraz trzy wyjścia -- `(positive, latent, positive_upscale)`
+-- zamiast czterech. Przebieg upscale nadal wykonuje pełny cache'owany
+encode, ale jego AV latent był zawsze świeżym pustym tensorem w rozmiarze
+upscale, bez niczego przeniesionego z pierwszego przebiegu, więc realny
+workflow upscale i tak go nie używał (upscaluje odszumiony latent z
+pierwszego przebiegu zewnętrznym node'em). Zostaje tylko conditioning
+rozdzielczości upscale.
 
-Wynik: wszystkie sprawdzane punkty ZGODNE z kodem. Szczegóły niżej.
+Zmiana zbudowana na nowej gałęzi `feature/dualres-drop-latent-upscale`
+odbitej od `origin/master` (aa82610, po merge PR #2). Od teraz wszystkie
+zmiany idą przez PR, nie bezpośrednio na master.
+
+- Commit 1 (0389036): `nodes.py`, `tests/test_node_fl2va_dual.py`,
+  `tests/test_node_ref2va_dual.py`, `README.md` -- RETURN_TYPES /
+  RETURN_NAMES, docstringi klas, tooltipy `generate_upscale_cond`, linia
+  logu `[UPSCALE COND SKIPPED]`, sekcja README, testy dual.
+- Commit 2: ten plik.
+
+Walidacja na gałęzi: `python -m py_compile nodes.py` OK; pełny pytest
+398 passed / 4 warnings (świeży przebieg); `grep -rn "latent_upscale"`
+po `nodes.py` + obu plikach testów dual + `README.md` -- pusty wynik.
 
 ## Ustalenia istotne dla Chat
 
-- Display name wszystkich 5 zarejestrowanych node'ów -- `__init__.py:71-76`
-  (`NODE_DISPLAY_NAME_MAPPINGS`):
-  - `MiniMaxH3CLIPCachedFL2VA` -> "MiniMax H3 CLIP-Cached FL2VA"
-  - `MiniMaxH3CLIPCachedFL2VADualRes` -> "MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"
-  - `MiniMaxH3CLIPCachedRef2VA` -> "MiniMax H3 CLIP-Cached Ref2VA"
-  - `MiniMaxH3CLIPCachedRef2VADualRes` -> "MiniMax H3 CLIP-Cached Ref2VA (Dual Resolution)"
-  - `MiniMaxH3CLIPName` -> "MiniMax H3 CLIP Name"
-  Stare "MiniMax H3 CLIP-Cached Images to Video" NIE występuje nigdzie w kodzie.
-- Ref2VA jest w pełni cache'owane. `nodes.py:820` `_execute_ref2va_once()`
-  buduje `CachedClipProxy` przez `_build_cached_proxy()` (`nodes.py:836`)
-  i podstawia go do stockowego `MiniMaxH3ReferenceToVideo.execute()`
-  (`nodes.py:840`). `CachedClipProxy` (`proxy.py:55`) jest generyczny wobec
-  `tokenize(prompt, **kwargs)` -- ta sama ścieżka HIT/MISS/REFRESH co FL2VA.
-- Cache Manager jest w kodzie na master (backend + UI, scalone):
-  `minimaxh3_clipcache/routes.py` rejestruje 5 endpointów pod
-  `/h3_cache_manager` na `PromptServer.instance.routes`; import w
-  `__init__.py:58` (best-effort). Frontend: `WEB_DIRECTORY = "./web"`
-  (`__init__.py:80`), `web/main.js` (~59 KB), `web/styles.css`.
-- Dual Resolution: oba warianty zaimplementowane -- `MiniMaxH3CLIPCachedFL2VADualRes`
-  (`nodes.py:587`) i `MiniMaxH3CLIPCachedRef2VADualRes` (`nodes.py:941`).
-  Oba: `RETURN_NAMES = ("positive", "latent", "positive_upscale", "latent_upscale")`
-  (`nodes.py:669`, `nodes.py:1027`), input `generate_upscale_cond` BOOLEAN
-  default `True` (`nodes.py:651`, `nodes.py:987`), plus `width_upscale` /
-  `height_upscale`.
-- Testy: pytest 398 passed / 398 collected. Draft ("398 passed") aktualny;
-  "45 testów" z żywego README nieaktualne. Skrypty w `scripts/` to osobne
-  diagnostyki real-model, NIE wchodzą do `pytest` (`pytest.ini`:
-  `testpaths = tests`).
-- Wersja ComfyUI: 0.34.2 (nie 0.34.0). README_WORKING linia 102 zgodne.
-- Ścieżki plików referencjonowane w dokumentacji -- wszystkie istnieją:
-  `minimaxh3_clipcache/proxy.py`, `minimaxh3_clipcache/fingerprint.py`,
-  `scripts/test_stock_vs_cache.py`, `scripts/test_ref2video_equivalence.py`,
-  `scripts/test_clip_unload_isolation.py`, `scripts/test_vae_memory_isolation.py`.
-  Także `minimaxh3_clipcache/encoder_abi.py`, `serialize.py`, `store.py`.
-- Kategoria UI: wszystkie 5 node'ów mają
-  `CATEGORY = "model/conditioning/minimax/cached"` (`nodes.py:565,671,903,1029,1117`).
-- `cache_mode`: tylko `["auto", "refresh"]`, default `"auto"` -- w 4 node'ach
-  wykonawczych (`nodes.py:553,658,878,994`). `CLIPName` nie ma `cache_mode`.
-  Brak trzeciej wartości. Wewnętrzne `force_refresh` wymuszane też gdy ABI
-  encodera niedostępne (`nodes.py:359`) -- to jest opisane w README_WORKING
-  (sekcja "Encoder ABI"). `cache_only` nieistniejące (README: "planned, not
-  implemented").
-- Ścieżka cache: `CACHE_DIR = os.path.join(REPO_ROOT, "cache")`,
-  `REPO_ROOT = os.path.dirname(os.path.abspath(__file__))` w `nodes.py:38-39`
-  (nodes.py w korzeniu repo). `routes.py:52` liczy tę samą ścieżkę
-  (dirname o poziom wyżej z `minimaxh3_clipcache/`). Efektywnie:
-  `ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache`. Zgodne.
-- `CACHE_SCHEMA_VERSION = 2` (`fingerprint.py:20`). Zgodne z opisem "schema v2".
-- Pliki `docs/*.md` (NODE_GUIDE, CACHE_MANAGER, PERFORMANCE, TECHNICAL_DETAILS,
-  TESTING_AND_LIMITATIONS) jeszcze NIE istnieją jako osobne pliki -- treść jest
-  w monolicie `README_WORKING.md`. Oczekiwane przed splitem, nie rozbieżność.
+- Oba node'y Dual Resolution:
+  `RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")`,
+  `RETURN_NAMES = ("positive", "latent", "positive_upscale")`
+  (`nodes.py:673-674`, `nodes.py:1038-1039` na tej gałęzi).
+- `generate_upscale_cond` BOOLEAN default `True` bez zmian
+  (`nodes.py:656`, `nodes.py:999`). Gdy `False`: `positive_upscale`
+  zwraca `None`, `_pair_verbose_entries()` pominięte, encoder ładowany
+  co najwyżej raz. Linia logu: `[UPSCALE COND SKIPPED] <fp>: ...
+  positive_upscale not computed`.
+- Gdy `generate_upscale_cond=True`: przebieg upscale nadal wywołuje
+  `_execute_fl2va_once()` / `_execute_ref2va_once()` w całości; tylko
+  zwracany AV latent jest odrzucany (`cond_upscale, _, fp2 = ...`).
+  Fingerprint / HIT-MISS / verbose pairing bez zmian.
+- Pełny pytest: 398 passed (`testpaths = tests`).
+- `.gitignore` ma niescommitowaną, niezwiązaną z tą sesją zmianę
+  (dopisany `README_WORKING.md`) -- czyjaś inna, niedokończona robota,
+  celowo nietknięta, NIE wchodzi w diff tej gałęzi.
 
 ## Otwarte pytania
 
