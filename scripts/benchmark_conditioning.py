@@ -11,9 +11,12 @@ The three groups use the same five unique prompt cases:
 * ``MiniMaxH3CLIPCachedFL2VA`` cache MISS;
 * ``MiniMaxH3CLIPCachedFL2VA`` disk cache HIT.
 
-Every attempt gets a new server process.  Filesystem pages expected by that
-path are explicitly prewarmed and verified with Linux ``mincore()`` before the
-baseline.  FL2VA conditioning-stage wall time ends when ComfyUI announces that
+Every attempt gets a new server process.  Before the baseline, the files a
+path legitimately reuses (the VAE, and for a HIT the cache entry) are
+prewarmed and verified with Linux ``mincore()``, while the ~27 GB encoder is
+actively evicted from the page cache with ``POSIX_FADV_DONTNEED`` for the
+Native and Cached MISS paths so each pays a genuine cold load.  FL2VA
+conditioning-stage wall time ends when ComfyUI announces that
 the output sink is about to execute, which proves that the upstream FL2VA node
 has returned its CONDITIONING/LATENT outputs while excluding the sink itself.
 It includes the minimal VAE/keyframe/latent preparation upstream of those
@@ -85,6 +88,13 @@ HOST = "127.0.0.1"
 CASE_COUNT = 5
 MAX_ATTEMPTS = 3
 PREWARM_MIN_RESIDENCY_FRACTION = 0.99
+# The Native and Cached MISS paths must read the encoder from a cold page
+# cache.  After POSIX_FADV_DONTNEED a healthy run drops to ~0% residency
+# (empirically exactly 0 on the target ext4/WSL2 box); 1% is a generous
+# ceiling that still fails loudly if another process is pinning the file.
+ENCODER_EVICT_MAX_RESIDENCY_FRACTION = 0.01
+ENCODER_EVICT_VERIFY_ATTEMPTS = 5
+ENCODER_EVICT_RETRY_DELAY_SECONDS = 0.2
 VMHWM_RESET_MIN_TOLERANCE_BYTES = 64 * 1024 * 1024
 VMHWM_RESET_RELATIVE_TOLERANCE = 0.05
 FL2VA_NODE_ID = "2"
@@ -289,16 +299,18 @@ def _benchmark_model_files(args: argparse.Namespace) -> dict[str, Path]:
     }
 
 
-def _prewarm_file(path: Path, role: str) -> dict[str, Any]:
-    """Touch every file page and verify Linux page residency with mincore()."""
-    if sys.platform != "linux":
-        raise RuntimeError("filesystem prewarm verification requires Linux mincore()")
-    size = path.stat().st_size
-    if size <= 0:
-        raise RuntimeError("cannot prewarm empty required file: {}".format(path))
+def _resident_pages_via_mincore(
+    mapping: mmap.mmap,
+    size: int,
+    total_pages: int,
+    path: Path,
+) -> int:
+    """Return how many pages of ``mapping`` Linux ``mincore()`` reports resident.
 
-    page_size = mmap.PAGESIZE
-    total_pages = (size + page_size - 1) // page_size
+    ``mincore()`` reports page-cache residency of the file backing the mapping
+    without faulting anything in, so this is safe to call on an untouched
+    mapping to observe eviction as well as on a touched one to confirm prewarm.
+    """
     libc = ctypes.CDLL(None, use_errno=True)
     try:
         mincore = libc.mincore
@@ -311,24 +323,53 @@ def _prewarm_file(path: Path, role: str) -> dict[str, Any]:
     ]
     mincore.restype = ctypes.c_int
 
+    buffer_reference = ctypes.c_char.from_buffer(mapping)
+    vector = (ctypes.c_ubyte * total_pages)()
+    result = mincore(
+        ctypes.c_void_p(ctypes.addressof(buffer_reference)),
+        ctypes.c_size_t(size),
+        vector,
+    )
+    del buffer_reference
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), str(path))
+    return sum(1 for value in vector if value & 1)
+
+
+def _measure_residency(path: Path) -> tuple[int, int, int]:
+    """Observe current page-cache residency of ``path`` without faulting it in."""
+    size = path.stat().st_size
+    page_size = mmap.PAGESIZE
+    total_pages = (size + page_size - 1) // page_size
+    with path.open("rb") as file_handle:
+        with mmap.mmap(file_handle.fileno(), 0, access=mmap.ACCESS_COPY) as mapping:
+            resident_pages = _resident_pages_via_mincore(
+                mapping, size, total_pages, path
+            )
+    return resident_pages, total_pages, size
+
+
+def _prewarm_file(path: Path, role: str) -> dict[str, Any]:
+    """Touch every file page and verify Linux page residency with mincore()."""
+    if sys.platform != "linux":
+        raise RuntimeError("filesystem prewarm verification requires Linux mincore()")
+    size = path.stat().st_size
+    if size <= 0:
+        raise RuntimeError("cannot prewarm empty required file: {}".format(path))
+
+    page_size = mmap.PAGESIZE
+    total_pages = (size + page_size - 1) // page_size
+
     with path.open("rb") as file_handle:
         with mmap.mmap(file_handle.fileno(), 0, access=mmap.ACCESS_COPY) as mapping:
             touched = 0
             for offset in range(0, size, page_size):
                 touched ^= mapping[offset]
-            buffer_reference = ctypes.c_char.from_buffer(mapping)
-            vector = (ctypes.c_ubyte * total_pages)()
-            result = mincore(
-                ctypes.c_void_p(ctypes.addressof(buffer_reference)),
-                ctypes.c_size_t(size),
-                vector,
-            )
-            del buffer_reference
-            if result != 0:
-                error_number = ctypes.get_errno()
-                raise OSError(error_number, os.strerror(error_number), str(path))
-            resident_pages = sum(1 for value in vector if value & 1)
             del touched
+            resident_pages = _resident_pages_via_mincore(
+                mapping, size, total_pages, path
+            )
 
     residency_fraction = resident_pages / total_pages
     metadata = {
@@ -353,15 +394,93 @@ def _prewarm_file(path: Path, role: str) -> dict[str, Any]:
     return metadata
 
 
-def _prewarm_files_for_run(
+def _evict_encoder_file(path: Path, role: str) -> dict[str, Any]:
+    """Force ``path`` out of the Linux page cache and verify it with mincore().
+
+    Native and Cached MISS must read the ~27 GB encoder from a cold page cache.
+    The earlier design prewarmed it to full residency immediately before
+    ComfyUI loaded the very same file into its own process, demanding double
+    residency of half of system RAM and making the Native path thrash.  This
+    instead asks the kernel to drop the file's clean pages
+    (``POSIX_FADV_DONTNEED``) and confirms residency fell to near zero; it
+    never raises residency above the idle baseline.
+    """
+    if sys.platform != "linux":
+        raise RuntimeError("filesystem eviction verification requires Linux mincore()")
+    size = path.stat().st_size
+    if size <= 0:
+        raise RuntimeError("cannot evict empty required file: {}".format(path))
+
+    verify_attempts: list[dict[str, Any]] = []
+    resident_pages = 0
+    total_pages = 0
+    for attempt_number in range(1, ENCODER_EVICT_VERIFY_ATTEMPTS + 1):
+        with path.open("rb") as file_handle:
+            os.posix_fadvise(file_handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+        resident_pages, total_pages, size = _measure_residency(path)
+        fraction = resident_pages / total_pages
+        verify_attempts.append(
+            {
+                "attempt": attempt_number,
+                "resident_pages": resident_pages,
+                "residency_fraction": fraction,
+            }
+        )
+        if fraction <= ENCODER_EVICT_MAX_RESIDENCY_FRACTION:
+            break
+        if attempt_number < ENCODER_EVICT_VERIFY_ATTEMPTS:
+            time.sleep(ENCODER_EVICT_RETRY_DELAY_SECONDS)
+
+    residency_fraction = resident_pages / total_pages
+    metadata = {
+        "role": role,
+        "path": str(path),
+        "file_size_bytes": size,
+        "page_size_bytes": mmap.PAGESIZE,
+        "resident_pages": resident_pages,
+        "total_pages": total_pages,
+        "residency_fraction": residency_fraction,
+        "residency_percent": residency_fraction * 100.0,
+        "maximum_residency_fraction": ENCODER_EVICT_MAX_RESIDENCY_FRACTION,
+        "filesystem_state": "forced_cold_read",
+        "eviction_method": "linux_posix_fadvise_dontneed",
+        "verification_method": "linux_mmap_mincore",
+        "verify_attempts": verify_attempts,
+        "verified": residency_fraction <= ENCODER_EVICT_MAX_RESIDENCY_FRACTION,
+    }
+    if not metadata["verified"]:
+        raise RuntimeError(
+            "eviction residency for {} is {:.3%} after {} attempt(s), above the "
+            "{:.3%} cold-read ceiling; another process may be pinning the "
+            "file".format(
+                path,
+                residency_fraction,
+                ENCODER_EVICT_VERIFY_ATTEMPTS,
+                ENCODER_EVICT_MAX_RESIDENCY_FRACTION,
+            )
+        )
+    return metadata
+
+
+def _prepare_filesystem_cache_for_run(
     group_key: str,
     expected_fingerprint: str | None,
     model_files: dict[str, Path],
 ) -> list[dict[str, Any]]:
-    specifications = [("vae_checkpoint", model_files["vae_checkpoint"])]
+    """Prewarm the files a path legitimately reuses and force the encoder cold
+    for the paths that must pay a real load.
+
+    The VAE is prewarmed for every path exactly as before.  For Native and
+    Cached MISS the encoder is evicted instead of prewarmed; for Cached HIT the
+    encoder is never read, so only the cache entry files are added.
+    """
+    evict_specifications: list[tuple[str, Path]] = []
+    prewarm_specifications: list[tuple[str, Path]] = [
+        ("vae_checkpoint", model_files["vae_checkpoint"])
+    ]
     if group_key in ("native", "cached_miss"):
-        specifications.insert(
-            0, ("encoder_checkpoint", model_files["encoder_checkpoint"])
+        evict_specifications.append(
+            ("encoder_checkpoint", model_files["encoder_checkpoint"])
         )
     else:
         if (
@@ -369,7 +488,7 @@ def _prewarm_files_for_run(
             or FULL_FINGERPRINT_RE.fullmatch(expected_fingerprint) is None
         ):
             raise RuntimeError("cached HIT prewarm requires a full MISS fingerprint")
-        specifications.extend(
+        prewarm_specifications.extend(
             [
                 (
                     "cached_conditioning_metadata",
@@ -383,7 +502,11 @@ def _prewarm_files_for_run(
         )
 
     results = []
-    for role, path in specifications:
+    for role, path in evict_specifications:
+        if not path.is_file():
+            raise RuntimeError("required encoder file does not exist: {}".format(path))
+        results.append(_evict_encoder_file(path, role))
+    for role, path in prewarm_specifications:
         if not path.is_file():
             raise RuntimeError("required prewarm file does not exist: {}".format(path))
         results.append(_prewarm_file(path, role))
@@ -865,7 +988,7 @@ async def _execute_until_fl2va_complete(
             ),
             "pure_qwen_encoder_time": False,
             "server_startup_included": False,
-            "filesystem_prewarm_included": False,
+            "filesystem_cache_preparation_included": False,
             "downstream_output_node_included": False,
         },
         "memory": _memory_result(
@@ -1152,7 +1275,11 @@ async def _run_one(
         "case_id": case["case_id"],
         "prompt": case["prompt"],
         "process_state": "fresh_per_measurement",
-        "filesystem_cache": "explicitly_prewarmed",
+        "filesystem_cache": (
+            "vae_prewarmed_encoder_forced_cold"
+            if group_key in ("native", "cached_miss")
+            else "explicitly_prewarmed"
+        ),
         "filesystem_cache_verification": "linux_mmap_mincore",
         "sampling_interval_seconds": args.sampling_interval,
         "accepted": False,
@@ -1229,21 +1356,37 @@ async def _run_one(
                     session, base_url, delete_fingerprint
                 )
 
-            print("[PREWARM] touching and verifying required files", flush=True)
-            prewarm_started = time.perf_counter()
-            result["filesystem_prewarm"] = await asyncio.to_thread(
-                _prewarm_files_for_run,
+            print(
+                "[FS CACHE] prewarming reused files and forcing the encoder cold",
+                flush=True,
+            )
+            fs_cache_started = time.perf_counter()
+            result["filesystem_cache_preparation"] = await asyncio.to_thread(
+                _prepare_filesystem_cache_for_run,
                 group_key,
                 expected_fingerprint,
                 model_files,
             )
-            result["timing"]["filesystem_prewarm_seconds"] = (
-                time.perf_counter() - prewarm_started
+            result["timing"]["filesystem_cache_preparation_seconds"] = (
+                time.perf_counter() - fs_cache_started
             )
+            prewarmed = [
+                entry
+                for entry in result["filesystem_cache_preparation"]
+                if "eviction_method" not in entry
+            ]
+            evicted = [
+                entry
+                for entry in result["filesystem_cache_preparation"]
+                if "eviction_method" in entry
+            ]
             print(
-                "[PREWARM] verified {} file(s) at >= {:.1%} residency".format(
-                    len(result["filesystem_prewarm"]),
+                "[FS CACHE] prewarmed {} file(s) at >= {:.1%} residency; forced "
+                "{} encoder file(s) cold at <= {:.1%} residency".format(
+                    len(prewarmed),
                     PREWARM_MIN_RESIDENCY_FRACTION,
+                    len(evicted),
+                    ENCODER_EVICT_MAX_RESIDENCY_FRACTION,
                 ),
                 flush=True,
             )
@@ -1481,13 +1624,16 @@ def _markdown_tables(report: dict[str, Any]) -> str:
         "- Values above use accepted, uncontaminated attempts only; rejected "
         "attempts remain in the JSON audit history.",
         "- Time is FL2VA conditioning-stage wall time, not pure Qwen encoder "
-        "time; startup and filesystem prewarm are excluded.",
+        "time; startup and filesystem cache preparation are excluded.",
         (
-            "- Required files are deliberately prewarmed and verified with Linux "
-            "mmap + mincore at a {:.1%} residency threshold; this is not a "
-            "cold-disk benchmark."
+            "- The VAE (and, for a HIT, the cache entry) is prewarmed and "
+            "verified with Linux mmap + mincore at a {:.1%} residency "
+            "threshold. For Native and Cached MISS the ~27 GB encoder is "
+            "instead evicted with POSIX_FADV_DONTNEED and verified below "
+            "{:.1%} residency, so each pays a genuine cold load."
         ).format(
-            PREWARM_MIN_RESIDENCY_FRACTION
+            PREWARM_MIN_RESIDENCY_FRACTION,
+            ENCODER_EVICT_MAX_RESIDENCY_FRACTION,
         ),
         "- Process RAM uses reset-scoped VmHWM when supported; MemAvailable "
         "decrease is separate system memory pressure.",
@@ -1530,9 +1676,16 @@ def _initial_report(args: argparse.Namespace, gpu: dict[str, Any]) -> dict[str, 
         "started_at_utc": _utc_now(),
         "process_state": "fresh_per_measurement",
         "run_order": "interleaved_by_case_native_miss_hit",
-        "filesystem_cache": "explicitly_prewarmed",
+        "filesystem_cache": (
+            "vae_prewarmed_for_all_paths; encoder_forced_cold_for_native_and_"
+            "cached_miss; cache_entry_prewarmed_for_cached_hit"
+        ),
         "filesystem_cache_verification": "linux_mmap_mincore",
         "prewarm_required_residency_fraction": PREWARM_MIN_RESIDENCY_FRACTION,
+        "encoder_eviction_method": "linux_posix_fadvise_dontneed",
+        "encoder_eviction_max_residency_fraction": (
+            ENCODER_EVICT_MAX_RESIDENCY_FRACTION
+        ),
         "vram_peak_method": "nvml_device_polling",
         "vram_scope": "device_wide",
         "ram_peak_method": "vmhwm_reset_with_explicit_rss_polling_fallback",
@@ -1551,7 +1704,12 @@ def _initial_report(args: argparse.Namespace, gpu: dict[str, Any]) -> dict[str, 
             "only that case's recorded full fingerprint."
         ),
         "limitations": [
-            "Filesystem page cache is deliberately prewarmed; this is not a cold-disk benchmark.",
+            "The VAE and any cache entry are deliberately prewarmed, so those "
+            "reads are not cold-disk; the encoder is forced cold only for "
+            "Native and Cached MISS.",
+            "Encoder eviction relies on POSIX_FADV_DONTNEED plus a mincore "
+            "check; it forces the encoder cold but does not control the rest "
+            "of the page cache or kernel readahead during the load.",
             "VRAM is device-wide NVML memory on the target WSL2 environment, "
             "not per-process memory.",
             "NVML has no resettable peak equivalent to VmHWM here; sampled VRAM "
@@ -1586,6 +1744,9 @@ def _initial_report(args: argparse.Namespace, gpu: dict[str, Any]) -> dict[str, 
             "maximum_attempts_per_measurement": MAX_ATTEMPTS,
             "sampling_interval_seconds": args.sampling_interval,
             "prewarm_required_residency_fraction": PREWARM_MIN_RESIDENCY_FRACTION,
+            "encoder_eviction_max_residency_fraction": (
+                ENCODER_EVICT_MAX_RESIDENCY_FRACTION
+            ),
             "gpu_index": args.gpu_index,
             "port": args.port,
         },
@@ -1715,8 +1876,9 @@ async def _run_benchmark(args: argparse.Namespace) -> int:
         print("\n" + report["markdown_summary"])
         print("\nResults: {}".format(RESULT_PATH))
         print(
-            "Filesystem page cache was explicitly prewarmed and verified; "
-            "this is not a cold-disk benchmark."
+            "The VAE and any cache entry were prewarmed and verified; the "
+            "encoder was forced cold with POSIX_FADV_DONTNEED for Native and "
+            "Cached MISS."
         )
         return 0
     finally:
@@ -1952,8 +2114,9 @@ async def _run_reruns(args: argparse.Namespace) -> int:
         print("\n" + report["markdown_summary"])
         print("\nUpdated results: {}".format(RESULT_PATH))
         print(
-            "Filesystem page cache was explicitly prewarmed and verified; "
-            "this is not a cold-disk benchmark."
+            "The VAE and any cache entry were prewarmed and verified; the "
+            "encoder was forced cold with POSIX_FADV_DONTNEED for Native and "
+            "Cached MISS."
         )
         return 0
     finally:
