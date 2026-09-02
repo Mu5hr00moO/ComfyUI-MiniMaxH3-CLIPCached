@@ -1670,7 +1670,10 @@ def _initial_report(args: argparse.Namespace, gpu: dict[str, Any]) -> dict[str, 
         for index in range(1, CASE_COUNT + 1)
     ]
     return {
-        "schema_version": 2,
+        # 3: the encoder is forced cold (POSIX_FADV_DONTNEED) for Native and
+        # Cached MISS instead of being prewarmed, so schema 2 timings measured
+        # a materially different thing and must not be mixed in via --rerun.
+        "schema_version": 3,
         "status": "running",
         "benchmark_id": benchmark_id,
         "started_at_utc": _utc_now(),
@@ -1897,10 +1900,18 @@ def _load_rerun_report(args: argparse.Namespace) -> dict[str, Any]:
             "could not read existing benchmark results: {}".format(exc)
         ) from exc
 
-    if report.get("schema_version") != 2:
+    if report.get("schema_version") != 3:
         raise RuntimeError(
-            "--rerun requires a schema_version 2 report produced by "
-            "scripts/benchmark_conditioning.py"
+            "--rerun requires a schema_version 3 report produced by the "
+            "current scripts/benchmark_conditioning.py; found schema_version "
+            "{!r}. This is a methodology change, not just a version number: "
+            "schema 2 reports prewarmed the ~27 GB encoder into the page "
+            "cache, whereas schema 3 forces it cold (POSIX_FADV_DONTNEED) for "
+            "the Native and Cached MISS paths. Their timings are not "
+            "comparable, so a schema 2 report cannot be extended in place -- "
+            "run a fresh full benchmark instead.".format(
+                report.get("schema_version")
+            )
         )
     if report.get("status") not in ("complete", "rerun_failed"):
         raise RuntimeError(
