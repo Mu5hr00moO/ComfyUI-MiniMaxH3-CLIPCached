@@ -16,6 +16,7 @@ SERVER_SCRIPTS = [
     "test_ref2video_memory_trend.py",
     "test_ref2video_server_e2e.py",
     "test_ref2video_server_hit.py",
+    "benchmark_conditioning.py",
 ]
 
 

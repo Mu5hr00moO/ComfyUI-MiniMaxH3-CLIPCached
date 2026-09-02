@@ -247,8 +247,9 @@ def _assert_server_owns_port(proc: subprocess.Popen[Any], port: int) -> None:
     if proc.poll() is not None or proc.pid not in listeners:
         raise RuntimeError(
             "port {} is owned by PID(s) {}, not launched server PID {}; another "
-            "ComfyUI may be running, so this benchmark is refusing to adopt or "
-            "stop it".format(port, sorted(listeners), proc.pid)
+            "ComfyUI may already be running; refusing to adopt or stop it".format(
+                port, sorted(listeners), proc.pid
+            )
         )
 
 
