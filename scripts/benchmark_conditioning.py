@@ -1989,7 +1989,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--prompt-timeout", type=float, default=900.0)
     parser.add_argument("--gpu-release-timeout", type=float, default=120.0)
-    parser.add_argument("--gpu-release-tolerance-mib", type=float, default=64.0)
+    # Idle VRAM on this WSL2 box is not stable: with no CUDA process it drifts
+    # across a ~1100-1650 MiB band (host driver/compositor overhead through the
+    # GPU passthrough, documented in CLAUDE.md). A 64 MiB gate is inside that
+    # noise and would raise a false "GPU release incomplete" after the timeout
+    # on an otherwise healthy run, so allow the full observed drift plus margin.
+    parser.add_argument("--gpu-release-tolerance-mib", type=float, default=600.0)
     parser.add_argument(
         "--rerun",
         nargs="+",
