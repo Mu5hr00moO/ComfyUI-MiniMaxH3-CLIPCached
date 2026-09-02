@@ -1,485 +1,214 @@
 # ComfyUI-MiniMaxH3-CLIPCached
 
-Drop-in replacements for ComfyUI's stock **MiniMax H3 Image to Video** and
-**MiniMax H3 Reference to Video** nodes that disk-cache the text/vision
-encode step, so identical prompts skip loading the ~27 GB Qwen3-VL encoder
-entirely.
+<table>
+<tr>
+<td align="center"><strong>Native FL2VA</strong></td>
+<td align="center"><strong>CLIP-Cached FL2VA — cache HIT</strong></td>
+</tr>
+<tr>
+<td><img src="README_intro_native_memory.png" alt="Native MiniMax H3 FL2VA memory usage" width="360"></td>
+<td><img src="README_intro_cached_memory.png" alt="CLIP-Cached MiniMax H3 FL2VA cache HIT memory usage" width="360"></td>
+</tr>
+</table>
 
-> **Not to be confused with** `ComfyUI-MiniMaxH3-Cache`, `-TeaCache`, or
-> `-FirstBlockCache`. Those projects cache/skip *diffusion sampling steps*
-> on the DiT model — a different bottleneck entirely. This node caches the
-> *text/vision encode* step and never touches the sampler. They are
-> complementary, not competing — see [See also](#see-also).
+**ComfyUI-MiniMaxH3-CLIPCached** provides cached alternatives to ComfyUI's
+native MiniMax H3 FL2VA and Ref2VA conditioning nodes. It avoids repeatedly
+loading and running the large Qwen3-VL text/vision encoder when the same H3
+conditioning has already been computed.
 
-## The problem this solves
+On a cache **HIT**, the stored conditioning is restored from disk and Qwen3-VL
+is not loaded. On a **MISS**, CLIPCached follows ComfyUI's normal MiniMax H3
+path, runs the real encoder, unloads it, and stores the result for future reuse.
+`refresh` deliberately forces a new encode and replaces the matching cached
+entry.
 
-MiniMax H3's text/vision encoder (Qwen3-VL, ~27 GB on disk) is expensive to
-load and run. If you're iterating on the same prompt — testing seeds,
-samplers, or downstream settings — the stock node re-runs the full encode
-every single time, even though the conditioning it produces hasn't changed
-at all.
+This is a **time-for-disk-space trade-off**: repeated conditioning becomes much
+cheaper in time and memory pressure, while each unique encoder-visible
+conditioning request consumes disk space until its cache entry is deleted.
 
-This node caches the raw output of the encode step on disk, keyed by exactly
-the inputs that determine it (prompt, reference images, encoder checkpoint
-identity). On a repeat request, the encoder is never loaded — you go
-straight from an empty VRAM to conditioning in a fraction of a second.
+CLIPCached does not replace MiniMax H3 itself. VAE work, reference/keyframe
+preprocessing, latent construction, sampling, and video generation continue
+through ComfyUI's stock H3 implementation.
 
-## What this is *not*
+## How It Works
 
-This is not a reimplementation of MiniMax H3. It calls ComfyUI's own stock
-`MiniMaxH3ImageToVideo.execute()` (or `MiniMaxH3ReferenceToVideo.execute()`)
-directly and lets it do all the real work (frame resizing, VAE keyframe /
-reference encoding, AV latent construction, `minimax_keyframes` /
-`minimax_refs`). The only thing these nodes change is what the stock node
-sees as its `clip` input: instead of a real, already-loaded CLIP object, it
-gets a transparent proxy that checks a disk cache before deciding whether to
-load the real encoder at all.
+```text
+CLIP-Cached H3 node
+        |
+        v
+Check disk cache
+   |             |
+   | HIT         | MISS / REFRESH
+   v             v
+load saved      run Qwen3-VL
+conditioning   -> save result
+   |             |
+   +------+------+
+          |
+          v
+continue through normal MiniMax H3
+```
 
-Because of this design, each node's `CONDITIONING`/`LATENT` output is
-**bit-for-bit identical** to the matching stock node's output for the same
-inputs.
-The bit-exact proof lives in [`scripts/test_stock_vs_cache.py`](scripts/test_stock_vs_cache.py):
-it loads the real ~27 GB Qwen3-VL encoder and checks
-`stock == cached-MISS == cached-HIT` with exact `torch.equal` (not
-`torch.allclose`). That script is a **manually run, GPU-required diagnostic**,
-not part of the automatic `pytest` suite — the CI tests all use small
-stand-in tensors and never load the real encoder. An earlier
-proxy-equivalence check used a tolerance (`torch.allclose`, `atol=1e-6`,
-`rtol=1e-5`) while the architecture was still being built; the final proof
-on real hardware uses exact equality.
+A new cache entry is needed when the **effective text/vision input seen by
+Qwen3-VL changes**. Downstream diffusion settings do not invalidate conditioning
+by themselves.
 
-Downstream nodes like **MiniMax H3 Add Guide** work completely unchanged,
-since they only ever see a standard ComfyUI `CONDITIONING` object and have no
-idea it came from a cache.
+| Change | New CLIPCached entry? |
+|---|---|
+| Prompt text | **Yes** |
+| Resolved textual-inversion `embedding:` content | **Yes** when the resolved embedding tensor changes |
+| Encoder checkpoint / `clip_name` | **Yes** |
+| Keyframe/reference pixels or effective reference-video frames | **Yes** when encoder-visible content changes |
+| Resolution / Ref2VA length | **Only when it changes encoder-visible image/video input** |
+| Seed | **No** |
+| Sampler / scheduler / sampling steps | **No** |
+| Downstream diffusion/model LoRA or strength | **No** |
+| Ref2VA raw audio waveform | **No for the CLIP cache** |
+
+See the [Node Guide](docs/NODE_GUIDE.md) for FL2VA- and Ref2VA-specific cache
+rules.
 
 ## Requirements
 
-- ComfyUI with native MiniMax H3 support (`comfy_extras/nodes_minimax_h3.py`
-  in ComfyUI core — this has been part of ComfyUI since v0.30.0; developed
-  and tested against v0.34.2).
-- A MiniMax H3 text/vision encoder checkpoint in `models/text_encoders`
-  (e.g. `qwen3vl_32b_minimax_h3_int8_convrot.safetensors`, `.safetensors`
-  format — GGUF checkpoints are untested with this node).
-- The matching MiniMax H3 VAE in `models/vae`.
-- `safetensors` (already a standard ComfyUI dependency — nothing extra to
-  install).
+CLIPCached requires ComfyUI with the native MiniMax H3 nodes available. Native
+MiniMax H3 support is present in ComfyUI **v0.30.0 and newer**, but this project
+is developed and validated against **ComfyUI v0.34.2**; older ComfyUI releases
+are not part of the current validation baseline.
+
+Use a MiniMax H3 text/vision encoder checkpoint in
+`ComfyUI/models/text_encoders` (for example the tested
+`qwen3vl_32b_minimax_h3_int8_convrot.safetensors`). The cache itself uses the
+`safetensors` Python package, which is already part of the tested ComfyUI
+v0.34.2 requirements. GGUF encoders are currently untested.
 
 ## Installation
+
+If the stock MiniMax H3 nodes already work, no additional model setup is
+required specifically for CLIPCached.
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached
 ```
 
-Restart ComfyUI. Five new nodes appear under
-`model/conditioning/minimax/cached` — a deliberately separate category from
-the stock nodes' `model/conditioning/minimax`, since these nodes have
-different timing behavior (a first run can be much slower than a cached
-repeat) and a different input contract:
+Restart ComfyUI after installation. The nodes appear under:
 
-- **"MiniMax H3 CLIP-Cached FL2VA"** and **"MiniMax H3 CLIP-Cached Ref2VA"**
-  — the two main cached nodes (below).
-- **"MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"** and **"… Ref2VA
-  (Dual Resolution)"** — siblings that encode at two resolutions from one
-  shared set of inputs (see [Dual Resolution variants](#dual-resolution-variants)).
-- **"MiniMax H3 CLIP Name"** — a one-widget encoder-checkpoint picker to
-  drive several cached nodes from a single place (see
-  [The CLIP Name node](#the-clip-name-node)).
+`model/conditioning/minimax/cached`
 
-## The FL2VA node
+Cache files are stored in:
 
-| Input | Type | Notes |
-|---|---|---|
-| `clip_name` | dropdown (`models/text_encoders`) | Replaces the stock `clip` input. Loaded lazily — **only on a cache miss**. |
-| `vae` | VAE | Same as stock — always required, since keyframe encoding is never cached. |
-| `prompt` | string (multiline) | Same as stock. |
-| `width` / `height` | int | Same defaults and range as stock (1344×768). |
-| `length` | int | Same as stock (default 124 = ~5s at 24 fps, snapped to the model's 17k+5 frame grid). |
-| `first_frame` / `last_frame` | image (optional) | Same as stock. |
-| `cache_mode` | `auto` / `refresh` | `auto`: reuse a cached encode if one exists for this exact prompt+images+checkpoint, otherwise encode and save it. `refresh`: ignore any existing cache entry, always re-encode, and overwrite it. |
+`ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached/cache`
 
-Outputs (`positive` / `latent`) are identical in type and shape to the
-stock node's `CONDITIONING` / `LATENT`.
+### Updating
 
-## How the cache works
+```bash
+cd ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-CLIPCached
+git pull
+```
 
-**What gets cached:** only the raw return value of
-`clip.encode_from_tokens_scheduled()` — the conditioning tensor plus its
-extras (`pooled_output`, `minimax_token_tags`). Nothing else. The AV
-latent, VAE-encoded keyframes, and `minimax_keyframes` metadata are
-computed by the stock node on *every* call — hit or miss — because they
-depend on `vae`, not `clip`, and were never part of the expensive step
-this node targets.
+Restart ComfyUI after updating. See
+[Cache Compatibility & Upgrading](docs/TECHNICAL_DETAILS.md#cache-compatibility-upgrading--warnings)
+for cache behavior across updates.
 
-**Cache key:** a SHA-256 fingerprint over:
-- a cache schema version (so the on-disk format can evolve without
-  silently misinterpreting old entries),
-- the encoder checkpoint's identity — filename + file size + modification
-  time + filesystem metadata-change time (not a hash of the full 27 GB
-  file; `ctime_ns` catches ordinary replacements even when size and mtime
-  are preserved),
-- the exact prompt text,
-- the content of any textual-inversion embeddings the prompt references
-  through `embedding:<name>` — the tensors the stock tokenizer resolves are
-  hashed in, so swapping an embedding file under an unchanged name is a
-  cache miss (a prompt that references no embedding, or one whose file is
-  missing, hashes exactly as before this was added),
-- the exact list of images the stock node's frame-resize step produced
-  (i.e. already resized to your requested `width`/`height` — hashing this
-  is equivalent to hashing exactly what the encoder would see, without
-  reimplementing the resize logic), including each tensor's shape and
-  dtype alongside its bytes, and preserving order (`first_frame` and
-  `last_frame` are never interchangeable).
+## Included Nodes
 
-**What does *not* affect the cache key:** seed, sampler, steps, scheduler,
-or anything else that only affects the sampling stage downstream — those
-have no bearing on what the encoder produces.
+- **MiniMax H3 CLIP-Cached FL2VA** — cached counterpart of stock H3 Image to Video.
+- **MiniMax H3 CLIP-Cached Ref2VA** — cached counterpart of stock H3 Reference to Video.
+- **MiniMax H3 CLIP Name** — one shared encoder-name selector for cached nodes.
+- **MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)** — prepares base H3 conditioning/latent plus matching upscale-target conditioning.
+- **MiniMax H3 CLIP-Cached Ref2VA (Dual Resolution)** — Dual Resolution equivalent for Ref2VA.
 
-**On-disk format:** no `pickle`. Each entry is a `<fingerprint>.safetensors`
-file (tensors) plus a `<fingerprint>.json` file (everything else — the
-structure needed to reconstruct the original object, with tensors replaced
-by references into the `.safetensors` file). Each file is published with an
-atomic temp-file + `os.replace()` operation; the two-file pair cannot itself
-be replaced atomically. Tensors are published before the skeleton and both
-files carry the same generation ID, so an interrupted refresh leaves a
-detectably inconsistent entry rather than a plausible-looking mixed pair.
-Known cache read/parse failures (missing files, filesystem/runtime read
-errors, corrupted JSON/safetensors, generation mismatch, mismatched tensor
-references) are treated as a plain cache miss and logged as a warning rather
-than blocking generation.
+The Dual Resolution nodes **prepare** the base H3 conditioning/latent and the
+second-resolution conditioning; they are not upscalers by themselves.
 
-## Behavior: hit vs. miss
-
-- **Cache hit:** the encoder is never loaded. `clip_name`'s file is never
-  touched beyond the initial `stat()` used to build the fingerprint.
-- **Cache miss:** the encoder is loaded through ComfyUI's own `CLIPLoader`
-  path (`clip_type=MINIMAX`), so it gets the exact same quantization and
-  VRAM-management behavior as the stock node — used once, the result is
-  saved to disk, and the encoder is explicitly unloaded
-  (`comfy.model_management.unload_model_and_clones`) before the node
-  returns. The encoder never lingers in VRAM after a single request
-  completes, regardless of whether that request was a hit or a miss.
-
-## The Ref2VA node
-
-**"MiniMax H3 CLIP-Cached Ref2VA"** is the same design applied to ComfyUI's
-stock **MiniMax H3 Reference to Video** node: a transparent cached-CLIP
-proxy in front of `MiniMaxH3ReferenceToVideo.execute()`, which still does
-all the real work (reference resizing, VAE image/video/audio encoding, AV
-latent construction, `minimax_refs`). Only the raw output of
-`clip.encode_from_tokens_scheduled()` is cached.
-
-| Input | Type | Notes |
-|---|---|---|
-| `clip_name` | dropdown (`models/text_encoders`) | Replaces the stock `clip` input. Loaded lazily — **only on a cache miss**. |
-| `vae` | VAE | Video VAE. Same as stock — always required; reference/keyframe encoding is never cached. |
-| `audio_vae` | VAE | Audio VAE, for reference audio and video soundtracks. Not part of the cached state (see below), but still required by the stock node. |
-| `prompt` | string (multiline) | Same as stock. Refers to references by ordinal tag — `<Picture 1>`, `<Video 1>`, `<Audio 1>` — counted 1-based per type in presentation order (images, then videos, then standalone audio). |
-| `width` / `height` | int | Same defaults and range as stock (1344×768, min 32, step 32). |
-| `length` | int | Same as stock (default 124, min 5, max 3600, step 17). |
-| `ref_image_size` | `match` / `max` | How reference images are sized before encoding. `match` scales each image down to the generation's pixel area; `max` scales to a 2048px short edge for best identity fidelity (and is several times slower, since reference tokens ride through every sampling step). Matches the stock option exactly. |
-| `ref_image_0`–`ref_image_8` | image (optional) | Up to 9 reference images. |
-| `ref_video_0`–`ref_video_2` | image (optional) | Up to 3 reference videos, each an `IMAGE` batch of frames (not a `VIDEO`). |
-| `ref_video_audio_0`–`ref_video_audio_2` | audio (optional) | Soundtrack for the same-numbered reference video (`ref_video_audio_1` pairs with `ref_video_1`). |
-| `ref_audio_0`–`ref_audio_2` | audio (optional) | Up to 3 standalone reference audios. |
-| `cache_mode` | `auto` / `refresh` | Same as the FL2VA node. |
-
-These 18 reference slots are **v1-style fixed optional inputs** — one
-socket per slot, with the counts (9 / 3 / 3 / 3) mirroring the stock node's
-own limits. The stock node uses a dynamic `io.Autogrow` input that adds
-sockets on demand; this node does not — the slot count is hard-capped in
-v1.
-
-Outputs (`positive` / `latent`) are identical in type and shape to the
-stock node's `CONDITIONING` / `LATENT`.
-
-### How caching works for Ref2VA
-
-The cache key is built the same way as for the FL2VA node — a SHA-256
-fingerprint over the schema version, the encoder checkpoint identity, the
-prompt, and every argument passed into `clip.tokenize()`, with list order
-preserved and never sorted. For Ref2VA that last part is the list of
-reference items (`minimax_ref_items`) the stock node assembles before
-tokenizing. A few consequences are specific to this node:
-
-- **Reference order is semantically load-bearing.** The prompt addresses
-  references by position (`<Picture 2>` is the second image in the list,
-  not a slot literally named `ref_image_2`), so the fingerprint preserves
-  that order exactly — the same mechanism by which `first_frame` and
-  `last_frame` are never interchangeable in the FL2VA node.
-
-- **The absolute UI slot index does not matter — only the relative order
-  of the connected references does.** Moving your only reference image from
-  `ref_image_0` to `ref_image_5` still produces a cache **hit**: the stock
-  node compacts the connected slots into a dense list before tokenizing, so
-  both cases present exactly one `<Picture 1>`. This is intended, not a
-  bug, and is covered by a test (R8).
-
-- **Audio content never enters the cached state.** The raw waveform of a
-  reference audio or a video soundtrack is encoded by `audio_vae` into
-  `minimax_refs` (recomputed on every call, hit or miss) and is *never*
-  passed to the text/vision encoder — the encoder only sees an `<Audio N>`
-  marker. So swapping just the audio file, with the same prompt / images /
-  videos, does **not** invalidate the cache: the encoder cannot see the
-  difference. The *number and position* of audio references does affect the
-  cache, though, even with identical content, because that changes the
-  `<Audio N>` tags in the token stream.
-
-- **`ref_image_size` affects the cache only indirectly, through pixels.**
-  It changes the resized reference image that goes into the encoder, so for
-  large images (short edge well above the generation size) `match` and
-  `max` produce different fingerprints. For small images that neither mode
-  upscales, the resized tensor is bit-identical either way and the
-  fingerprints deliberately collide — a safe collision, since the encoder
-  input really is identical.
-
-- **`length` can affect the cache key too, through reference videos.** The
-  stock node trims each reference video to `length`'s frame count before
-  subsampling it to 2 fps for the encoder. For a reference video shorter
-  than that cut point, the same frames reach the encoder regardless of
-  `length`, so changing it is still a cache **hit**. For a reference video
-  longer than the cut point, a different `length` produces a different
-  subsampled frame set, so it **misses** — correctly, since the encoder
-  really did see different frames, but this can look surprising if you
-  expect `length` to only affect the output duration.
-
-### Limitations specific to Ref2VA
-
-- **There is no "safe" reorder operation in the UI.** Because reference
-  order changes what the prompt's `<Picture N>` / `<Video N>` / `<Audio N>`
-  tags mean, any reordering of connected references is a real semantic
-  change and will (correctly) miss the cache.
-- **The slot limits are fixed in v1** (9 images, 3 videos, 3 video
-  soundtracks, 3 standalone audios), not the stock node's dynamic
-  `io.Autogrow`. If you need more references than that, use the stock node.
-
-## The CLIP Name node
-
-**"MiniMax H3 CLIP Name"** is a one-widget helper: a single `clip_name`
-dropdown — the exact same `models/text_encoders` picker the FL2VA and
-Ref2VA nodes carry — and a single output that re-emits the selected
-filename.
-
-Its point is to choose the encoder checkpoint in **one** place and feed it
-into the `clip_name` input of any number of FL2VA / Ref2VA / Dual
-Resolution nodes at once, after "Convert widget to Input" on each. Without
-it, a graph with several cached nodes repeats the checkpoint name on every
-one of them, and they can silently drift apart; with it, there is a single
-value to change.
-
-The output is typed so it plugs into a `clip_name` slot regardless of which
-encoder files are in `models/text_encoders` at the time — it stays valid
-even if that folder gains or loses a file mid-session, with no restart.
-
-## Dual Resolution variants
-
-**"MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"** and **"… Ref2VA (Dual
-Resolution)"** each run the cached encode **twice** from one set of inputs:
-once at the base `width`/`height` and once at a second
-`width_upscale`/`height_upscale`. They return `positive` / `latent` for the
-base resolution and a single `positive_upscale` conditioning for the
-second.
-
-| Input | Type | Notes |
-|---|---|---|
-| `width_upscale` / `height_upscale` | int | The second target resolution. Same defaults and range as `width` / `height`. Encoded through the same cached path — with `cache_mode="auto"`, a hit if the encoder input ends up identical and a real encode otherwise; `cache_mode="refresh"` always re-encodes. |
-| `generate_upscale_cond` | bool (default on) | When off, the second encode is skipped entirely and `positive_upscale` comes back as `None`. See below. |
-
-Every other input — `prompt`, `clip_name`, `vae` (and `audio_vae`),
-`first_frame` / `last_frame` or the `ref_*` slots, `ref_image_size`,
-`length`, `cache_mode` — matches the single-resolution node and is shared
-across both passes. Outputs are `positive` / `latent` for the base
-resolution and `positive_upscale` for the second — conditioning only, no
-latent. The upscale pass never produced a useful latent: its AV latent was
-always a fresh empty tensor at the upscale size, so a real upscale workflow
-ignored it and instead upscaled the *denoised* latent from the first pass
-with an external latent-upscale node. Only the upscale-resolution
-conditioning is worth keeping.
-
-**This is a consistency feature, not a performance optimization in
-itself.** Two separate cached nodes, one per resolution, already share a
-cache entry automatically whenever the pixels reaching the encoder come out
-identical regardless of resolution — a plain prompt with no keyframes,
-small reference images, or `ref_image_size="max"`; the fingerprint
-mechanism deduplicates that case on its own, so with `cache_mode="auto"`
-the second resolution is a plain cache hit and the encoder still loads at
-most once. What two separate nodes cannot guarantee is that their shared
-inputs stay in lockstep: edit the prompt on one and forget the other and
-the two resolutions silently diverge. The Dual Resolution node removes that
-failure mode by construction — one prompt widget, one keyframe pair, one
-checkpoint. When a keyframe or a large reference image genuinely makes the
-encoder input differ by resolution, both passes encode for real and produce
-two distinct cache entries, exactly as two separate nodes would.
-
-The at-most-once encoder load is specific to `cache_mode="auto"`.
-`cache_mode="refresh"` deliberately re-encodes **both** resolutions in full
-on every run — whether or not their fingerprints match — so it always loads
-the encoder twice and overwrites both cache entries.
-
-### `generate_upscale_cond`
-
-An optional bool, **on** by default. When **off**, the second
-(upscale-resolution) encode does not run at all — `positive_upscale`
-returns `None` and nothing is loaded or computed for it. Turn it off for a
-plain base-resolution generation where nothing downstream consumes the
-upscale conditioning; turn it on when you actually need it.
-
-**Bypassing the downstream consumer of `positive_upscale` does not skip
-the upscale encode** — this switch is the only thing that does. The node is
-a single atomic call that returns all three outputs together, so ComfyUI
-cannot partially execute it: even with a whole downstream upscaler chain
-set to bypass, the node still runs in full to produce the base-resolution
-outputs, and the upscale encode happens along with it unless
-`generate_upscale_cond` is off. A skipped upscale encode is logged as an
-`[UPSCALE COND SKIPPED]` line.
-
-## Measured performance
-
-Numbers below are from real runs on one machine (RTX-class GPU, 16 GB
-VRAM, WSL2) and will vary with your disk speed, OS page cache state, and
-whether ComfyUI's DynamicVRAM streaming (`aimdo`) is active on your
-hardware — treat these as orders of magnitude, not guarantees:
-
-- Cache **hit**: ~0.0s, encoder never touched.
-- Real encode through a live ComfyUI server with DynamicVRAM active:
-  ~19–20s per distinct prompt.
-- Real encode in a cold, isolated process (no DynamicVRAM, encoder not
-  yet resident): well over a minute.
-
-Side-by-side RAM/VRAM monitor captures of a cache miss (the ~27 GB encoder
-loading) vs. a cache hit (the load line never appears) are still to be
-added here.
-
-<!-- TODO: memory comparison screenshots, see CLAUDE.md R10 prep -->
-
-## A note on memory behavior
-
-This node was extensively stress-tested for VRAM/RAM leaks across repeated
-load/unload cycles. The short version: **when ComfyUI is started normally**
-(`python main.py` — the way essentially everyone runs it), repeated cache
-misses across a live session show a flat memory trend; the targeted
-unload after each miss does its job.
-
-Isolated test scripts that load the encoder by bypassing `main.py`
-entirely (calling `CLIPLoader` directly, skipping ComfyUI's own
-DynamicVRAM initialization) *can* show large, non-representative memory
-growth per cycle. That growth is an artifact of skipping ComfyUI's normal
-startup path in a synthetic test harness — not a bug in this node's
-caching logic, and not something you'll see running ComfyUI the normal
-way. The full investigation, including the two incidents that triggered
-it, is documented in `CLAUDE.md` for anyone curious or extending this
-project.
+[Full Node Guide →](docs/NODE_GUIDE.md)
 
 ## Cache Manager
 
-A built-in panel for inspecting and pruning the cache, opened from the
-floating button ComfyUI shows over the graph (or the Extensions menu).
+A built-in Cache Manager lets you inspect, search, tag, favorite, rename, and
+delete cached conditioning entries. It also understands Dual Resolution pairs
+and highlights the most recently used entry in the current ComfyUI session.
 
-- **Check** scans `cache/` and lists every entry with its prompt,
-  reference thumbnails, and size.
-- **Search**, **tag**, and **favorite** filters narrow the list. A display
-  name, notes, and tags are yours to edit per entry; the prompt itself
-  stays read-only — the cache on disk is the source of truth.
-- **Load** copies an entry's prompt to the clipboard; **Delete** removes a
-  whole entry (core cache + sidecar + thumbnails) after a confirmation.
-- A **FL2VA / Ref2VA** switch flips the list between the two nodes' entries.
+[Cache Manager Guide →](docs/CACHE_MANAGER.md)
 
-**Dual-resolution pairing:** when two entries come from a single Dual
-Resolution run and have different fingerprints (a keyframe or large
-reference made the encoder input resolution-dependent), the manager folds
-them into **one visible row** — the base resolution — with an expandable
-**"+ rescaled to W×H"** badge that reveals the second entry. The prompt is
-not repeated, since it is identical by construction. **Delete does not
-cascade:** removing one side leaves the other fully intact on disk, marked
-with a warning badge on the next **Check**, to be removed by hand if you
-don't want it.
+## Performance
 
-The manager is only an index over the cache directory, so deleting `cache/`
-by hand and re-running **Check** is always safe.
+CLIPCached accelerates only the MiniMax H3 text/vision conditioning stage. It
+does not make diffusion sampling itself faster.
 
-## Limitations
+In the controlled benchmark, a repeated **cache HIT** reduced median conditioning
+time from **29.85 s** with the native node to **1.12 s**, while avoiding the
+Qwen3-VL encoder load entirely. These are medians across **five different
+cases per mode**, measured on an **RTX 5080 16 GB under WSL2**; Native and MISS
+use a deliberately cold encoder-file read. Results are reported with median
+absolute deviation (MAD), and the full table retains the slow cold-read cases.
 
-- **No automatic cache eviction.** Entries accumulate in `cache/`
-  indefinitely; nothing deletes old ones by age or total size. Each entry
-  is small (roughly tens of MB, not gigabytes — it's a conditioning
-  tensor, not a model), but a long-running install will still need the
-  occasional clear-out. The Cache Manager makes that point-and-click, but
-  deciding *when* is still up to you.
-- **No "cache-only" mode.** On a miss, this node always falls through to
-  loading the full encoder (or raises, if that fails) — there's currently
-  no way to say "only ever use the cache, never load the 27 GB model." A
-  `cache_mode="cache_only"` option is planned but not implemented yet.
-- Wraps only the two stock MiniMax H3 conditioning nodes that actually run
-  the encoder: `MiniMaxH3ImageToVideo` (the FL2VA node) and
-  `MiniMaxH3ReferenceToVideo` (the Ref2VA node). The other stock MiniMax H3
-  nodes (`EmptyMiniMaxH3LatentAV`, `MiniMax H3 Add Guide`) never touch the
-  encoder, so there is nothing there to cache.
-- No prompt *library*: the cache is keyed by content fingerprint, and the
-  Cache Manager lets you name, tag, search, and delete those entries, but
-  there is no separate store of reusable named prompts independent of a
-  cached encode.
-- Requires ComfyUI's native MiniMax H3 support already present in your
-  ComfyUI install — this is a wrapper around it, not a substitute.
-- This node loads the encoder checkpoint itself by filename
-  (`clip_name`) rather than accepting an already-constructed `CLIP`
-  socket. If you rely on a separately loaded/patched CLIP object
-  (e.g. from another custom node), this node cannot use it -- it is a
-  drop-in replacement for the *node*, not for an arbitrary upstream
-  CLIP socket.
-- `.safetensors` checkpoints only; GGUF encoders are untested.
-- Assumes a **single ComfyUI process per `cache/` directory.** All the
-  write synchronisation (per-fingerprint locks, the encoder load lock) is
-  in-process `threading.Lock` state, so it does not coordinate two separate
-  ComfyUI servers (e.g. two ports) pointed at the same `cache/` folder.
+| Mode | Conditioning stage | Peak VRAM | Peak process RAM |
+|---|---:|---:|---:|
+| Native | **29.85 s** (MAD 0.82 s) | 15.24 GiB | 29.25 GiB |
+| CLIPCached MISS\* | **32.23 s** (MAD 0.36 s) | 15.24 GiB | 28.25 GiB |
+| CLIPCached HIT | **1.12 s** (MAD 0.02 s) | 2.67 GiB | 3.38 GiB |
 
-## Testing
+\* After a CLIPCached MISS encode, MiniMaxH3TEModel / Qwen3-VL is unloaded and is not kept resident for downstream sampling.
 
-A comprehensive automated test suite (pytest), none of which require a GPU
-or the real encoder — they all use small stand-in tensors — covering:
+A MISS intentionally performs the real encoder work and stores the resulting
+conditioning, so it is not expected to be faster than Native. The benefit is on
+subsequent HITs: the cached conditioning is restored from disk without loading
+MiniMaxH3TEModel / Qwen3-VL.
 
-- cache-key determinism and invalidation (prompt/image/checkpoint
-  changes produce a different key; sampler/seed/scheduler changes do not),
-- cache serialization round-trips, including atomic-write, dotted-key
-  rejection, and corrupted/partial-entry handling,
-- proxy laziness (the real encoder loader is never called on a hit) and
-  concurrency (two racing misses for one entry load the encoder only once),
-- node wiring (`cache_mode` correctly reaches the proxy, node
-  registration is correct),
-- the Cache Manager: verbose-sidecar storage, HTTP routes, orphan
-  scanning, and thumbnail generation.
+The Native and MISS measurements deliberately use a cold encoder file read; VAE
+data is prewarmed. This preserves real cold-load behavior instead of discarding
+slow runs as outliers.
 
-Proxy/stock output equivalence against the **real 27 GB encoder** is not in
-this suite — it is proven separately by
-[`scripts/test_stock_vs_cache.py`](scripts/test_stock_vs_cache.py) (phase 23),
-a manually run script that needs the checkpoint and a GPU and compares
-`stock == cached-MISS == cached-HIT` with exact `torch.equal`.
+[Benchmark methodology & full results →](docs/PERFORMANCE.md)
 
-The Ref2VA node went through the same verification process as the FL2VA
-node: equivalence against the real encoder (`torch.equal`), an end-to-end
-test through a live server, and a short memory-trend check — see `CLAUDE.md`
-for the full history.
+## Documentation
 
-```bash
-pytest
-```
+- [Node Guide](docs/NODE_GUIDE.md)
+- [Cache Manager](docs/CACHE_MANAGER.md)
+- [Performance & Benchmarks](docs/PERFORMANCE.md)
+- [Technical Details & Cache Compatibility](docs/TECHNICAL_DETAILS.md)
+- [Testing & Limitations](docs/TESTING_AND_LIMITATIONS.md)
 
-See `CLAUDE.md` in this repo for the full engineering history and the
-reasoning behind specific design decisions, if you're extending this.
+## Current Limitations
 
-## See also
+The current version has no automatic cache eviction and no `cache_only` mode.
+Ref2VA uses fixed reference slots, GGUF encoders are untested, and one cache
+directory is intended to be owned by one running ComfyUI process.
 
-This node speeds up the text/vision encode step only. If you're also
-looking to speed up the diffusion sampling itself (the DiT forward
-passes), these are complementary, independent projects worth combining
-with this one:
+[Full limitations →](docs/TESTING_AND_LIMITATIONS.md#limitations)
 
-- [`ComfyUI-MiniMaxH3-Cache`](https://github.com/lihaoyun6/ComfyUI-MiniMaxH3-Cache)
-- [`ComfyUI-MiniMaxH3-TeaCache`](https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache)
-- [`ComfyUI-MiniMaxH3-FirstBlockCache`](https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache)
+## Related MiniMax H3 Projects
+
+- [H3-Optimizations](https://github.com/Zironic/H3-Optimizations) — reduces H3
+  generation VRAM requirements and can optionally use sparse attention for speed.
+- [Comfyui-MMH3-UltimateUpscale](https://github.com/bbaudio-2025/Comfyui-MMH3-UltimateUpscale)
+  — upscales and re-samples MiniMax H3 AV latents with temporal chunking and spatial
+  tiling to keep VRAM bounded while preserving the audio track.
+- [ComfyUI-MiniMaxH3-Prompt-Writer](https://github.com/duckyshell/ComfyUI-MiniMaxH3-Prompt-Writer)
+  — a MiniMax H3 prompt-writing workspace for ComfyUI.
+
+These projects are independent of CLIPCached and address different parts of the H3
+workflow.
 
 ## Credits
 
-The pattern of disk-caching text-encoder output is inspired by Kijai's
-`WanVideoTextEncodeCached` node in `ComfyUI-WanVideoWrapper`. The
-non-pickle cache format and targeted-unload approach were informed by
-`ComfyUI-H3-Multishot`.
+**ComfyUI-MiniMaxH3-CLIPCached** was created and maintained by
+[Mu5hr00moO](https://github.com/Mu5hr00moO).
+
+The project builds on ComfyUI's native MiniMax H3 implementation. The cache
+pattern was inspired by
+[Kijai's `WanVideoTextEncodeCached`](https://github.com/kijai/ComfyUI-WanVideoWrapper),
+and the non-pickle storage / targeted-unload approach was informed by
+[ComfyUI-H3-Multishot](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot).
+
+Development also made extensive use of **ChatGPT / OpenAI**, **OpenAI Codex**,
+**Claude Code / Anthropic**, and **Grok / xAI** for architecture,
+implementation support, debugging, testing, technical review, and
+documentation. These tools are credited as development assistants, not project
+authors; final design decisions, hardware validation, and responsibility remain
+with the human maintainer.
+
+Thanks to the ComfyUI contributors and the wider MiniMax H3 community.
+
+**License:** [MIT](LICENSE)
