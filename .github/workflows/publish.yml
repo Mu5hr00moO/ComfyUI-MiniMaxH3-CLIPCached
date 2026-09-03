@@ -13,8 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The publish step below receives REGISTRY_ACCESS_TOKEN, the Registry
+      # publishing secret. Both actions are pinned to full commit SHAs rather
+      # than a moving ref (@main / @v7): a retargeted branch or a moved tag
+      # would otherwise run unreviewed third-party code with access to that
+      # token. The official Comfy documentation template uses
+      # `Comfy-Org/publish-node-action@main`; pinning it here is a deliberate
+      # departure from that template. To update, review the upstream diff and
+      # bump the SHA together with its version comment in a single commit.
       - name: Publish Custom Node
-        uses: Comfy-Org/publish-node-action@main
+        uses: Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main @ 2026-09-03
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
