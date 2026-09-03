@@ -1,6 +1,6 @@
 [project]
 name = "minimaxh3-clipcached"
-version = "1.0.0"
+version = "1.1.0"
 description = "Cached alternatives to ComfyUI's native MiniMax H3 FL2VA and Ref2VA conditioning nodes that avoid repeatedly loading the large Qwen3-VL text/vision encoder when the same H3 conditioning was already computed."
 license = { file = "LICENSE" }
 dependencies = ["safetensors"]

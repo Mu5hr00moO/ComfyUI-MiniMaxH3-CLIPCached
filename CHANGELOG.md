@@ -19,6 +19,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   more references than the fixed slot count does not have to fall back to
   the stock node.
 
+## [1.1.0] - 2026-09-03
+
+### Added
+
+- Example workflow **MiniMax H3 T2V (CLIP-Cached)**, listed in ComfyUI
+  under **Workflow → Browse Templates** after installation and also kept
+  in `example_workflows/` in the repository. It uses only ComfyUI core
+  nodes plus the CLIP-Cached FL2VA node from this pack.
+
 ## [1.0.0] - 2026-09-03
 
 First public release.
@@ -44,5 +53,6 @@ First public release.
   pre-release caches; unmatched entries are simply re-encoded on first
   use.
 
-[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.0.0

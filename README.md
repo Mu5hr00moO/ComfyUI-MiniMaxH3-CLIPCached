@@ -110,6 +110,14 @@ Restart ComfyUI after updating. See
 [Cache Compatibility & Upgrading](docs/TECHNICAL_DETAILS.md#cache-compatibility-upgrading--warnings)
 for cache behavior across updates.
 
+### Example Workflow
+
+This repository includes an example workflow, **MiniMax H3 T2V
+(CLIP-Cached)**. After installation it appears in ComfyUI under
+**Workflow → Browse Templates**, and the file itself lives in
+[`example_workflows/`](example_workflows/) in this repository. It uses
+only ComfyUI core nodes plus the CLIP-Cached FL2VA node.
+
 ## Included Nodes
 
 - **MiniMax H3 CLIP-Cached FL2VA** — cached counterpart of stock H3 Image to Video.
