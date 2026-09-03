@@ -524,16 +524,19 @@
 .h3cm-detail-ref-sources {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 1px;
-  max-width: 108px;
+  width: 120px;
 }
 .h3cm-detail-ref-file {
+  display: block;
   color: #9aa1ad;
   font-size: 10px;
   line-height: 1.35;
   text-align: center;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .h3cm-detail-ref-file.is-empty {
   font-style: italic;

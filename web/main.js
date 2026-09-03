@@ -1042,10 +1042,12 @@ export function detailRefCells(references, refSources) {
 // rendered, even with no sources: an explicit muted "no file source" tells a
 // correctly file-less reference (VAEDecode / EmptyImage output) apart from a
 // trace that failed. The raw slot name (ref_image_5) is never shown -- it is
-// the fifth input but perhaps the third picture, which misleads. The full
-// path, too long for the tile, is the tooltip and is copied on click
-// (reusing copyToClipboardWithFeedback); a source with no resolved path
-// shows its annotated name only, with neither.
+// the fifth input but perhaps the third picture, which misleads. The file
+// name is clipped to a single line in the tile, so the tooltip carries the
+// full name and, when the graph trace resolved one, the absolute path on a
+// second line; that path is the value a click copies (via
+// copyToClipboardWithFeedback). A source with no resolved path shows and
+// tooltips its annotated name only and is not clickable.
 function buildRefSourceLines(sources) {
   const wrap = document.createElement("div");
   wrap.className = "h3cm-detail-ref-sources";
@@ -1064,12 +1066,17 @@ function buildRefSourceLines(sources) {
     line.textContent = source.annotated;
 
     const path = typeof source.path === "string" ? source.path : "";
+    // Full name always in the tooltip (the tile clips it); the path, when
+    // resolved, on a second line. This same string is what the title reverts
+    // to after the transient "Copied!" -- passing the bare path there would
+    // drop the name from the tooltip on the first copy.
+    const fullTitle = path ? `${source.annotated}\n${path}` : source.annotated;
+    line.title = fullTitle;
     if (path) {
       line.classList.add("is-copyable");
-      line.title = path;
       line.setAttribute("role", "button");
       line.setAttribute("tabindex", "0");
-      const copy = () => copyToClipboardWithFeedback(line, path, path);
+      const copy = () => copyToClipboardWithFeedback(line, path, fullTitle);
       line.addEventListener("click", copy);
       line.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -1387,6 +1394,14 @@ function renderCopyResult(fingerprint, verbose, headline) {
 // swap that reverts after 1.5 s), so every click-to-copy control in the
 // panel behaves the same way. `revertTitle` is what the title returns to.
 async function copyToClipboardWithFeedback(el, text, revertTitle) {
+  // Cancel any pending revert from a previous click on this same element up
+  // front: without this a rapid second click lets the first click's timer
+  // fire mid-window and cuts the "Copied!" feedback short. The handle rides
+  // on the element, which the detail-panel rebuild discards whole.
+  if (el._h3cmCopyRevertTimer) {
+    clearTimeout(el._h3cmCopyRevertTimer);
+    el._h3cmCopyRevertTimer = null;
+  }
   try {
     await navigator.clipboard.writeText(text);
   } catch (_) {
@@ -1395,9 +1410,10 @@ async function copyToClipboardWithFeedback(el, text, revertTitle) {
   }
   el.classList.add("is-copied");
   el.title = "Copied!";
-  setTimeout(() => {
+  el._h3cmCopyRevertTimer = setTimeout(() => {
     el.classList.remove("is-copied");
     el.title = revertTitle;
+    el._h3cmCopyRevertTimer = null;
   }, 1500);
   return true;
 }
