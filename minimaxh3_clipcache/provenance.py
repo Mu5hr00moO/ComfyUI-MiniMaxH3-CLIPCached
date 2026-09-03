@@ -30,14 +30,24 @@ primary filter: it keeps a leaf loader of something that is not media (an
 upscale model's ``.pth`` name on ``UpscaleModelLoader``) from being read
 as the reference source.
 
-Nearest leaf wins; ties are all kept
-------------------------------------
-The walk is breadth-first and stops at the first depth that yields at least
-one leaf media filename. When several loaders fan into the reference at
-that same depth (two ``LoadImage`` nodes feeding one ``ImageBatch``), all
-of them are recorded, in breadth-first discovery order -- guessing one or
-skipping the slot would both be wrong. A loader that is only reachable via
-a longer path than another is not reported: "nearest" is by hop count.
+Every reachable leaf loader is recorded
+---------------------------------------
+The walk is breadth-first over the whole reachable backward subgraph and
+records the literal filename of *every* leaf loader it reaches -- not only
+the ones nearest the reference slot. An asymmetric fan-in -- an
+``ImageBatch`` with one input straight off a ``LoadImage`` and another off
+a ``LoadImage`` through an ``ImageScale`` -- feeds the reference from both
+files, and both are real sources; stopping at the shallower one would drop
+the other. The extra candidates this can surface (a composite node pulling
+in its destination, source and mask images at once) are deliberately
+accepted: cutting the set down to a single graph depth costs completeness
+without buying any precision.
+
+Results are in breadth-first order -- shallower leaves before deeper ones,
+and within one depth in the order the prompt lists the inputs. A filename
+that appears on more than one leaf (one ``LoadImage`` wired into two
+places, or two loaders of the same file) is returned once, at its first
+occurrence.
 
 Why the result is keyed by SLOT NAME, not by position
 -----------------------------------------------------
@@ -156,20 +166,25 @@ def _leaf_media_filename(inputs: dict):
 
 def _walk_back_for_media_filenames(prompt: dict, start_node_id: str) -> list:
     """Breadth-first walk backward from ``start_node_id``; return the literal
-    media filenames of the *nearest* leaf loaders, as a list (possibly
+    media filename of *every* reachable leaf loader, as a list (possibly
     empty).
 
-    A leaf is a node none of whose inputs is a graph link. The walk checks a
-    whole BFS depth at once: if any node at that depth is a leaf carrying a
-    media filename, every such filename at that depth is returned and the
-    walk stops. Intermediate nodes (those with a link input) never
-    contribute a literal -- only their links are followed. Cycle-safe: every
-    node id is enqueued at most once, so a graph with a loop terminates.
+    A leaf is a node none of whose inputs is a graph link -- a real loader.
+    Intermediate nodes (those with a link input) never contribute a literal;
+    only their links are followed. The walk covers the whole reachable
+    backward subgraph -- it does not stop at the first depth that yields a
+    leaf -- so an asymmetric fan-in reports the file from every branch.
+
+    Order is breadth-first: shallower leaves first, and within a depth in
+    prompt-input order. A filename seen on more than one leaf is returned
+    once, keeping its first occurrence. Cycle-safe: every node id is
+    enqueued at most once, so a graph with a loop terminates.
     """
     level = deque([start_node_id])
     visited = {start_node_id}
+    found = []
+    seen = set()
     while level:
-        hits = []
         next_level = deque()
         for node_id in level:
             node = prompt.get(node_id)
@@ -188,12 +203,11 @@ def _walk_back_for_media_filenames(prompt: dict, start_node_id: str) -> list:
                 continue
             # Leaf node: its literals are eligible as the reference source.
             name = _leaf_media_filename(inputs)
-            if name is not None:
-                hits.append(name)
-        if hits:
-            return hits
+            if name is not None and name not in seen:
+                seen.add(name)
+                found.append(name)
         level = next_level
-    return []
+    return found
 
 
 def _resolve_path(annotated: str):
@@ -242,7 +256,8 @@ def collect_ref_sources(prompt, unique_id):
     * ``{}`` when the walk ran cleanly but no slot traced back to a loader.
       The caller must drop any stale provenance.
     * ``{slot_name: [ {"annotated": <raw value>[, "path": <abs>]}, ... ]}``
-      otherwise, one entry per nearest leaf loader for that slot.
+      otherwise, one entry per reachable leaf loader for that slot, in
+      breadth-first order and de-duplicated by filename.
 
     A slot is left out of the result when it is unconnected, its value is
     not a graph link, or the backward walk finds no leaf media filename.

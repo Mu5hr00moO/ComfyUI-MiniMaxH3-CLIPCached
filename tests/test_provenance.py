@@ -10,7 +10,7 @@ Contract exercised here (see the module docstring for the rationale):
 
 * the value for every traced slot is a *list* of ``{annotated[, path]}``
   entries -- one element for the common single-loader case, more when the
-  reference fans in from several loaders at the same graph depth;
+  reference fans in from several loaders anywhere in its backward subgraph;
 * a literal only counts as a source on a *leaf* node (one with no incoming
   link) -- a media-looking literal sitting on an intermediate pass-through
   node is ignored and the walk descends through its link instead;
@@ -240,18 +240,50 @@ def test_several_leaf_loaders_at_the_same_depth_are_all_recorded():
                for e in sources["ref_image_0"])
 
 
-def test_nearer_leaf_stops_the_walk_before_a_deeper_leaf():
-    # One branch reaches a loader in one hop, the other only in two. The
-    # walk stops at the first depth that yields a leaf, so the deeper
-    # loader is not reported.
+def test_asymmetric_fan_in_collects_a_leaf_from_every_depth():
+    # ImageBatch pulls one input straight off a LoadImage and the other off
+    # a LoadImage through an ImageScale. Both files are real sources of the
+    # reference; the walk must not stop at the shallower one. Order is
+    # breadth-first: the shallower leaf comes first.
     prompt = {
-        "1": {"class_type": "LoadImage", "inputs": {"image": "near.png"}},
-        "2": {"class_type": "LoadImage", "inputs": {"image": "far.png"}},
-        "3": {"class_type": "ImageResize", "inputs": {"image": ["2", 0], "width": 64, "height": 64}},
+        "1": {"class_type": "LoadImage", "inputs": {"image": "SHALLOW.png"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "DEEPER.png"}},
+        "3": {"class_type": "ImageScale", "inputs": {"image": ["2", 0], "width": 64, "height": 64}},
         "4": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["3", 0]}},
         REF_NODE_ID: _ref_node(ref_image_0=["4", 0]),
     }
 
     sources = collect_ref_sources(prompt, REF_NODE_ID)
 
-    assert [e["annotated"] for e in sources["ref_image_0"]] == ["near.png"]
+    assert [e["annotated"] for e in sources["ref_image_0"]] == ["SHALLOW.png", "DEEPER.png"]
+
+
+def test_same_filename_on_two_branches_is_returned_once():
+    # One loader wired into two inputs of the same downstream node: the file
+    # is a single source and appears once, at its first occurrence.
+    prompt = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "same.png"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "same.png"}},
+        "3": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["2", 0]}},
+        REF_NODE_ID: _ref_node(ref_image_0=["3", 0]),
+    }
+
+    sources = collect_ref_sources(prompt, REF_NODE_ID)
+
+    assert [e["annotated"] for e in sources["ref_image_0"]] == ["same.png"]
+
+
+def test_a_fileless_leaf_does_not_stop_a_deeper_leaf_on_another_branch():
+    # Node 1 is a leaf with no media literal; it must not block the walk
+    # from reaching the real loader two hops down the other branch.
+    prompt = {
+        "1": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": "x.pth"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "wanted.png"}},
+        "3": {"class_type": "ImageResize", "inputs": {"image": ["2", 0], "width": 8, "height": 8}},
+        "4": {"class_type": "SomeMerge", "inputs": {"model": ["1", 0], "image": ["3", 0]}},
+        REF_NODE_ID: _ref_node(ref_image_0=["4", 0]),
+    }
+
+    sources = collect_ref_sources(prompt, REF_NODE_ID)
+
+    assert [e["annotated"] for e in sources["ref_image_0"]] == ["wanted.png"]
