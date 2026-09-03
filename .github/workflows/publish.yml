@@ -7,13 +7,26 @@ on:
     paths:
       - "pyproject.toml"
 
+# Grant the workflow only what the publish path needs. The publish step
+# authenticates to the Registry with REGISTRY_ACCESS_TOKEN; GITHUB_TOKEN is used
+# only to check out this repository. Without an explicit block the job inherits
+# the repository default token scope, which can include write access to contents.
+permissions:
+  contents: read
+
 jobs:
   publish-node:
     name: Publish Custom Node to registry
     runs-on: ubuntu-latest
+    # workflow_dispatch can be launched against any branch, tag, or commit, and
+    # github.ref follows that choice. This guard keeps REGISTRY_ACCESS_TOKEN off
+    # every ref except master, so an unmerged branch cannot be published by hand.
+    if: github.ref == 'refs/heads/master'
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # The publish step below receives REGISTRY_ACCESS_TOKEN, the Registry
       # publishing secret. Both actions are pinned to full commit SHAs rather
       # than a moving ref (@main / @v7): a retargeted branch or a moved tag
@@ -22,7 +35,19 @@ jobs:
       # `Comfy-Org/publish-node-action@main`; pinning it here is a deliberate
       # departure from that template. To update, review the upstream diff and
       # bump the SHA together with its version comment in a single commit.
+      #
+      # skip_checkout: 'true' suppresses the action's own checkout step. At the
+      # pinned SHA that step is an unpinned `actions/checkout@v4` (see the
+      # action's action.yml); the pinned checkout above already supplies the
+      # working tree, so skipping the internal one removes the last unpinned ref
+      # from the token path. persist-credentials: false on that checkout keeps
+      # GITHUB_TOKEN out of .git/config, since the action runs third-party code
+      # in the same workspace and has no need for it. Residual risk left in
+      # place: the action also runs an unpinned `actions/setup-python@v5`
+      # unconditionally as part of its composite definition, and that cannot be
+      # pinned from here without forking the action.
       - name: Publish Custom Node
         uses: Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main @ 2026-09-03
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          skip_checkout: 'true'
