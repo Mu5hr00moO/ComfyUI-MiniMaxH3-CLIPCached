@@ -5,8 +5,9 @@
 ## Ostatnio zrobione
 
 Metadane publikacyjne dla ComfyUI Registry (krok 3 planu przed wydaniem
-v1.0.0) plus poprawki po recenzji Chat. Gałąź `chore/registry-metadata`
-odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
+v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
+`chore/registry-metadata` odcięta od `origin/master` (e3191fb). PR #9 na
+`master`, otwarty, MERGEABLE.
 
 ### Pierwsza tura (commity 4af23af..36f52ff)
 
@@ -47,6 +48,23 @@ odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
   on-disk cache schema v2.
 - Commit HANDOFF: ten plik (osobno, w tym samym PR).
 
+### Trzecia tura — recenzja Greptile na PR #9 (commit b827cce)
+
+- `.github/workflows/publish.yml` (b827cce) — odpowiedź na uwagę P1
+  (security) bota Greptile: krok Publish przekazuje `REGISTRY_ACCESS_TOKEN`
+  do zewnętrznej akcji, a mutowalny ref (`@main` / `@v7`) pozwoliłby
+  wykonać nieprzejrzany kod z dostępem do sekretu. Oba `uses:` przypięte
+  do pełnych 40-znakowych SHA z komentarzem wersji obok:
+  * `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`
+    (ten SHA to jednocześnie `refs/tags/v7` i `refs/tags/v7.0.1`)
+  * `Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main @ 2026-09-03`
+    (HEAD gałęzi `main`; tagi `1.0.0`/`1.0.1` wskazują starszy `7578cdb`,
+    a tagi i tak są mutowalne — dlatego pinujemy SHA gałęzi `main`)
+  Nad krokiem Publish komentarz WHY: dlaczego SHA zamiast `@main`, i że to
+  świadome odejście od wzoru z oficjalnej dokumentacji Comfy. `tests.yml`
+  poza zakresem tego PR-a, nietknięte. SHA potwierdzone `git ls-remote`
+  w momencie wykonania.
+
 ## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
 
 - `pyproject.toml` parsuje się przez `tomllib`; `requires-python == ">=3.10"`,
@@ -61,7 +79,9 @@ odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
   (anonimowo przekierowuje na login z zachowanym `?template=...` w
   `return_to` — zalogowany użytkownik trafia prosto na formularz).
 - `publish.yml` parsuje się przez `yaml.safe_load`; `push.branches ==
-  ["master"]`, brak `"main"`.
+  ["master"]`, brak `"main"`. Oba `uses:` mają pełny 40-znakowy SHA jako
+  ref (żadnego `@main`/`@v7` jako ref — te stringi zostają tylko w
+  komentarzu WHY).
 - Symulacja paczki (git ls-files minus wzorce `.comfyignore`): **51 plików
   w paczce, 39 wykluczonych**. `pytest.ini` już wykluczony (wcześniej był
   w paczce). Wykluczone: `tests/` (32), `.github/` (3), `pytest.ini`,
@@ -70,7 +90,8 @@ odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
 - `CHANGELOG.md`: `## [1.0.0]` zgadza się co do znaku z `version` w
   `pyproject.toml`.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
-  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane).
+  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane) —
+  potwierdzone ponownie po commicie b827cce.
 
 ## Ustalenia istotne dla Chat
 
@@ -103,3 +124,8 @@ odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
 - Rozważyć tag `v1.0.0` na commicie merge'a (spójnie z hipotetyczną
   stopką link-referencji w CHANGELOG i z `publish-node-action`, które
   wiąże wydanie Registry z wersją z `pyproject.toml`).
+- `.github/workflows/tests.yml` też używa nieprzypiętych
+  `actions/checkout@v7` i `actions/setup-python@v7`. Ten workflow NIE
+  dostaje żadnego sekretu, więc ryzyko jest niższe niż w `publish.yml`
+  i było poza zakresem PR #9. Do przypięcia osobnym PR-em, jeśli chcemy
+  spójności.
