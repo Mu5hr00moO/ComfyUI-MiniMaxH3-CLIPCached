@@ -1,0 +1,22 @@
+[project]
+name = "minimaxh3-clipcached"
+version = "1.0.0"
+description = "Cached alternatives to ComfyUI's native MiniMax H3 FL2VA and Ref2VA conditioning nodes that avoid repeatedly loading the large Qwen3-VL text/vision encoder when the same H3 conditioning was already computed."
+license = { file = "LICENSE" }
+dependencies = ["safetensors"]
+# Floor inherited from ComfyUI, not from this package's own syntax. A custom
+# node cannot run without ComfyUI (see requires-comfyui below), and current
+# ComfyUI already requires Python >=3.10 (v0.34.2 pyproject.toml). The node's
+# own sources would parse on 3.9 (the only 3.9+ construct is PEP 585 generic
+# subscription), but that is irrelevant in practice; do not lower this to 3.9
+# on syntax grounds.
+requires-python = ">=3.10"
+classifiers = ["Operating System :: OS Independent"]
+
+[project.urls]
+Repository = "https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached"
+
+[tool.comfy]
+PublisherId = "mu5hr00moo"
+DisplayName = "MiniMax H3 CLIP-Cached"
+requires-comfyui = ">=0.30.0"

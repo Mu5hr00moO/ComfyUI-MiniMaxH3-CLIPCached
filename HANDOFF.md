@@ -1,113 +1,176 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch chore/repo-cleanup-pre-v1 / commit fab353a
+## Stan na: 2026-09-03 / branch chore/registry-metadata / PR #9 (niezmergowany)
 
 ## Ostatnio zrobione
 
-Porządek w repo przed tagiem v1.0.0. Gałąź `chore/repo-cleanup-pre-v1`
-odcięta od `origin/master` (12f9b7e, po mergu PR #7 z katalogiem `docs/`).
-Otwarta jako PR #8 na `master` (niezmergowana).
+Metadane publikacyjne dla ComfyUI Registry (krok 3 planu przed wydaniem
+v1.0.0) plus poprawki po recenzji Chat oraz botów Greptile i CodeRabbit.
+Gałąź `chore/registry-metadata` odcięta od `origin/master` (e3191fb).
+PR #9 na `master`, otwarty, MERGEABLE.
 
-- Commit 1 (9c132f6): usunięty przedimplementacyjny dokument planistyczny
-  Cache Managera z korzenia repo (zastąpiony przez `docs/`; kopia zapasowa
-  poza repo). Cztery odwołania do niego poprawione tak, by nie zostało
-  martwe wskazanie:
-  * `web/main.js` (dwa komentarze przy "Copy prompt") -- usunięte zdania
-    odsyłające do sekcji planu; merytoryczne uzasadnienie (findNodesByType
-    nie schodzi w subgraphy, prompt-jako-input nie ma widgetu) zostaje
-    inline bez zmian.
-  * `minimaxh3_clipcache/thumbnails.py` (docstring) -- usunięte zdanie
-    odsyłające do sekcji planu; reszta uzasadnienia bez zmian.
-  * `CLAUDE.md` (sekcja "Cache Manager") -- odwołanie przekierowane na
-    `docs/CACHE_MANAGER.md`.
-- Commit 2 (7663cec): przenośność skryptów diagnostycznych. Pięć plików
-  w `scripts/` miało zaszytą na sztywno absolutną ścieżkę tej maszyny w
-  `COMFYUI_ROOT` - teraz env override + fallback wyliczany z układu
-  instalacji, ten sam wzorzec co `tests/conftest.py`. Dodatkowo z
-  `CLAUDE.md` usunięte 5 wystąpień absolutnej ścieżki domowej tej maszyny,
-  zastąpionych generycznym odwołaniem do katalogu instalacji ComfyUI.
-- Commit 3 (fab353a): wyliczanie `COMFYUI_ROOT` odporne na symlinki.
-  `Path(__file__).resolve()` rozwija symlink PRZED wejściem w górę po
-  katalogach, więc przy popularnej instalacji "repo poza custom_nodes/,
-  podlinkowane do środka" wyliczony korzeń wskazywał o katalog za wysoko.
-  Cztery orkiestratory `_live_server` (`test_ref2video_memory_trend.py`,
-  `test_ref2video_server_e2e.py`, `test_ref2video_server_hit.py`,
-  `test_server_memory_trend_phase17.py`) przełączone na
-  `os.path.abspath(__file__)` + leksykalne wejście w górę, 1:1 jak
-  `tests/conftest.py`; komentarz WHY w każdym wprost mówi, że `abspath`
-  (nie `resolve`) jest celowe. `scripts/benchmark_conditioning.py:81-82`
-  miał ten sam wzorzec (`REPO_ROOT` przez `.resolve()`,
-  `DEFAULT_COMFYUI_ROOT` dwa poziomy wyżej) - poprawiony tak samo. Env
-  override `COMFYUI_ROOT` NIE został tam dodany, bo skrypt bierze katalog
-  ComfyUI przez argument `--comfyui-root` i druga ścieżka nadpisania
-  tylko zaciemniłaby kolejność pierwszeństwa.
-- Commit HANDOFF: ten plik (osobno).
+### Pierwsza tura (commity 4af23af..36f52ff)
 
-### Weryfikacja (BEZ ComfyUI, BEZ serwera, BEZ GPU)
+- `pyproject.toml` (4af23af) — manifest Registry: `name =
+  "minimaxh3-clipcached"` (id node'a, nieodwracalne po publikacji),
+  `version = "1.0.0"`, `license = { file = "LICENSE" }` (MIT),
+  `dependencies = ["safetensors"]`, `[project.urls].Repository`,
+  `[tool.comfy]` z `PublisherId = "mu5hr00moo"` (małe litery),
+  `DisplayName = "MiniMax H3 CLIP-Cached"`, `requires-comfyui = ">=0.30.0"`.
+- `.comfyignore` (6ba3a2b) — składnia .gitignore, warstwa na .gitignore.
+- `.github/workflows/publish.yml` (bb72f14) — oficjalny wzór
+  `Comfy-Org/publish-node-action@main`; wzór z docs ma zaszyte
+  `branches: - main`, zmienione na `master`. `tests.yml` nietknięte.
 
-- `git grep` na nazwie usuniętego dokumentu planistycznego -- brak wyników.
-- `git grep` na absolutnej ścieżce domowej tej maszyny -- brak wyników.
-- `git grep -n "resolve().parents\[3\]"` w `scripts/` -- brak wyników.
-- `python -m py_compile` na wszystkich zmienionych skryptach + `thumbnails.py` -- OK.
-- `node --check` na kopii `web/main.js` (jako `.mjs`) -- składnia OK.
-- Odtworzony symlinkowany install (repo poza `custom_nodes/`, symlink do
-  środka, `main.py` jako marker): wszystkie 4 skrypty serwerowe oraz
-  domyślny `--comfyui-root` benchmarku wyliczają REALNY korzeń ComfyUI
-  (`<tmp>/ComfyUI`), podczas gdy stary `Path(__file__).resolve().parents[3]`
-  dawał katalog wyżej (`<tmp>`). Env override `COMFYUI_ROOT` nadal
-  respektowany. Lokalny install na tej maszynie (zwykły katalog, nie
-  symlink) bez zmian - fallback dalej wskazuje tę samą, właściwą
-  instalację ComfyUI co wcześniej.
+### Druga tura — poprawki po recenzji (commity 5b99566..0099dd1)
+
+- `requires-python` (5b99566): `">=3.9"` → `">=3.10"`. Nad polem komentarz
+  WHY: floor pochodzi z ComfyUI (aktualne ComfyUI, v0.34.2, ma
+  `requires-python = ">=3.10"`), nie z samej składni tego repo. Kod repo
+  parsowałby się na 3.9 (jedyny konstrukt 3.9+ to subskrypcja generyków
+  PEP 585), ale bez ComfyUI node i tak nie działa. Komentarz ma zapobiec
+  cofnięciu wartości na 3.9 na podstawie analizy składni.
+- Martwy link + pytest.ini (9bfdd3e):
+  * `docs/TESTING_AND_LIMITATIONS.md:352` — względny link
+    `../.github/ISSUE_TEMPLATE/bug_report.yml` (martwy w publikowanej
+    paczce, bo `.comfyignore` wycina `.github/`) zamieniony na pełny URL
+    `https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/issues/new?template=bug_report.yml`.
+  * `.comfyignore` — dopisany `pytest.ini` (`testpaths = tests`, a
+    `tests/` jest wykluczone → martwa konfiguracja w kopii u użytkownika).
+    `.gitignore` zostawiony w paczce (drobny, nieszkodliwy).
+- `CHANGELOG.md` (0099dd1) — format Keep a Changelog, nagłówek z linkami
+  do keepachangelog.com i semver.org. `## [Unreleased]` → `### Planned`
+  z dwoma odłożonymi pozycjami z TODO.md (`cache_mode="cache_only"`,
+  dynamiczne sloty referencji Ref2VA). `## [1.0.0] - 2026-09-03` opisuje
+  CO repo zawiera (pięć węzłów, cache conditioning z uwolnieniem VRAM po
+  enkodowaniu, Cache Manager, docs/), nie historię commitów. Na końcu
+  sekcji 1.0.0 dwie informacje przedinstalacyjne: ComfyUI >= 0.30.0,
+  on-disk cache schema v2.
+- Commit HANDOFF: ten plik (osobno, w tym samym PR).
+
+### Trzecia tura — recenzja Greptile na PR #9 (commit b827cce)
+
+- `.github/workflows/publish.yml` (b827cce) — odpowiedź na uwagę P1
+  (security) bota Greptile: krok Publish przekazuje `REGISTRY_ACCESS_TOKEN`
+  do zewnętrznej akcji, a mutowalny ref (`@main` / `@v7`) pozwoliłby
+  wykonać nieprzejrzany kod z dostępem do sekretu. Oba `uses:` przypięte
+  do pełnych 40-znakowych SHA z komentarzem wersji obok:
+  * `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`
+    (ten SHA to jednocześnie `refs/tags/v7` i `refs/tags/v7.0.1`)
+  * `Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main @ 2026-09-03`
+    (HEAD gałęzi `main`; tagi `1.0.0`/`1.0.1` wskazują starszy `7578cdb`,
+    a tagi i tak są mutowalne — dlatego pinujemy SHA gałęzi `main`)
+  Nad krokiem Publish komentarz WHY: dlaczego SHA zamiast `@main`, i że to
+  świadome odejście od wzoru z oficjalnej dokumentacji Comfy. `tests.yml`
+  poza zakresem tego PR-a, nietknięte. SHA potwierdzone `git ls-remote`
+  w momencie wykonania.
+
+### Czwarta tura — recenzja CodeRabbit na PR #9 (commit eaa539f)
+
+- `.github/workflows/publish.yml` (eaa539f) — trzy uwagi CodeRabbita
+  (wszystkie "Major, Security & Privacy"), jedna spójna zmiana. Dotyczą
+  ekspozycji tokenów na ścieżce publikacji:
+  * `permissions: contents: read` na poziomie workflow — job nie
+    dziedziczy już domyślnego zakresu `GITHUB_TOKEN` repo (mógł
+    zawierać write).
+  * `if: github.ref == 'refs/heads/master'` na jobie `publish-node` —
+    ręczny `workflow_dispatch` z niezmergowanego refa nie dosięgnie
+    kroku, który dostaje `REGISTRY_ACCESS_TOKEN` (`workflow_dispatch`
+    pozwala wybrać dowolną gałąź/tag/commit, a `github.ref` to
+    odzwierciedla). Environment z approval świadomie pominięty —
+    warunek na gałąź wystarcza dla tego repo.
+  * `persist-credentials: false` na przypiętym checkoucie + `skip_checkout:
+    'true'` przekazane do `publish-node-action`. Zweryfikowane w
+    `action.yml` akcji na przypiętym SHA `d2366e7`: wewnętrzny krok to
+    NIEPRZYPIĘTY `actions/checkout@v4` (`if: skip_checkout != 'true'`).
+    Bez `skip_checkout` robilibyśmy checkout dwukrotnie, a ten
+    wewnętrzny jest nieprzypięty — co częściowo unieważniało pinowanie
+    SHA z commita b827cce. Teraz jedyny checkout to nasz przypięty v7.0.1
+    bez trwałych poświadczeń.
+- Blok komentarza WHY nad krokiem Publish rozszerzony o: (a) po co
+  `skip_checkout`, (b) po co `persist-credentials: false`, (c) uczciwa
+  nota o ryzyku rezydualnym — `publish-node-action` uruchamia jeszcze
+  bezwarunkowo NIEPRZYPIĘTY `actions/setup-python@v5`, którego nie da
+  się przypiąć bez forka akcji (świadomie zaakceptowane, forkowanie
+  poza zakresem).
+- Oba `uses:` bez zmian, dalej na pełnych 40-znakowych SHA. SHA
+  `d2366e7` (main) i `3d3c42e` (v7=v7.0.1) potwierdzone ponownie przez
+  `git ls-remote` — bez ruchu względem b827cce.
+- `tests.yml` nietknięte (osobny PR po merge #9).
+
+## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
+
+- `pyproject.toml` parsuje się przez `tomllib`; `requires-python == ">=3.10"`,
+  `version == "1.0.0"`, `PublisherId == "mu5hr00moo"`,
+  `requires-comfyui == ">=0.30.0"`.
+- `git grep -n "\.github/ISSUE_TEMPLATE" -- docs/` → brak trafień. Brak
+  jakiegokolwiek względnego linku `](../.github` / `](.github` w docs/ i
+  README.md.
+- URL nowego linku: `.github/ISSUE_TEMPLATE/bug_report.yml` istnieje na
+  `origin/master` (gałąź domyślna), nazwa pliku zgadza się z parametrem
+  `?template=bug_report.yml`, repo jest PUBLIC, `curl -L` → HTTP 200
+  (anonimowo przekierowuje na login z zachowanym `?template=...` w
+  `return_to` — zalogowany użytkownik trafia prosto na formularz).
+- `publish.yml` parsuje się przez `yaml.safe_load`; `push.branches ==
+  ["master"]`, `push.paths == ["pyproject.toml"]`, brak `"main"`. Oba
+  `uses:` mają pełny 40-znakowy SHA jako ref (żadnego `@main`/`@v7` jako
+  ref — te stringi zostają tylko w komentarzu WHY). Po eaa539f dodatkowo:
+  `permissions == {"contents": "read"}`, `jobs.publish-node.if` zawiera
+  `refs/heads/master`, krok checkout ma `persist-credentials: false`,
+  krok Publish ma `skip_checkout: 'true'` (string, nie bool).
+- Symulacja paczki (git ls-files minus wzorce `.comfyignore`): **51 plików
+  w paczce, 39 wykluczonych**. `pytest.ini` już wykluczony (wcześniej był
+  w paczce). Wykluczone: `tests/` (32), `.github/` (3), `pytest.ini`,
+  `CLAUDE.md`, `HANDOFF.md`, `TODO.md`. `cache/` i `benchmark_results/`
+  już nieśledzone przez git.
+- `CHANGELOG.md`: `## [1.0.0]` zgadza się co do znaku z `version` w
+  `pyproject.toml`.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
-  (w tym `tests/test_server_script_safety.py` i
-  `tests/test_live_server_stop_pid_reuse.py`, które pilnują skryptów
-  serwerowych).
+  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane) —
+  potwierdzone ponownie po commitach b827cce i eaa539f.
 
 ## Ustalenia istotne dla Chat
 
-- Przedimplementacyjny dokument planistyczny Cache Managera już nie
-  istnieje w repo. Aktualny opis Cache Managera: `docs/CACHE_MANAGER.md`.
-  Reszta dokumentacji w `docs/` (NODE_GUIDE, PERFORMANCE,
-  TECHNICAL_DETAILS, TESTING_AND_LIMITATIONS).
-- Wzorzec rozwiązywania korzenia ComfyUI (jedno źródło, powielane):
-  `COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT", <fallback>)`, gdzie
-  fallback to cztery katalogi w górę od pliku
-  (`<ComfyUI>/custom_nodes/<repo>/scripts/<plik>`), liczone przez
-  `os.path.abspath(__file__)` + `os.path.dirname` (NIE `Path.resolve()`
-  ani `os.path.realpath` - te rozwijają symlink instalacji custom node'a
-  i wychodzą o katalog za wysoko). Użyte w `tests/conftest.py:38`,
-  `tests/test_clip_name_node.py`, `tests/test_node_fl2va_dual.py`,
-  `tests/test_node_ref2va_dual.py` oraz w `scripts/test_proxy_gate.py`,
-  `scripts/test_ref2video_memory_trend.py`,
-  `scripts/test_ref2video_server_e2e.py`,
-  `scripts/test_ref2video_server_hit.py`,
-  `scripts/test_server_memory_trend_phase17.py`.
-- `scripts/benchmark_conditioning.py:81-90`: `REPO_ROOT` /
-  `DEFAULT_COMFYUI_ROOT` też liczone bez `.resolve()` (odporne na
-  symlink); nadpisanie idzie WYŁĄCZNIE przez argument CLI
-  `--comfyui-root`, nie przez zmienną środowiskową.
+- `requires-python = ">=3.10"` — na życzenie recenzji podniesione z `>=3.9`.
+  Uzasadnienie w komentarzu w pliku i w commicie: node bez ComfyUI nie
+  działa, a aktualne ComfyUI (v0.34.2, `~/ComfyUI/pyproject.toml:6`)
+  wymaga `>=3.10`. Analiza składni samego repo (floor = 3.9, jedyny
+  konstrukt 3.9+ to PEP 585 w `minimaxh3_clipcache/store.py:372` i
+  `minimaxh3_clipcache/locking.py:24`) jest odnotowana, ale świadomie
+  NIE jest podstawą wartości pola.
+- Data w nagłówku `## [1.0.0]` to 2026-09-03 (dzień przygotowania PR-a).
+  Jeśli merge nastąpi innego dnia — do ręcznego bumpa przed/przy mergu.
+- `CHANGELOG.md` nie ma stopki z link-referencjami `[1.0.0]: .../releases/tag/...`
+  — w repo nie ma jeszcze żadnego taga, więc nie zgadywano konwencji
+  nazwy (`v1.0.0` vs `1.0.0`). Do dodania przy pierwszym tagu, jeśli
+  potrzebne.
+- W paczce zostają też `.gitignore` (drobny) — świadomie, zlecenie kazało
+  zostawić.
 
 ## Otwarte pytania
 
-- brak (w zakresie tego zlecenia).
+- brak
 
 ## Sugestie (nie polecenia)
 
-- `scripts/test_proxy_gate.py` już liczy `COMFYUI_ROOT` poprawnie
-  (`abspath` + 4x `dirname`), ale jego komentarz WHY nie wspomina wprost
-  o powodzie symlinkowym - warto dopisać to samo zdanie dla spójności
-  (celowo nietknięte w tym zleceniu: "test_proxy_gate.py jest już
-  poprawny - nie ruszać").
-- `scripts/test_ref2video_server_hit.py:148` liczy `cache_dir` przez
-  `Path(__file__).resolve().parent.parent / "cache"` - to inna ścieżka
-  (katalog cache repo, nie korzeń ComfyUI) i przy symlinku wskazuje ten
-  sam katalog cache przez realną lokalizację; I/O jest transparentne, więc
-  nie jest to błąd, ale gdyby ktoś chciał pełnej spójności - też do
-  ujednolicenia. Poza zakresem tego zlecenia.
-- `pyproject.toml` i rozdzielenie `test_proxy_gate.py` na dwie role to
-  osobne pozycje (odpowiednio: osobne zlecenie i pozycja w `TODO.md`),
-  celowo nietknięte tutaj.
-- Skrypty serwerowe (`test_ref2video_server_*`, `test_server_memory_trend_phase17`,
-  `test_ref2video_memory_trend`) nie były uruchamiane end-to-end w tym
-  zleceniu (wymagają GPU + ~27 GB encodera); zweryfikowano tylko, że
-  poprawnie wyliczają `COMFYUI_ROOT` i importują się bez błędu.
+- Przed mergem PR #9: upewnić się, że sekret `REGISTRY_ACCESS_TOKEN` jest
+  w ustawieniach repo. Merge doda `pyproject.toml` do `master`, co pasuje
+  do filtra `paths` w `publish.yml` i od razu odpali publikację do
+  Registry; bez tokenu pierwszy przebieg padnie.
+- Rozważyć tag `v1.0.0` na commicie merge'a (spójnie z hipotetyczną
+  stopką link-referencji w CHANGELOG i z `publish-node-action`, które
+  wiąże wydanie Registry z wersją z `pyproject.toml`).
+- `.github/workflows/tests.yml` też używa nieprzypiętych
+  `actions/checkout@v7` i `actions/setup-python@v7` i nie ma bloku
+  `permissions:`. Ten workflow NIE dostaje żadnego sekretu, więc ryzyko
+  jest niższe niż w `publish.yml` i było poza zakresem PR #9. Do
+  przypięcia (SHA + `permissions: contents: read` +
+  `persist-credentials: false`) osobnym PR-em po merge #9, jeśli chcemy
+  spójności — analogicznie do tego, co zrobiliśmy w `publish.yml`.
+- `Comfy-Org/publish-node-action` wewnętrznie odpala nieprzypięty
+  `actions/setup-python@v5`. `skip_checkout` usunął problem z
+  wewnętrznym checkoutem, ale setup-python zostaje. Jedyne pełne
+  domknięcie to fork akcji albo PR do upstreamu z pinowaniem — na
+  teraz świadomie zaakceptowane jako residual risk (akcja i tak jest
+  przypięta do SHA, więc `setup-python@v5` nie zmieni się bez naszego
+  świadomego bumpa SHA `publish-node-action`).

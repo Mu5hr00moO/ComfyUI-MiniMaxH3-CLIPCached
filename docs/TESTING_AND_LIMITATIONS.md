@@ -349,8 +349,8 @@ In particular, it does not establish:
 Those remain within the limitations described in the previous section.
 
 When reporting a cache bug, use the repository's
-[Bug report template](../.github/ISSUE_TEMPLATE/bug_report.yml). The most useful
-distinction is whether the problem occurs on:
+[Bug report template](https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/issues/new?template=bug_report.yml).
+The most useful distinction is whether the problem occurs on:
 
 ```text
 MISS
