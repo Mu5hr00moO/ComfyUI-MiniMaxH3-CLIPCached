@@ -71,6 +71,26 @@ restore those files into workflow inputs.
 These organizational fields belong only to Cache Manager. They are never used
 to decide whether CLIPCached returns a HIT or MISS.
 
+## Generation resolution
+
+The resolution shown for an entry (`WIDTH×HEIGHT (N MP)`) is the resolution of
+the **most recent run that used the entry**, not necessarily the run that
+created it.
+
+When no keyframes (FL2VA) or references (Ref2VA) are connected, the encode is
+resolution-independent: `width` and `height` never enter the fingerprint, so a
+single cached encode is reused across every generation size. On each cache HIT
+at a new resolution, Cache Manager moves this field forward to that resolution;
+nothing else about the entry changes, because the cached conditioning itself is
+identical.
+
+As a result the creation date and the resolution can come from two different
+moments: the date is fixed when the entry is first written, while the resolution
+follows whichever run last reused it.
+
+For a Dual Resolution run whose two passes share one fingerprint, the single
+entry keeps the **base** resolution rather than the upscale one.
+
 ## Last Used
 
 Cache Manager highlights the cache entry most recently used by the corresponding
