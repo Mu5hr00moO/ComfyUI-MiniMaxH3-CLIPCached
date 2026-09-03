@@ -105,6 +105,23 @@ export function formatGenerationSize(system) {
   return `${width}×${height} (${megapixels.toFixed(2)} MP)`;
 }
 
+// Tooltip for the generation-size field. system.width/.height/.megapixels
+// are informational only -- they never enter the fingerprint or the
+// HIT/MISS decision. When no keyframes are connected the encode is
+// resolution-independent, so one cached entry is reused across many
+// generation sizes and this trio tracks the most recent run, not the one
+// that created the entry (which is what system.created_at reflects).
+// Empty string when there is no size to describe, matching
+// formatGenerationSize().
+export function generationSizeTooltip(system) {
+  if (!formatGenerationSize(system)) return "";
+  return (
+    "Resolution of the most recent run that used this entry. One cached " +
+    "encode serves every resolution when no keyframes are connected -- the " +
+    "encode itself does not depend on width/height."
+  );
+}
+
 function formatEntryMetaLine(system) {
   const sizeText = formatGenerationSize(system);
   const dateText = formatCreatedAt(system && system.created_at);
@@ -714,6 +731,7 @@ function buildNormalRow(entry, generation, lastUsedFingerprint, pairing = null) 
   const created = document.createElement("span");
   created.className = "h3cm-row-created";
   created.textContent = formatEntryMetaLine(system);
+  created.title = generationSizeTooltip(system);
 
   row.append(star, label, created);
   if (tags.length) row.appendChild(buildTagChips(tags));
@@ -985,7 +1003,9 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
   const system = (entry.verbose && entry.verbose.system) || {};
 
   detailEl.querySelector("[data-h3cm-detail-title]").textContent = entryLabel(entry);
-  detailEl.querySelector("[data-h3cm-detail-created]").textContent = formatEntryMetaLine(system);
+  const detailCreated = detailEl.querySelector("[data-h3cm-detail-created]");
+  detailCreated.textContent = formatEntryMetaLine(system);
+  detailCreated.title = generationSizeTooltip(system);
   detailEl.querySelector("[data-h3cm-detail-prompt]").textContent = system.prompt || "(no prompt)";
   renderDetailRefs(
     detailEl.querySelector("[data-h3cm-detail-refs]"),

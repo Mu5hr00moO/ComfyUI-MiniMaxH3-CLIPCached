@@ -144,6 +144,30 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
             fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
             hit_needs_backfill = proxy.last_hit is True and (existing_verbose is None or not has_created_at)
             if not (fresh_miss_written or hit_needs_backfill):
+                # A normal HIT of an entry that already has a complete sidecar.
+                # With no keyframes connected the encode is resolution-
+                # independent -- one fingerprint (one cached conditioning)
+                # serves every width/height -- so the cached result is correct
+                # as-is and none of the fields that describe the encode
+                # (prompt, created_at, references, clip_*, pairing keys,
+                # comfyui_version) have any reason to change on a HIT. The one
+                # exception is the purely informational generation-size trio:
+                # system.width/.height/.megapixels record the resolution of the
+                # most recent run that used this entry, so a HIT at a new
+                # resolution moves them forward. Only those three keys are
+                # rewritten, only when they actually differ, and only when this
+                # run supplied a width/height at all.
+                if (proxy.last_hit is True and width is not None and height is not None
+                        and isinstance(existing_system, dict)):
+                    megapixels = round(width * height / 1_000_000, 2)
+                    if (existing_system.get("width") != width
+                            or existing_system.get("height") != height
+                            or existing_system.get("megapixels") != megapixels):
+                        system = dict(existing_system)
+                        system["width"] = width
+                        system["height"] = height
+                        system["megapixels"] = megapixels
+                        save_verbose(fingerprint, system, CACHE_DIR)
                 return
 
             created_at = _resolve_created_at(existing_verbose, core_path, fresh_miss_written)
@@ -210,6 +234,48 @@ def _record_last_used(proxy, node_variant):
     record_last_used(node_variant, fingerprint)
 
 
+def _finalize_shared_fingerprint_size(fingerprint, width, height):
+    """Re-stamp a dual-resolution sidecar's informational generation-size
+    trio (system.width/.height/.megapixels) to the given base resolution.
+
+    Used only when a dual-resolution run's two passes collapse onto one
+    shared fingerprint: the upscale pass is then a cache HIT, and
+    _sync_verbose_metadata()'s HIT refresh may have left the trio pointing at
+    the upscale resolution. This puts it back on the base resolution -- the
+    canonical size for the single entry -- overwriting nothing else in
+    "system" and adding no pairing keys (there is no counterpart).
+
+    Same guards as the paired branches of _pair_verbose_entries(): the whole
+    decision and write run under get_lock(fingerprint), only if the core
+    <fingerprint>.json still exists, and an unchanged size writes nothing.
+    Never raises -- the verbose layer is not the source of truth.
+    """
+    try:
+        with get_lock(fingerprint):
+            if not (Path(CACHE_DIR) / "{}.json".format(fingerprint)).exists():
+                return
+            existing = load_verbose(fingerprint, CACHE_DIR)
+            existing_system = existing.get("system") if isinstance(existing, dict) else None
+            if not isinstance(existing_system, dict):
+                return
+            megapixels = round(width * height / 1_000_000, 2)
+            if (existing_system.get("width") == width
+                    and existing_system.get("height") == height
+                    and existing_system.get("megapixels") == megapixels):
+                return
+            system = dict(existing_system)
+            system["width"] = width
+            system["height"] = height
+            system["megapixels"] = megapixels
+            save_verbose(fingerprint, system, CACHE_DIR)
+    except Exception as e:
+        logger.warning(
+            "[VERBOSE PAIRING FAILED] %s: could not finalize the shared "
+            "dual-resolution sidecar to the base resolution (%s) - core "
+            "cache remains valid", fingerprint[:12] if fingerprint else fingerprint, e,
+        )
+
+
 def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b,
                           b_is_upscale_target=True):
     """Cross-link the two verbose sidecars produced by one dual-resolution
@@ -233,8 +299,16 @@ def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b,
     width / height side and fp_b / width_b / height_b as the
     width_upscale / height_upscale side.
 
-    fp_a == fp_b is an immediate no-op: the two resolutions collapsed onto
-    one shared cache entry, so there is nothing to pair.
+    fp_a == fp_b means the two resolutions collapsed onto one shared cache
+    entry, so there is nothing to pair. It is still not a plain no-op: the
+    upscale pass was a cache HIT, and _sync_verbose_metadata()'s HIT
+    generation-size refresh may have just moved system.width/.height/
+    .megapixels forward to the upscale resolution. This run's canonical size
+    is the BASE one (width_a / height_a), so the shared sidecar is finalized
+    back to it -- overwriting only those three keys, preserving the rest of
+    "system", and writing no pairing metadata (there is no counterpart
+    fingerprint). Same guards as the paired path: under get_lock(fp_a), only
+    if the core <fp_a>.json still exists, best-effort, never raises.
 
     Otherwise the two directions are written under ``get_lock(fp_a)`` and
     ``get_lock(fp_b)`` taken SEPARATELY -- one acquired and released before
@@ -250,6 +324,7 @@ def _pair_verbose_entries(fp_a, width_a, height_a, fp_b, width_b, height_b,
     conditioning / latent the dual node is about to return.
     """
     if fp_a == fp_b:
+        _finalize_shared_fingerprint_size(fp_a, width_a, height_a)
         return
 
     try:
