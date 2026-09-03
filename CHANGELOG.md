@@ -43,3 +43,6 @@ First public release.
 - Uses on-disk cache schema **v2**. There is no migration from earlier
   pre-release caches; unmatched entries are simply re-encoded on first
   use.
+
+[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.0.0

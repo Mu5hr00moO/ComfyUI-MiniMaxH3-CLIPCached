@@ -1,151 +1,56 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch chore/registry-metadata / PR #9 (niezmergowany)
+## Stan na: 2026-09-03 / branch docs/changelog-links / PR do otwarcia
 
 ## Ostatnio zrobione
 
-Metadane publikacyjne dla ComfyUI Registry (krok 3 planu przed wydaniem
-v1.0.0) plus poprawki po recenzji Chat oraz botów Greptile i CodeRabbit.
-Gałąź `chore/registry-metadata` odcięta od `origin/master` (e3191fb).
-PR #9 na `master`, otwarty, MERGEABLE.
+Krok 4 planu przed tagiem v1.0.0: stopka link-referencji w `CHANGELOG.md`.
+Gałąź `docs/changelog-links` odcięta od `origin/master` (33293b6, czyli
+stan po merge PR #9).
 
-### Pierwsza tura (commity 4af23af..36f52ff)
+### Commit 1 — CHANGELOG.md (86c3f7b)
 
-- `pyproject.toml` (4af23af) — manifest Registry: `name =
-  "minimaxh3-clipcached"` (id node'a, nieodwracalne po publikacji),
-  `version = "1.0.0"`, `license = { file = "LICENSE" }` (MIT),
-  `dependencies = ["safetensors"]`, `[project.urls].Repository`,
-  `[tool.comfy]` z `PublisherId = "mu5hr00moo"` (małe litery),
-  `DisplayName = "MiniMax H3 CLIP-Cached"`, `requires-comfyui = ">=0.30.0"`.
-- `.comfyignore` (6ba3a2b) — składnia .gitignore, warstwa na .gitignore.
-- `.github/workflows/publish.yml` (bb72f14) — oficjalny wzór
-  `Comfy-Org/publish-node-action@main`; wzór z docs ma zaszyte
-  `branches: - main`, zmienione na `master`. `tests.yml` nietknięte.
+- Na końcu pliku dopisana stopka link-referencji w konwencji Keep a
+  Changelog:
+  * `[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.0.0...HEAD`
+  * `[1.0.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.0.0`
+- Konwencja tagów ustalona jako prefiks `v` (czyli `v1.0.0`) — stąd
+  wartości w stopce.
+- Nagłówki sekcji `## [Unreleased]` i `## [1.0.0] - 2026-09-03`
+  nietknięte — w Keep a Changelog nawiasy kwadratowe w nagłówku wiążą
+  się ze stopką automatycznie.
+- `pyproject.toml` NIE ruszany świadomie: push na `master` z tym plikiem
+  odpaliłby ponowną publikację do Registry (filtr `paths` w
+  `publish.yml`).
 
-### Druga tura — poprawki po recenzji (commity 5b99566..0099dd1)
-
-- `requires-python` (5b99566): `">=3.9"` → `">=3.10"`. Nad polem komentarz
-  WHY: floor pochodzi z ComfyUI (aktualne ComfyUI, v0.34.2, ma
-  `requires-python = ">=3.10"`), nie z samej składni tego repo. Kod repo
-  parsowałby się na 3.9 (jedyny konstrukt 3.9+ to subskrypcja generyków
-  PEP 585), ale bez ComfyUI node i tak nie działa. Komentarz ma zapobiec
-  cofnięciu wartości na 3.9 na podstawie analizy składni.
-- Martwy link + pytest.ini (9bfdd3e):
-  * `docs/TESTING_AND_LIMITATIONS.md:352` — względny link
-    `../.github/ISSUE_TEMPLATE/bug_report.yml` (martwy w publikowanej
-    paczce, bo `.comfyignore` wycina `.github/`) zamieniony na pełny URL
-    `https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/issues/new?template=bug_report.yml`.
-  * `.comfyignore` — dopisany `pytest.ini` (`testpaths = tests`, a
-    `tests/` jest wykluczone → martwa konfiguracja w kopii u użytkownika).
-    `.gitignore` zostawiony w paczce (drobny, nieszkodliwy).
-- `CHANGELOG.md` (0099dd1) — format Keep a Changelog, nagłówek z linkami
-  do keepachangelog.com i semver.org. `## [Unreleased]` → `### Planned`
-  z dwoma odłożonymi pozycjami z TODO.md (`cache_mode="cache_only"`,
-  dynamiczne sloty referencji Ref2VA). `## [1.0.0] - 2026-09-03` opisuje
-  CO repo zawiera (pięć węzłów, cache conditioning z uwolnieniem VRAM po
-  enkodowaniu, Cache Manager, docs/), nie historię commitów. Na końcu
-  sekcji 1.0.0 dwie informacje przedinstalacyjne: ComfyUI >= 0.30.0,
-  on-disk cache schema v2.
-- Commit HANDOFF: ten plik (osobno, w tym samym PR).
-
-### Trzecia tura — recenzja Greptile na PR #9 (commit b827cce)
-
-- `.github/workflows/publish.yml` (b827cce) — odpowiedź na uwagę P1
-  (security) bota Greptile: krok Publish przekazuje `REGISTRY_ACCESS_TOKEN`
-  do zewnętrznej akcji, a mutowalny ref (`@main` / `@v7`) pozwoliłby
-  wykonać nieprzejrzany kod z dostępem do sekretu. Oba `uses:` przypięte
-  do pełnych 40-znakowych SHA z komentarzem wersji obok:
-  * `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`
-    (ten SHA to jednocześnie `refs/tags/v7` i `refs/tags/v7.0.1`)
-  * `Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main @ 2026-09-03`
-    (HEAD gałęzi `main`; tagi `1.0.0`/`1.0.1` wskazują starszy `7578cdb`,
-    a tagi i tak są mutowalne — dlatego pinujemy SHA gałęzi `main`)
-  Nad krokiem Publish komentarz WHY: dlaczego SHA zamiast `@main`, i że to
-  świadome odejście od wzoru z oficjalnej dokumentacji Comfy. `tests.yml`
-  poza zakresem tego PR-a, nietknięte. SHA potwierdzone `git ls-remote`
-  w momencie wykonania.
-
-### Czwarta tura — recenzja CodeRabbit na PR #9 (commit eaa539f)
-
-- `.github/workflows/publish.yml` (eaa539f) — trzy uwagi CodeRabbita
-  (wszystkie "Major, Security & Privacy"), jedna spójna zmiana. Dotyczą
-  ekspozycji tokenów na ścieżce publikacji:
-  * `permissions: contents: read` na poziomie workflow — job nie
-    dziedziczy już domyślnego zakresu `GITHUB_TOKEN` repo (mógł
-    zawierać write).
-  * `if: github.ref == 'refs/heads/master'` na jobie `publish-node` —
-    ręczny `workflow_dispatch` z niezmergowanego refa nie dosięgnie
-    kroku, który dostaje `REGISTRY_ACCESS_TOKEN` (`workflow_dispatch`
-    pozwala wybrać dowolną gałąź/tag/commit, a `github.ref` to
-    odzwierciedla). Environment z approval świadomie pominięty —
-    warunek na gałąź wystarcza dla tego repo.
-  * `persist-credentials: false` na przypiętym checkoucie + `skip_checkout:
-    'true'` przekazane do `publish-node-action`. Zweryfikowane w
-    `action.yml` akcji na przypiętym SHA `d2366e7`: wewnętrzny krok to
-    NIEPRZYPIĘTY `actions/checkout@v4` (`if: skip_checkout != 'true'`).
-    Bez `skip_checkout` robilibyśmy checkout dwukrotnie, a ten
-    wewnętrzny jest nieprzypięty — co częściowo unieważniało pinowanie
-    SHA z commita b827cce. Teraz jedyny checkout to nasz przypięty v7.0.1
-    bez trwałych poświadczeń.
-- Blok komentarza WHY nad krokiem Publish rozszerzony o: (a) po co
-  `skip_checkout`, (b) po co `persist-credentials: false`, (c) uczciwa
-  nota o ryzyku rezydualnym — `publish-node-action` uruchamia jeszcze
-  bezwarunkowo NIEPRZYPIĘTY `actions/setup-python@v5`, którego nie da
-  się przypiąć bez forka akcji (świadomie zaakceptowane, forkowanie
-  poza zakresem).
-- Oba `uses:` bez zmian, dalej na pełnych 40-znakowych SHA. SHA
-  `d2366e7` (main) i `3d3c42e` (v7=v7.0.1) potwierdzone ponownie przez
-  `git ls-remote` — bez ruchu względem b827cce.
-- `tests.yml` nietknięte (osobny PR po merge #9).
+### Commit 2 — HANDOFF.md (osobno, w tym samym PR)
 
 ## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
 
-- `pyproject.toml` parsuje się przez `tomllib`; `requires-python == ">=3.10"`,
-  `version == "1.0.0"`, `PublisherId == "mu5hr00moo"`,
-  `requires-comfyui == ">=0.30.0"`.
-- `git grep -n "\.github/ISSUE_TEMPLATE" -- docs/` → brak trafień. Brak
-  jakiegokolwiek względnego linku `](../.github` / `](.github` w docs/ i
-  README.md.
-- URL nowego linku: `.github/ISSUE_TEMPLATE/bug_report.yml` istnieje na
-  `origin/master` (gałąź domyślna), nazwa pliku zgadza się z parametrem
-  `?template=bug_report.yml`, repo jest PUBLIC, `curl -L` → HTTP 200
-  (anonimowo przekierowuje na login z zachowanym `?template=...` w
-  `return_to` — zalogowany użytkownik trafia prosto na formularz).
-- `publish.yml` parsuje się przez `yaml.safe_load`; `push.branches ==
-  ["master"]`, `push.paths == ["pyproject.toml"]`, brak `"main"`. Oba
-  `uses:` mają pełny 40-znakowy SHA jako ref (żadnego `@main`/`@v7` jako
-  ref — te stringi zostają tylko w komentarzu WHY). Po eaa539f dodatkowo:
-  `permissions == {"contents": "read"}`, `jobs.publish-node.if` zawiera
-  `refs/heads/master`, krok checkout ma `persist-credentials: false`,
-  krok Publish ma `skip_checkout: 'true'` (string, nie bool).
-- Symulacja paczki (git ls-files minus wzorce `.comfyignore`): **51 plików
-  w paczce, 39 wykluczonych**. `pytest.ini` już wykluczony (wcześniej był
-  w paczce). Wykluczone: `tests/` (32), `.github/` (3), `pytest.ini`,
-  `CLAUDE.md`, `HANDOFF.md`, `TODO.md`. `cache/` i `benchmark_results/`
-  już nieśledzone przez git.
-- `CHANGELOG.md`: `## [1.0.0]` zgadza się co do znaku z `version` w
-  `pyproject.toml`.
+- Data w nagłówku `## [1.0.0] - 2026-09-03` potwierdzona: commit merge'a
+  PR #9 (`33293b6`) ma datę `2026-09-03 08:37:36 +0200` — zgadza się,
+  brak korekty.
+- Wersje w stopce zgadzają się co do znaku z nagłówkami sekcji:
+  `[Unreleased]` ↔ `## [Unreleased]`, `[1.0.0]` ↔ `## [1.0.0] - ...`.
+- `git diff origin/master..HEAD --stat` dotyka wyłącznie `CHANGELOG.md`
+  (+3) i `HANDOFF.md`.
+- `git diff --check` czysty.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
-  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane) —
-  potwierdzone ponownie po commitach b827cce i eaa539f.
+  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane).
 
 ## Ustalenia istotne dla Chat
 
-- `requires-python = ">=3.10"` — na życzenie recenzji podniesione z `>=3.9`.
-  Uzasadnienie w komentarzu w pliku i w commicie: node bez ComfyUI nie
-  działa, a aktualne ComfyUI (v0.34.2, `~/ComfyUI/pyproject.toml:6`)
-  wymaga `>=3.10`. Analiza składni samego repo (floor = 3.9, jedyny
-  konstrukt 3.9+ to PEP 585 w `minimaxh3_clipcache/store.py:372` i
-  `minimaxh3_clipcache/locking.py:24`) jest odnotowana, ale świadomie
-  NIE jest podstawą wartości pola.
-- Data w nagłówku `## [1.0.0]` to 2026-09-03 (dzień przygotowania PR-a).
-  Jeśli merge nastąpi innego dnia — do ręcznego bumpa przed/przy mergu.
-- `CHANGELOG.md` nie ma stopki z link-referencjami `[1.0.0]: .../releases/tag/...`
-  — w repo nie ma jeszcze żadnego taga, więc nie zgadywano konwencji
-  nazwy (`v1.0.0` vs `1.0.0`). Do dodania przy pierwszym tagu, jeśli
-  potrzebne.
-- W paczce zostają też `.gitignore` (drobny) — świadomie, zlecenie kazało
-  zostawić.
+- `origin/master` = `33293b6` (po merge PR #9). Paczka jest już
+  opublikowana w ComfyUI Registry jako `mu5hr00moo/minimaxh3-clipcached`
+  `1.0.0`.
+- Konwencja tagów w tym repo: prefiks `v` — `v1.0.0`. Stopka
+  `CHANGELOG.md` używa tej formy.
+- Stopka link-referencji nie wymagała żadnej zmiany w nagłówkach sekcji
+  — Keep a Changelog wiąże `[1.0.0]` w nagłówku z `[1.0.0]:` w stopce po
+  samej nazwie w nawiasach kwadratowych.
+- Link `[1.0.0]` wskazuje `releases/tag/v1.0.0`, który zacznie działać
+  dopiero po utworzeniu tagu i GitHub Release przez Kamila (poza
+  zakresem tego PR-a).
 
 ## Otwarte pytania
 
@@ -153,24 +58,11 @@ PR #9 na `master`, otwarty, MERGEABLE.
 
 ## Sugestie (nie polecenia)
 
-- Przed mergem PR #9: upewnić się, że sekret `REGISTRY_ACCESS_TOKEN` jest
-  w ustawieniach repo. Merge doda `pyproject.toml` do `master`, co pasuje
-  do filtra `paths` w `publish.yml` i od razu odpali publikację do
-  Registry; bez tokenu pierwszy przebieg padnie.
-- Rozważyć tag `v1.0.0` na commicie merge'a (spójnie z hipotetyczną
-  stopką link-referencji w CHANGELOG i z `publish-node-action`, które
-  wiąże wydanie Registry z wersją z `pyproject.toml`).
-- `.github/workflows/tests.yml` też używa nieprzypiętych
+- Po merge tego PR-a: utworzyć tag `v1.0.0` na commicie merge'a i GitHub
+  Release — dopiero wtedy link `[1.0.0]` w stopce CHANGELOG przestanie
+  być 404, a link `[Unreleased]` (`compare/v1.0.0...HEAD`) zacznie
+  pokazywać sensowny diff.
+- `.github/workflows/tests.yml` wciąż używa nieprzypiętych
   `actions/checkout@v7` i `actions/setup-python@v7` i nie ma bloku
-  `permissions:`. Ten workflow NIE dostaje żadnego sekretu, więc ryzyko
-  jest niższe niż w `publish.yml` i było poza zakresem PR #9. Do
-  przypięcia (SHA + `permissions: contents: read` +
-  `persist-credentials: false`) osobnym PR-em po merge #9, jeśli chcemy
-  spójności — analogicznie do tego, co zrobiliśmy w `publish.yml`.
-- `Comfy-Org/publish-node-action` wewnętrznie odpala nieprzypięty
-  `actions/setup-python@v5`. `skip_checkout` usunął problem z
-  wewnętrznym checkoutem, ale setup-python zostaje. Jedyne pełne
-  domknięcie to fork akcji albo PR do upstreamu z pinowaniem — na
-  teraz świadomie zaakceptowane jako residual risk (akcja i tak jest
-  przypięta do SHA, więc `setup-python@v5` nie zmieni się bez naszego
-  świadomego bumpa SHA `publish-node-action`).
+  `permissions:`. Nie dostaje żadnego sekretu, więc niższe ryzyko niż
+  `publish.yml` — do przypięcia osobnym PR-em, jeśli chcemy spójności.
