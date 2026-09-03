@@ -757,6 +757,67 @@ def test_o_sync_verbose_hit_with_existing_sidecar_does_not_rewrite(monkeypatch, 
     assert (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes() == before
 
 
+def test_oa_sync_verbose_hit_refreshes_stale_generation_size_only(monkeypatch, tmp_path):
+    """A cache entry with no keyframes is resolution-independent: one
+    fingerprint (one conditioning) serves every generation resolution, so a
+    later HIT can legitimately run at a different width/height than the MISS
+    that created the entry. When it does, the informational
+    system.width/.height/.megapixels trio moves forward to that run -- but
+    nothing else is touched, because the cached encode itself did not change:
+    system.created_at and system.prompt keep their original values."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {
+        "prompt": "original",
+        "node_variant": "fl2va",
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "references": [],
+        "width": 544, "height": 960, "megapixels": 0.52,
+    }, tmp_path)
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "a different prompt", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        [], width=768, height=1376)
+
+    system = load_verbose("a" * 64, tmp_path)["system"]
+    assert system["width"] == 768
+    assert system["height"] == 1376
+    assert system["megapixels"] == 1.06
+    assert system["created_at"] == "2020-01-01T00:00:00+00:00"
+    assert system["prompt"] == "original"
+
+
+def test_ob_sync_verbose_hit_same_generation_size_writes_nothing(monkeypatch, tmp_path):
+    """A HIT at the SAME resolution already recorded in the sidecar is a full
+    no-op: the file is not rewritten at all (no needless disk write, no churn
+    of the user block). This guards the generation-size refresh from
+    degrading into an unconditional rewrite on every HIT."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("a" * 64, {
+        "prompt": "original",
+        "node_variant": "fl2va",
+        "created_at": "2020-01-01T00:00:00+00:00",
+        "references": [],
+        "width": 544, "height": 960, "megapixels": 0.52,
+    }, tmp_path)
+    before = (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes()
+
+    proxy = _FakeProxy(last_hit=True, last_core_cache_written=None)
+    node_module._sync_verbose_metadata(
+        proxy, "fl2va", "original", CLIP_NAME, FAKE_FILE_SIZE, FAKE_MTIME_NS,
+        [], width=544, height=960)
+
+    assert (tmp_path / ("a" * 64 + ".verbose.json")).read_bytes() == before
+
+
 def test_p_sync_verbose_write_failure_is_swallowed(monkeypatch, tmp_path, caplog):
     """save_verbose() raising must not propagate: the verbose layer is not the
     source of truth, the core cache result stands regardless."""

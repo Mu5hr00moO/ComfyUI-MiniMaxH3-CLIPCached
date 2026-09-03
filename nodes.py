@@ -144,6 +144,30 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
             fresh_miss_written = proxy.last_hit is False and proxy.last_core_cache_written is True
             hit_needs_backfill = proxy.last_hit is True and (existing_verbose is None or not has_created_at)
             if not (fresh_miss_written or hit_needs_backfill):
+                # A normal HIT of an entry that already has a complete sidecar.
+                # With no keyframes connected the encode is resolution-
+                # independent -- one fingerprint (one cached conditioning)
+                # serves every width/height -- so the cached result is correct
+                # as-is and none of the fields that describe the encode
+                # (prompt, created_at, references, clip_*, pairing keys,
+                # comfyui_version) have any reason to change on a HIT. The one
+                # exception is the purely informational generation-size trio:
+                # system.width/.height/.megapixels record the resolution of the
+                # most recent run that used this entry, so a HIT at a new
+                # resolution moves them forward. Only those three keys are
+                # rewritten, only when they actually differ, and only when this
+                # run supplied a width/height at all.
+                if (proxy.last_hit is True and width is not None and height is not None
+                        and isinstance(existing_system, dict)):
+                    megapixels = round(width * height / 1_000_000, 2)
+                    if (existing_system.get("width") != width
+                            or existing_system.get("height") != height
+                            or existing_system.get("megapixels") != megapixels):
+                        system = dict(existing_system)
+                        system["width"] = width
+                        system["height"] = height
+                        system["megapixels"] = megapixels
+                        save_verbose(fingerprint, system, CACHE_DIR)
                 return
 
             created_at = _resolve_created_at(existing_verbose, core_path, fresh_miss_written)
