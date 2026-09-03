@@ -46,10 +46,22 @@ def _build_references(fingerprint, items, labels=None):
     """Build the positional reference descriptors for the verbose sidecar,
     each with a best-effort JPEG thumbnail.
 
-    items: list[(type: str, tensor_or_None)] in the exact order the stock
-    node presents them to the encoder. labels: optional list of the same
-    length (only FL2VA -- "first_frame"/"last_frame"); omitted for Ref2VA,
-    whose UI derives its numbering positionally from index + type.
+    items: an iterable of (type, tensor_or_None) or, on the Ref2VA path,
+    (type, tensor_or_None, slot) tuples, in the exact order the stock node
+    presents them to the encoder. labels: optional list of the same length
+    (only FL2VA -- "first_frame"/"last_frame"); omitted for Ref2VA, whose UI
+    derives its numbering positionally from index + type.
+
+    Each descriptor carries an "index" and, when the item supplies one, a
+    "slot". They are NOT the same thing: "index" is the reference's position
+    in the flat batch the encoder sees, AFTER empty slots have been
+    compacted out; "slot" is the name of the node input it was wired into
+    (ref_image_0, ref_video_audio_1, ...). "slot" is the only key that also
+    appears in system.ref_sources, so the Cache Manager joins reference
+    provenance on it rather than reconstructing the compaction positionally.
+    FL2VA items carry no slot -- its inputs are the fixed first_frame /
+    last_frame, already recorded via "label", and its sidecars never hold
+    system.ref_sources -- so no "slot" key is written for them.
 
     The thumbnail write for one reference must not lose the others or abort
     the verbose write, so the try/except is inside the loop: on failure that
@@ -57,8 +69,15 @@ def _build_references(fingerprint, items, labels=None):
     no tensor (None) and is listed without a thumbnail by construction.
     """
     references = []
-    for i, (item_type, tensor) in enumerate(items):
+    for i, item in enumerate(items):
+        item_type, tensor = item[0], item[1]
         entry = {"index": i, "type": item_type}
+        # index = position after empty-slot compaction (what the encoder
+        # sees); slot = the node input name, the only key shared with
+        # system.ref_sources. Both are kept -- see the docstring.
+        slot = item[2] if len(item) > 2 else None
+        if slot is not None:
+            entry["slot"] = slot
         if labels is not None:
             entry["label"] = labels[i]
         if tensor is not None:
@@ -973,7 +992,7 @@ def _build_ref_slot_dicts(ref_image_slots, ref_video_slots, ref_video_audio_slot
 def _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios):
     """Reconstruct the flat, ordered reference list the stock
     MiniMaxH3ReferenceToVideo builds for the encoder, as
-    list[(type: str, tensor_or_None)] for _build_references().
+    list[(type: str, tensor_or_None, slot: str)] for _build_references().
 
     Order mirrors the stock node's own assembly (see _build_ref_slot_dicts
     above): all reference images in ascending slot order, then per reference
@@ -981,20 +1000,35 @@ def _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
     immediately BEFORE the video itself, then the standalone audios in
     ascending slot order. Audio entries carry no tensor -- the encoder only
     ever sees an "<Audio N>" marker for them, never the waveform.
+
+    The third tuple element is the node input the reference was wired into
+    (``ref_image_0``, ``ref_video_1``, ``ref_video_audio_2``, ``ref_audio_0``
+    -- the same keys _build_ref_slot_dicts already produced). It is kept
+    distinct from the descriptor's later ``index``: ``index`` is the
+    position in this flat list once empty slots are compacted out (what the
+    encoder sees), while ``slot`` is the stable input name. They diverge as
+    soon as a slot in the middle is left unconnected, and ``slot`` is the
+    only identifier shared with ``system.ref_sources`` (also keyed by input
+    name), so the Cache Manager joins the two on it instead of re-deriving
+    the compaction positionally.
+
+    A reference video's soundtrack marker takes the slot name of the AUDIO
+    input it came from (``ref_video_audio_<N>``), NOT the video's own
+    ``ref_video_<N>`` -- they are two separate inputs on the node.
     """
     def _slot_index(key):
         return int(key.rsplit("_", 1)[-1])
 
     items = []
     for key in sorted(ref_images or {}, key=_slot_index):
-        items.append(("image", ref_images[key]))
+        items.append(("image", ref_images[key], key))
     for key in sorted(ref_videos or {}, key=_slot_index):
         audio_key = "ref_video_audio_" + key.rsplit("_", 1)[-1]
         if ref_video_audios and audio_key in ref_video_audios:
-            items.append(("audio", None))
-        items.append(("video", ref_videos[key]))
+            items.append(("audio", None, audio_key))
+        items.append(("video", ref_videos[key], key))
     for key in sorted(ref_audios or {}, key=_slot_index):
-        items.append(("audio", None))
+        items.append(("audio", None, key))
     return items
 
 

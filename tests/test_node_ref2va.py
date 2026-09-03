@@ -499,21 +499,24 @@ def test_k_build_reference_items_images_and_video_no_audio():
     items = node_module._build_reference_items(
         {"ref_image_0": i0, "ref_image_1": i1}, {"ref_video_0": v0}, None, None)
 
-    assert [t for t, _ in items] == ["image", "image", "video"]
+    assert [t for t, _, _ in items] == ["image", "image", "video"]
     assert items[0][1] is i0 and items[1][1] is i1 and items[2][1] is v0
+    assert [slot for _, _, slot in items] == [
+        "ref_image_0", "ref_image_1", "ref_video_0"]
 
 
 def test_l_build_reference_items_matched_audio_comes_before_its_video():
     """The stock node feeds a reference video's soundtrack to the encoder as
     an "<Audio N>" marker immediately before the video (CLAUDE.md R1). The
-    audio entry carries no tensor -- the waveform never reaches the encoder."""
+    audio entry carries no tensor -- the waveform never reaches the encoder.
+    The marker's slot is the AUDIO input's name, not the video's."""
     node_module = _load_node_module()
     v1 = torch.zeros(4, 2, 2, 3)
 
     items = node_module._build_reference_items(
         None, {"ref_video_1": v1}, {"ref_video_audio_1": "wave"}, None)
 
-    assert items == [("audio", None), ("video", v1)]
+    assert items == [("audio", None, "ref_video_audio_1"), ("video", v1, "ref_video_1")]
 
 
 def test_m_build_reference_items_standalone_audio_only():
@@ -522,7 +525,7 @@ def test_m_build_reference_items_standalone_audio_only():
     items = node_module._build_reference_items(
         None, None, None, {"ref_audio_0": "w0", "ref_audio_2": "w2"})
 
-    assert items == [("audio", None), ("audio", None)]
+    assert items == [("audio", None, "ref_audio_0"), ("audio", None, "ref_audio_2")]
 
 
 def test_n_build_reference_items_full_mix_ordering():
@@ -537,12 +540,15 @@ def test_n_build_reference_items_full_mix_ordering():
         {"ref_audio_0": "standalone"},
     )
 
-    assert [t for t, _ in items] == [
+    assert [t for t, _, _ in items] == [
         "image", "image", "video", "audio", "video", "audio"]
-    assert items[2][1] is v0            # video 0: no matched audio, no marker before it
-    assert items[3] == ("audio", None)  # video 1's soundtrack marker ...
-    assert items[4][1] is v1            # ... immediately before video 1
-    assert items[5] == ("audio", None)  # standalone audio last
+    assert [slot for _, _, slot in items] == [
+        "ref_image_0", "ref_image_2", "ref_video_0",
+        "ref_video_audio_1", "ref_video_1", "ref_audio_0"]
+    assert items[2][1] is v0                                   # video 0: no matched audio, no marker
+    assert items[3] == ("audio", None, "ref_video_audio_1")    # video 1's soundtrack marker ...
+    assert items[4][1] is v1                                   # ... immediately before video 1
+    assert items[5] == ("audio", None, "ref_audio_0")          # standalone audio last
 
 
 def test_o_build_reference_items_orders_by_slot_number_not_dict_order():
@@ -553,6 +559,26 @@ def test_o_build_reference_items_orders_by_slot_number_not_dict_order():
         {"ref_image_2": i2, "ref_image_0": i0}, None, None, None)
 
     assert items[0][1] is i0 and items[1][1] is i2
+    assert [slot for _, _, slot in items] == ["ref_image_0", "ref_image_2"]
+
+
+def test_o2_build_reference_items_slot_survives_a_gap_in_slot_numbering():
+    """A sparse set of connected image slots (0, 2, 5) must keep its own slot
+    names even though the compacted indices are 0, 1, 2. Without the slot
+    name a consumer would have to zip the sorted ref_image_* keys against
+    the reference list positionally -- exactly the fragile step this field
+    exists to remove."""
+    node_module = _load_node_module()
+    i0, i2, i5 = torch.zeros(1, 2, 2, 3), torch.ones(1, 2, 2, 3), torch.full((1, 2, 2, 3), 2.0)
+
+    items = node_module._build_reference_items(
+        {"ref_image_0": i0, "ref_image_2": i2, "ref_image_5": i5}, None, None, None)
+
+    assert [slot for _, _, slot in items] == [
+        "ref_image_0", "ref_image_2", "ref_image_5"]
+    references = node_module._build_references("f" * 64, items)
+    assert [(r["index"], r["slot"]) for r in references] == [
+        (0, "ref_image_0"), (1, "ref_image_2"), (2, "ref_image_5")]
 
 
 def test_p_build_reference_items_all_groups_empty_is_empty_list():
@@ -572,8 +598,9 @@ def test_q_sync_verbose_fresh_miss_writes_ref2va_variant(monkeypatch, tmp_path):
         last_hit = False
         last_core_cache_written = True
 
-    items = [("image", torch.zeros(1, 2, 2, 3)), ("audio", None),
-             ("video", torch.zeros(4, 2, 2, 3))]
+    items = [("image", torch.zeros(1, 2, 2, 3), "ref_image_0"),
+             ("audio", None, "ref_video_audio_1"),
+             ("video", torch.zeros(4, 2, 2, 3), "ref_video_1")]
     node_module._sync_verbose_metadata(
         _FakeProxy(), "ref2va", "a ref2va prompt", CLIP_NAME,
         FAKE_FILE_SIZE, FAKE_MTIME_NS, items)
@@ -582,7 +609,34 @@ def test_q_sync_verbose_fresh_miss_writes_ref2va_variant(monkeypatch, tmp_path):
     assert system["node_variant"] == "ref2va"
     assert [r["type"] for r in system["references"]] == ["image", "audio", "video"]
     assert [r["index"] for r in system["references"]] == [0, 1, 2]
+    # slot is carried through verbatim, next to the compacted index, so the
+    # Cache Manager can join each reference onto system.ref_sources by name.
+    assert [r["slot"] for r in system["references"]] == [
+        "ref_image_0", "ref_video_audio_1", "ref_video_1"]
     assert "label" not in system["references"][0]  # Ref2VA passes no labels
+
+
+def test_q2_sync_verbose_tolerates_a_slotless_reference_item(monkeypatch, tmp_path):
+    """A reference item with no slot element (an old caller shape, or the
+    FL2VA path) writes a descriptor with no "slot" key -- reading code must
+    never assume the field is present."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    _make_core_json(tmp_path)
+
+    class _FakeProxy:
+        last_fingerprint = "b" * 64
+        last_hit = False
+        last_core_cache_written = True
+
+    node_module._sync_verbose_metadata(
+        _FakeProxy(), "ref2va", "a ref2va prompt", CLIP_NAME,
+        FAKE_FILE_SIZE, FAKE_MTIME_NS, [("audio", None)])
+
+    references = load_verbose("b" * 64, tmp_path)["system"]["references"]
+    assert references == [{"index": 0, "type": "audio"}]
 
 
 def test_r_sync_verbose_hit_without_sidecar_backfills(monkeypatch, tmp_path):
@@ -906,3 +960,31 @@ def test_z4_execute_without_hidden_inputs_writes_no_ref_sources(monkeypatch, tmp
 
     fingerprint = last_used_module.get_last_used()["ref2va"]
     assert "ref_sources" not in load_verbose(fingerprint, tmp_path)["system"]
+
+
+def test_z5_execute_records_reference_slot_names_in_the_sidecar(monkeypatch, tmp_path):
+    """End to end: a MISS with a sparse set of image slots wired (0 and 2, a
+    gap at 1) writes references whose "slot" is the original input name while
+    "index" is the compacted position -- the two intentionally differ, and
+    "slot" is what lines up with system.ref_sources' keys."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    img0, img2 = torch.zeros(1, 4, 4, 3), torch.ones(1, 4, 4, 3)
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    _execute(node, ref_image_0=img0, ref_image_2=img2)
+
+    fingerprint = last_used_module.get_last_used()["ref2va"]
+    references = load_verbose(fingerprint, tmp_path)["system"]["references"]
+    assert [(r["index"], r["slot"], r["type"]) for r in references] == [
+        (0, "ref_image_0", "image"), (1, "ref_image_2", "image")]

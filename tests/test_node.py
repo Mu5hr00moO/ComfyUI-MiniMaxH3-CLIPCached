@@ -703,6 +703,10 @@ def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
     assert [r["type"] for r in system["references"]] == ["image", "image"]
     assert [r["label"] for r in system["references"]] == ["first_frame", "last_frame"]
     assert [r["index"] for r in system["references"]] == [0, 1]
+    # FL2VA has no Autogrow slots: first_frame / last_frame are fixed named
+    # inputs, already captured by "label", and its sidecars never carry
+    # system.ref_sources, so no "slot" key is written.
+    assert all("slot" not in r for r in system["references"])
 
 
 def test_m_sync_verbose_miss_without_core_cache_write_does_nothing(monkeypatch, tmp_path):
