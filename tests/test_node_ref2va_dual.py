@@ -342,7 +342,13 @@ def test_dual_resolution_dependent_input_cross_links_the_two_verbose_entries(mon
 
 def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_path):
     """No references reach the encoder: both resolutions share one
-    fingerprint, one cache entry, nothing to pair -- no paired_fingerprint."""
+    fingerprint, one cache entry, nothing to pair -- no paired_fingerprint.
+
+    The single sidecar is stamped with the BASE resolution (width/height),
+    not the upscale one: the upscale pass is a cache HIT that would otherwise
+    move the informational generation-size trio forward to side B, so
+    _pair_verbose_entries() finalizes it back on the shared-fingerprint
+    branch -- the same helper as FL2VA DualRes."""
     node_module = _load_node_module()
     real_clip = FakeRealClip()
 
@@ -360,7 +366,10 @@ def test_dual_resolution_independent_input_writes_no_pairing(monkeypatch, tmp_pa
 
     sidecars = list(tmp_path.glob("*.verbose.json"))
     assert len(sidecars) == 1
-    assert "paired_fingerprint" not in json.loads(sidecars[0].read_bytes())["system"]
+    system = json.loads(sidecars[0].read_bytes())["system"]
+    assert "paired_fingerprint" not in system
+    assert (system["width"], system["height"]) == (1344, 768)
+    assert system["megapixels"] == 1.03
 
 
 # --- generate_upscale_cond: skip the second encode entirely --------------

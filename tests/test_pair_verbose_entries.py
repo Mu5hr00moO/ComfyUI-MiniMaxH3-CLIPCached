@@ -82,19 +82,50 @@ def test_b_is_upscale_target_false_swaps_the_role_flags(monkeypatch, tmp_path):
     assert load_verbose(FP2, tmp_path)["system"]["is_upscale_target"] is False
 
 
-def test_noop_when_fingerprints_equal(monkeypatch, tmp_path):
+def test_noop_when_fingerprints_equal_finalizes_to_base_resolution(monkeypatch, tmp_path):
     """fp1 == fp2 means the two resolutions collapsed onto one shared cache
-    entry -- there is nothing to pair, so no paired_fingerprint is written."""
+    entry -- there is nothing to pair, so no paired_fingerprint is written.
+
+    The one thing this branch does do is finalize the informational
+    generation-size trio to the BASE side (width_a / height_a): the upscale
+    pass was a cache HIT that _sync_verbose_metadata() may have moved the
+    trio forward to the upscale resolution, and this run's canonical size is
+    the base one. Everything else in "system" is preserved."""
     node_module = _load_node_module()
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
 
     _make_core_json(tmp_path, FP1)
-    save_verbose(FP1, {"prompt": "p", "references": []}, tmp_path)
+    # Sidecar left at the upscale size, as a HIT-refresh would have done.
+    save_verbose(FP1, {"prompt": "p", "references": [],
+                       "width": 1920, "height": 1088, "megapixels": 2.09}, tmp_path)
 
     node_module._pair_verbose_entries(FP1, 1344, 768, FP1, 1920, 1088)
 
-    assert "paired_fingerprint" not in load_verbose(FP1, tmp_path)["system"]
+    system = load_verbose(FP1, tmp_path)["system"]
+    assert "paired_fingerprint" not in system
+    assert (system["width"], system["height"]) == (1344, 768)
+    assert system["megapixels"] == 1.03
+    assert system["prompt"] == "p"
+
+
+def test_shared_fingerprint_finalize_skipped_when_core_entry_gone(monkeypatch, tmp_path):
+    """A Cache Manager Delete can remove the shared entry's core <fp>.json
+    between the encode and the pairing call. On the fp1 == fp2 branch the
+    under-the-lock re-check then skips the finalize, so no verbose sidecar is
+    resurrected behind a deleted core entry."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    # Core <fp>.json deliberately absent -- Delete won the race.
+    save_verbose(FP1, {"prompt": "p", "references": [],
+                       "width": 1920, "height": 1088, "megapixels": 2.09}, tmp_path)
+
+    node_module._pair_verbose_entries(FP1, 1344, 768, FP1, 1920, 1088)  # must not raise
+
+    system = load_verbose(FP1, tmp_path)["system"]
+    assert (system["width"], system["height"]) == (1920, 1088)  # untouched
 
 
 def test_add_pairing_failure_is_swallowed(monkeypatch, tmp_path, caplog):
