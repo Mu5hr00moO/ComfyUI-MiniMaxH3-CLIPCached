@@ -1,123 +1,83 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch fix/verbose-hit-generation-size / PR (do otwarcia)
+## Stan na: 2026-09-03 / branch chore/verbose-metadata-followups / PR (do otwarcia)
 
 ## Ostatnio zrobione
 
-Sidecar verbose odświeża rozmiar generacji przy cache HIT, a Cache Manager
-tłumaczy semantykę tego pola. Gałąź `fix/verbose-hit-generation-size`
-odcięta od `origin/master` (`94e2044`, po merge PR #11).
+Dwie drobne poprawki po merge PR #12 (`fix/verbose-hit-generation-size`
+-> `master`, `b84ea52`). Żadna nie zmienia zachowania cache'u,
+fingerprintu ani decyzji HIT/MISS. Gałąź `chore/verbose-metadata-followups`
+odcięta od `origin/master` (`b84ea52`).
 
-### Commit 1 — backend HIT refresh (`448ef9b`)
+### Commit 1 — backend: martwy warunek w `_sync_verbose_metadata()` (`aa7abbe`)
 
-- `nodes.py` `_sync_verbose_metadata()`: normalny HIT wpisu z kompletnym
-  sidecarem nie jest już czystym early-returnem. Odświeża **wyłącznie**
-  `system.width` / `system.height` / `system.megapixels`, i tylko gdy
-  podany rozmiar różni się od zapisanego:
-  * `width`/`height` nie podane -> no-op,
-  * rozmiar identyczny -> brak zapisu na dysk,
-  * rozmiar inny -> shallow copy istniejącego `system`, nadpisanie tylko
-    tych trzech kluczy, `save_verbose()`.
-- `prompt`, `created_at`, `references`, `clip_*`, klucze pairingu,
-  `comfyui_version` nie są ruszane na HIT. Fingerprint, HIT/MISS i logika
-  generacji bez zmian. Cała decyzja + zapis pod istniejącym
-  per-fingerprint lockiem, po ponownym sprawdzeniu istnienia core
-  `<fp>.json` pod lockiem. Kontrakt bez zmian: never raises.
-- Testy w `tests/test_node.py`:
-  `test_oa_sync_verbose_hit_refreshes_stale_generation_size_only`,
-  `test_ob_sync_verbose_hit_same_generation_size_writes_nothing`.
+- `nodes.py` `_sync_verbose_metadata()`, gałąź odświeżania rozmiaru
+  generacji przy normalnym HIT (dodana w `448ef9b`): z gate'a usunięty
+  warunek `isinstance(existing_system, dict)`. Był nieosiągalnie fałszywy —
+  dotarcie do tej gałęzi przy `proxy.last_hit is True` wymaga
+  `hit_needs_backfill == False`, co wymaga `has_created_at == True`, a to
+  jest liczone jako `True` wyłącznie gdy `existing_system` jest dictem z
+  niepustym stringiem `created_at`.
+- W miejsce warunku dodany komentarz WHY opisujący ten łańcuch, żeby
+  czytelnik nie musiał go odtwarzać ani nie dodał warunku ponownie.
+- Zero zmian w zachowaniu. Brak nowych testów; istniejące testy
+  `_sync_verbose_metadata` w `tests/test_node.py` bez modyfikacji, dalej
+  zielone.
 
-### Commit 2 — DualRes finalizacja rozmiaru (`94be4da`)
+### Commit 2 — frontend: tooltip linii meta w Cache Manager (`0d9afcb`)
 
-- Commit 1 tworzy regresję dla DualRes ze współdzielonym fingerprintem:
-  upscale pass jest HIT-em i przesuwa rozmiar wpisu na stronę B.
-- `nodes.py`: nowy helper `_finalize_shared_fingerprint_size()`.
-  `_pair_verbose_entries()` w gałęzi `fp_a == fp_b` woła ten helper zamiast
-  czystego `return` — re-stampuje trio rozmiaru na BASE (`width_a` /
-  `height_a`, `megapixels` przeliczone), zachowuje resztę `system`, nie
-  pisze żadnych metadanych pairingu (jeden fingerprint). Te same guardy co
-  ścieżka pairingu: `get_lock(fp_a)`, tylko gdy core `<fp_a>.json` istnieje,
-  brak zapisu gdy rozmiar już się zgadza, never raises.
-- Jeden helper obsługuje FL2VA i Ref2VA DualRes (oba już współdzielą
-  `_pair_verbose_entries()`).
-- Testy: rozszerzone
-  `test_dual_resolution_independent_input_writes_no_pairing` w
-  `tests/test_node_fl2va_dual.py` i `tests/test_node_ref2va_dual.py`
-  (sprawdzają `(width, height) == (1344, 768)` i `megapixels == 1.03`);
-  `tests/test_pair_verbose_entries.py`:
-  `test_noop_when_fingerprints_equal` przemianowany na
-  `test_noop_when_fingerprints_equal_finalizes_to_base_resolution` +
-  nowy `test_shared_fingerprint_finalize_skipped_when_core_entry_gone`.
+- `web/main.js`: `generationSizeTooltip()` -> `entryMetaTooltip()`
+  (eksport + oba call sites: `buildNormalRow` ~735, `populateDetail`
+  ~1009). Stara nazwa nie występuje już nigdzie w repo.
+- Powód zmiany: helper jest ustawiany jako `title` całego elementu
+  `h3cm-row-created` / `[data-h3cm-detail-created]`, który renderuje
+  `formatEntryMetaLine()` = `DATA · SZERxWYS (N MP)` — więc tooltip
+  opisujący tylko rozdzielczość pokazywał się też nad datą.
+- Nowa treść tooltipa (po angielsku) tłumaczy, że data i rozdzielczość
+  pochodzą z dwóch różnych momentów: `created_at` jest ustalane przy
+  pierwszym zapisie wpisu, a rozdzielczość to rozdzielczość ostatniego
+  runu który użył wpisu.
+- Kontrakt pustego stringa bez zmian: gdy `formatGenerationSize()` zwraca
+  `""`, `entryMetaTooltip()` też zwraca `""` (wyjaśnienie dwóch momentów
+  ma sens tylko gdy oba pola są widoczne). Brak wariantu date-only.
+- Komentarz nad funkcją zaktualizowany do obecnego zakresu.
+- Bez zmian w `formatGenerationSize()`, `formatCreatedAt()`,
+  `formatEntryMetaLine()`, w obliczaniu MP oraz w DOM / `styles.css`.
 
-### Commit 3 — tooltip + docs (`e444182`)
-
-- `web/main.js`: nowy eksportowany helper `generationSizeTooltip(system)`,
-  ustawiany jako `title` pola rozmiaru w wierszu listy
-  (`h3cm-row-created`) i w panelu szczegółów (`[data-h3cm-detail-created]`).
-  Zwraca pusty string (brak tooltipa) gdy wpis nie ma rozmiaru, zgodnie z
-  `formatGenerationSize()`. Obliczanie MP po stronie frontendu bez zmian.
-  Treść tooltipa: "Resolution of the most recent run that used this entry.
-  One cached encode serves every resolution when no keyframes are connected
-  -- the encode itself does not depend on width/height."
-- `docs/CACHE_MANAGER.md`: nowa sekcja "Generation resolution" — to samo
-  zachowanie, plus fakt że data utworzenia i rozmiar pochodzą z dwóch
-  różnych momentów, plus że DualRes ze współdzielonym fingerprintem trzyma
-  rozmiar BASE.
-
-### Commit 4 — HANDOFF.md (osobno, w tym samym PR)
+### Commit 3 — HANDOFF.md (osobno, w tym samym PR)
 
 ## Weryfikacja
 
 - Pełny `python -m pytest -q` w comfyenv: **402 passed / 0 failed /
   0 skipped** (4 `DeprecationWarning` z `transformers`, niezwiązane).
-  Baseline przed zmianą: 399 passed.
-- FAIL-przed / PASS-po dla nowych testów:
-  * `test_oa_sync_verbose_hit_refreshes_stale_generation_size_only` —
-    przed commit 1 FAIL (`assert 544 == 768`), po commit 1 PASS.
-  * `test_ob_sync_verbose_hit_same_generation_size_writes_nothing` —
-    guard: przechodzi też na master (stary kod też jest no-op tu),
-    dalej PASS po commit 1; łapie regresję "bezwarunkowy zapis na HIT".
-  * `test_node_fl2va_dual` / `test_node_ref2va_dual`
-    `..._writes_no_pairing` (rozszerzone) — przed commit 2 FAIL
-    (`assert (1920, 1088) == (1344, 768)`), po commit 2 PASS.
-  * `test_noop_when_fingerprints_equal_finalizes_to_base_resolution` —
-    przed commit 2 FAIL (`(1920, 1088) == (1344, 768)`), po commit 2 PASS.
-  * `test_shared_fingerprint_finalize_skipped_when_core_entry_gone` —
-    guard: przechodzi też przed commit 2 (stary kod to czysty `return`),
-    dalej PASS po commit 2.
+  Bez modyfikacji istniejących testów. Ta sama liczba przed i po zmianie
+  backendu (zmiana jest czysto komentarzowa + usunięcie martwej gałęzi
+  warunku).
 - `node --check` na kopii `.mjs` z `web/main.js`: czysty.
 - Scratchpad harness Node (loader hook stubuje `/scripts/app.js` i
   `/scripts/api.js`, minimalny `document`): moduł importuje się bez
-  wyjątku; `generationSizeTooltip` zwraca dokładny tekst tooltipa gdy jest
-  rozmiar, `""` gdy brak `width`/`height`; `formatGenerationSize`
-  niezmienione (9/9 asercji). Harness w scratchpadzie, niescommitowany.
+  wyjątku; `entryMetaTooltip()` zwraca dokładny nowy tekst tooltipa gdy
+  jest rozmiar, `""` gdy brak `width`/`height` (6/6 asercji, w tym
+  `generationSizeTooltip === undefined`). Harness w scratchpadzie,
+  niescommitowany.
+- `grep -rn "generationSizeTooltip"` po repo: brak wystąpień.
 - `git diff --check` czysty.
 
 ## Ustalenia istotne dla Chat
 
-- `system.width` / `.height` / `.megapixels` w sidecarze są czysto
-  informacyjne — nie wchodzą do `compute_fingerprint()` ani do decyzji
-  HIT/MISS. Bez podpiętych keyframe'ów/referencji jeden fingerprint (jeden
-  cache'owany conditioning) obsługuje każdą rozdzielczość.
-- Po tej zmianie te trzy pola śledzą **ostatni** run który użył wpisu,
-  a `system.created_at` dalej wskazuje moment pierwszego zapisu wpisu —
-  dwa różne momenty, świadomie.
-- `_sync_verbose_metadata()` (`nodes.py`) — gałąź `not (fresh_miss_written
-  or hit_needs_backfill)` robi teraz warunkowy zapis rozmiaru zamiast
-  bezwarunkowego `return`.
-- `_finalize_shared_fingerprint_size()` (`nodes.py`) — nowy helper,
-  wołany tylko z `_pair_verbose_entries()` gałąź `fp_a == fp_b`.
-- `generationSizeTooltip()` w `web/main.js` jest eksportowany (jak reszta
-  czystych helperów w tym pliku).
+- `_sync_verbose_metadata()` (`nodes.py`, gałąź `not (fresh_miss_written
+  or hit_needs_backfill)`) — gate odświeżania rozmiaru sprawdza teraz
+  tylko `proxy.last_hit is True and width is not None and height is not
+  None`; `existing_system` jest w tym punkcie gwarantowanym dictem
+  (komentarz WHY w kodzie).
+- `web/main.js` `entryMetaTooltip(system)` (dawniej
+  `generationSizeTooltip`) — tooltip całej linii meta wpisu (data +
+  rozdzielczość), nadal pusty string gdy wpis nie ma rozmiaru.
 
 ## NIE zweryfikowane (do sprawdzenia przez Kamila w żywym ComfyUI)
 
-- Realny render tooltipa po najechaniu na pole rozmiaru w wierszu listy i
-  w panelu szczegółów; brak błędów w konsoli przeglądarki.
-- End-to-end na żywym serwerze + GPU: DualRes ze współdzielonym
-  fingerprintem faktycznie zostawia wpis z rozmiarem BASE po drugim
-  (upscale) passie; pojedynczy HIT przy innej rozdzielczości faktycznie
-  przesuwa rozmiar w UI po ponownym Check.
+- Realny render nowego tooltipa po najechaniu na linię meta w wierszu
+  listy i w panelu szczegółów; brak błędów w konsoli przeglądarki.
 
 ## Otwarte pytania
 
@@ -125,6 +85,4 @@ odcięta od `origin/master` (`94e2044`, po merge PR #11).
 
 ## Sugestie (nie polecenia)
 
-- Świadomy skutek: pierwszy Check po wdrożeniu może pokazać zmienione
-  rozmiary przy istniejących wpisach, jeśli były reużywane w innych MP —
-  to oczekiwane, nie bug.
+- brak
