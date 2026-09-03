@@ -4,6 +4,8 @@
 # Test suite and its CI (not needed at runtime)
 tests/
 .github/
+# pytest config; its testpaths point at the excluded tests/ directory
+pytest.ini
 
 # Local-only runtime and benchmark output
 cache/
