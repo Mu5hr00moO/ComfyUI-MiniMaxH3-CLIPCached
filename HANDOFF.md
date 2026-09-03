@@ -1,92 +1,112 @@
 # HANDOFF
 
-## Stan na: 2026-09-04 / branch feat/reference-slot-names / PR (do otwarcia)
+## Stan na: 2026-09-04 / branch feat/cache-manager-ref-provenance-ui / PR #16 (open)
 
 ## Ostatnio zrobione
 
-Backend: nazwa slotu wejściowego dla każdej referencji Ref2VA trafia do
-`system.references` w sidecarze `<fp>.verbose.json`, jako pole `"slot"`
-obok istniejącego `"index"`. Cel: Cache Manager złącza referencję z
-`system.ref_sources` (PR #14, kluczowane nazwą slotu) po tej nazwie,
-zamiast odtwarzać kompakcję pozycyjnie w JS. Zero zmian w mechanice H3,
-w `compute_fingerprint()`, w decyzji HIT/MISS. UI to osobna, późniejsza
-faza — tu wyłącznie zapis do sidecara.
+Cache Manager UI (frontend only, `web/main.js` + `web/styles.css`; zero
+zmian w Pythonie). PR #16 ma teraz trzy commity:
 
-### Commit 1 — kod + testy (`745cb40`)
+1. `fac4020` — panel szczegółów pokazuje nazwy plików źródłowych każdej
+   referencji Ref2VA (złączone z `system.ref_sources` po nazwie slotu) +
+   skrócony fingerprint wpisu (12 znaków hex) w pasie akcji.
+2. `f359b0d` — HANDOFF.md.
+3. `f0c4c51` (nowy) — kosmetyka nazw plików + naprawa timerów feedbacku
+   kopiowania (opis niżej).
+4. ten commit — HANDOFF.md (osobno, ten sam PR).
 
-- `_build_reference_items()` (`nodes.py`) zwraca teraz krotki
-  3-elementowe `(type, tensor_or_None, slot)` zamiast 2-elementowych.
-  Nazwa slotu jest brana z klucza, po którym funkcja i tak iteruje
-  (`sorted(... , key=_slot_index)`).
-- Marker ścieżki dźwiękowej wideo dostaje nazwę SWOJEGO wejścia AUDIO
-  (`ref_video_audio_<N>`), nie `ref_video_<N>` wideo — to dwa osobne
-  wejścia na węźle.
-- `_build_references()` zapisuje `"slot"` obok `"index"`. Komentarz WHY:
-  `index` = pozycja w spłaszczonym batchu widzianym przez encoder, PO
-  wycięciu pustych slotów; `slot` = nazwa wejścia na węźle, jedyny
-  wspólny klucz z `system.ref_sources`.
-- FL2VA bez zmian: jego itemy zostają 2-krotkami (`first_frame` /
-  `last_frame` to stałe nazwane wejścia, już zapisane jako `"label"`, a
-  jego sidecary nigdy nie mają `system.ref_sources`), więc `"slot"` nie
-  powstaje. `_build_references()` znosi obie długości krotki
-  (`item[2] if len(item) > 2 else None`).
+### Commit `f0c4c51` — kosmetyka nazw plików + timery
 
-### Commit 2 — HANDOFF.md (osobno, w tym samym PR)
+`web/styles.css`:
 
-## Weryfikacja
+- `.h3cm-detail-ref-sources`: `max-width: 108px` → `width: 120px` (stała),
+  `align-items: center` → `stretch`. Kontener jest teraz przewidywalnej
+  szerokości; komórka `.h3cm-detail-ref-cell` przez to zawsze 120px szeroka,
+  miniatura 64px i etykieta pozycyjna dalej wyśrodkowane.
+- `.h3cm-detail-ref-file`: `overflow-wrap: anywhere` (zawijanie) → `display:
+  block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap`.
+  Każda nazwa to teraz dokładnie jedna linia przycięta wielokropkiem;
+  `text-align: center` wciąż centruje krótkie nazwy i "no file source".
+  Wysokość kafelka nie zależy już od długości nazwy ani liczby tropów.
 
-- Pełny `conda run -n comfyenv python -m pytest -q`: **438 passed / 0
-  failed / 0 skipped** (4 `DeprecationWarning` z `transformers`,
-  niezwiązane). Baseline przed zmianą: 435.
-- `python -m py_compile nodes.py tests/test_node.py
-  tests/test_node_ref2va.py`: czysto.
+`web/main.js` — `buildRefSourceLines()`:
+
+- `title` liczony raz jako `fullTitle`: gdy jest `path` →
+  `` `${annotated}\n${path}` `` (nazwa nad ścieżką, w jednym title); gdy
+  brak `path` → sam `annotated`. Pozycja bez `path` dostaje więc teraz
+  tooltip (wcześniej nie miała żadnego), z samą nazwą.
+- Klik dalej kopiuje SAMĄ ścieżkę (`copyToClipboardWithFeedback(line, path,
+  fullTitle)` — 2. arg = kopiowana wartość). 3. arg (revert title) to teraz
+  `fullTitle`, nie goła ścieżka — inaczej po pierwszym skopiowaniu tooltip
+  gubiłby nazwę pliku.
+- Pozycja bez `path` dalej niekopiowalna (brak `is-copyable`, `role`,
+  listenerów).
+
+`web/main.js` — `copyToClipboardWithFeedback(el, text, revertTitle)`:
+
+- Na wejściu funkcji anuluje poprzedni timer revertu trzymany na
+  `el._h3cmCopyRevertTimer` (i zeruje uchwyt) — obejmuje obie ścieżki
+  (sukces i „copy failed”). Nowy `setTimeout` zapisuje uchwyt z powrotem
+  na element; callback zeruje go po odpaleniu. Drugie kliknięcie w ciągu
+  1,5 s dostaje pełne 1,5 s potwierdzenia zamiast ucięcia przez timer
+  pierwszego kliknięcia. Element i tak jest wyrzucany przy przebudowie
+  panelu, więc uchwyt na elemencie jest OK.
+
+## Weryfikacja (commit `f0c4c51`)
+
+- `node --check` (kopia `.mjs`): czysto.
 - `git diff --check`: czysto.
-- Nowe / zmienione testy (`tests/test_node_ref2va.py`,
-  `tests/test_node.py`):
-  - `test_k`/`test_l`/`test_m`/`test_n`/`test_o` — dostrojone do
-    3-krotki, asertują też nazwę slotu; marker audio ma
-    `ref_video_audio_1`, nie `ref_video_1`; standalone audio ma
-    `ref_audio_<N>`.
-  - `test_o2` — luka w numeracji slotów (`ref_image_0` + `ref_image_2` +
-    `ref_image_5` → dokładnie te trzy nazwy przy indeksach 0,1,2).
-  - `test_q` — `_sync_verbose_metadata` przepisuje `slot` do sidecara.
-  - `test_q2` — item bez slotu (stary kształt / FL2VA) → deskryptor bez
-    klucza `"slot"`, odczyt się nie wywraca.
-  - `test_z5` — end-to-end `execute()` z luką w slotach obrazów →
-    `references` niosą poprawny `slot` obok `index`.
-  - `test_l` (FL2VA, `test_node.py`) — asertuje brak `"slot"` w
-    referencjach FL2VA.
-
-## Ustalenia istotne dla Chat
-
-- `system.references[i]` w sidecarze dostaje NOWE, opcjonalne pole
-  `"slot"` (string, np. `ref_image_0`, `ref_video_1`,
-  `ref_video_audio_2`, `ref_audio_0`) — TYLKO dla wpisów Ref2VA. FL2VA
-  wpisy go nie dostają (mają `"label"` = `first_frame`/`last_frame`).
-  — `nodes.py` `_build_references` / `_build_reference_items`.
-- `"slot"` != `"index"`. `"index"` = pozycja po kompakcji pustych slotów
-  (co widzi encoder). `"slot"` = nazwa wejścia na węźle. Rozjeżdżają się
-  gdy slot w środku jest pusty. `"slot"` to jedyny klucz wspólny z
-  `system.ref_sources` (też kluczowanym nazwą slotu).
-- Marker ścieżki dźwiękowej wideo (`{"type": "audio", ...}` wstawiany
-  PRZED wideo) ma `slot` = `ref_video_audio_<N>` (nazwa wejścia AUDIO),
-  nie `ref_video_<N>`.
-- Kompatybilność wstecz: istniejące sidecary nie mają `"slot"`, nic nie
-  jest migrowane. `scanner.py` (`scan_cache`) i `routes.py` (`/get`,
-  `/check`) przepuszczają cały blok `verbose` bez introspekcji
-  pojedynczych wpisów `references` — brak pola `"slot"` jest po stronie
-  odczytu backendu nie-zdarzeniem. Zweryfikowane przez przegląd
-  `scanner.py:119-147` i `routes.py:138-146` (oba tylko `load_verbose` /
-  `web.json_response(verbose)`).
-- `_build_references` nadal znosi wejście 2-krotkowe (FL2VA + starsze
-  testy) — pole `"slot"` powstaje tylko gdy item ma 3. element != None.
+- Bilans klamer `web/styles.css`: 0 (zbalansowane).
+- Pełny pytest: **438 passed** (bez zmian w Pythonie, uruchomione dla
+  pewności).
+- Scratchpadowy harness ESM (loader podstawia `/scripts/app.js` +
+  `/scripts/api.js`, minimalne `document`/`navigator`, kontrolowane
+  `setTimeout`/`clearTimeout` i schowek; harness i loader NIE commitowane;
+  loader dopisuje `export` do dwóch prywatnych funkcji, więc testowany jest
+  REALNY bieżący kod, nie kopia) — **26 asercji PASS**, w tym:
+  - moduł importuje się bez wyjątku ze stubami ComfyUI;
+  - `buildRefSourceLines`: linia z `path` → `title` = `annotated \n path`,
+    `is-copyable` + `role=button`; linia bez `path` → `title` = sam
+    `annotated`, brak `is-copyable`/`role`/listenera kliknięcia; `[]` →
+    jedna linia "no file source" `is-empty` (bez zmian);
+  - klik → do schowka trafia SAMA ścieżka (nie title); `title` = "Copied!"
+    w oknie; po timerze `title` wraca do `annotated \n path` (NIE do gołej
+    ścieżki); uchwyt timera wyzerowany po odpaleniu;
+  - drugie kliknięcie w oknie 1,5 s: timer pierwszego kliknięcia
+    wyczyszczony, nowy timer zaplanowany, `title` dalej "Copied!" (brak
+    przedwczesnego revertu), dopiero drugi timer robi revert;
+  - nieudane kopiowanie po udanym też czyści zawisły timer, pokazuje
+    „Copy failed…”, nie planuje nowego timera;
+  - `detailRefCells` bez regresji (etykiety pozycyjne per typ mimo luki w
+    slotach, złączenie tropów po slocie).
 
 ## NIE zweryfikowane (do sprawdzenia przez Kamila w żywym ComfyUI)
 
-- Realny przebieg przez `/prompt` API: czy po MISS z podpiętymi
-  `LoadImage`/`LoadAudio` w slotach `ref_*` (z luką) `<fp>.verbose.json`
-  ma `system.references[i].slot` zgodne z kluczami
-  `system.ref_sources`.
+- Realny render: nazwy plików jako jedna przycięta linia w kafelku Ref2VA,
+  stabilna wysokość kafelków przy długich nazwach i przy fan-inie N>1.
+- Tooltip przy najechaniu: dwie linie (nazwa nad ścieżką) dla pozycji z
+  `path`; jedna linia (sama nazwa) dla pozycji bez `path`.
+- Klik → schowek zawiera ścieżkę, "Copied!" przez 1,5 s, po dwóch szybkich
+  kliknięciach drugie dostaje pełne 1,5 s.
+- Siatka kafelków (120px) nie rozjeżdża panelu w poziomie; miniatura i
+  etykieta pozycyjna dalej wyśrodkowane.
+- Brak błędów w konsoli przeglądarki.
+
+## Ustalenia istotne dla Chat
+
+- Nazwa pliku referencji w panelu szczegółów to teraz jedna linia
+  przycięta wielokropkiem w stałym boksie 120px (`web/styles.css`
+  `.h3cm-detail-ref-sources` / `.h3cm-detail-ref-file`). Wysokość kafelka
+  nie zależy już od długości nazwy ani liczby tropów.
+- `title` linii tropu niesie pełne dane: `annotated` + `\n` + `path` gdy
+  ścieżka jest, sam `annotated` gdy jej nie ma. Pozycja bez `path` ma
+  teraz tooltip (wcześniej brak).
+- Klik kopiuje wyłącznie `path` (bez zmian). Trzeci argument
+  `copyToClipboardWithFeedback` (revert title) to teraz pełny `title`, nie
+  goła ścieżka — `buildRefSourceLines()` w `web/main.js`.
+- `copyToClipboardWithFeedback` anuluje zawisły timer revertu (uchwyt
+  `el._h3cmCopyRevertTimer`) na wejściu — poprawka jest w samej
+  współdzielonej funkcji, dotyczy każdego jej wywołania.
 
 ## Otwarte pytania
 
@@ -94,7 +114,7 @@ faza — tu wyłącznie zapis do sidecara.
 
 ## Sugestie (nie polecenia)
 
-- Faza UI: w `web/main.js` złączyć `system.ref_sources[ref.slot]` z
-  wierszem/panelem referencji po `ref.slot` (fallback dla starych wpisów
-  bez `slot`: dotychczasowe zachowanie pozycyjne albo pominięcie tropu).
-  To domyka pierwotny powód istnienia pola.
+- `copyPromptText()` (ikona kopiuj na boksie promptu) ma własny, osobny
+  `setTimeout` bez anulowania — ten sam drobny efekt nakładających się
+  timerów, poza zakresem tego zlecenia. Można przy okazji ujednolicić z
+  `copyToClipboardWithFeedback`.

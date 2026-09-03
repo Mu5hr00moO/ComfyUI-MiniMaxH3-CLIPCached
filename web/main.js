@@ -305,6 +305,58 @@ export function resolvePairing(entry, entriesByFingerprint) {
   return { status: "valid", partner, entryIsUpscale, partnerIsUpscale };
 }
 
+// --- reference provenance ---------------------------------------------------
+//
+// system.ref_sources (Ref2VA only, added in the graph-provenance phase) maps
+// a node INPUT SLOT NAME -- "ref_image_0", "ref_video_2", ... -- to the list
+// of files traced back through the graph for that slot:
+//
+//   { "ref_image_0": [ { annotated: "foto.png", path: "/abs/input/foto.png" } ],
+//     "ref_image_2": [ { annotated: "a.png", path: "..." },
+//                      { annotated: "b.png", path: "..." } ] }
+//
+// The value is ALWAYS a list. More than one entry is normal, not an edge
+// case: an asymmetric fan-in (an ImageBatch, a composite that also pulls in
+// a mask) legitimately traces one slot to several files. `path` is omitted
+// when folder_paths.get_annotated_filepath() rejected the value.
+//
+// The only key shared with system.references[i] is `slot`. The compacted
+// `index` must NOT be used to line the two up: a gap in the wired slots
+// (ref_image_0, ref_image_2, ref_image_5 -> indices 0, 1, 2) makes index and
+// slot number diverge.
+export function refSourcesForReference(ref, refSources) {
+  const slot = ref && typeof ref.slot === "string" ? ref.slot : "";
+  if (!slot || !refSources || typeof refSources !== "object") return [];
+  const list = refSources[slot];
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (entry) => entry && typeof entry.annotated === "string" && entry.annotated !== "",
+  );
+}
+
+// The short fingerprint(s) shown in the detail action bar. 12 hex chars --
+// exactly what ComfyUI logs ("[CACHE HIT] 1390b9927e5b", proxy.py) -- so a
+// value here pastes straight into a log search. A valid dual-resolution pair
+// (resolvePairing) contributes two lines, its own and its partner's, each
+// tagged "base" / "rescaled" so the two can be told apart; any other entry
+// contributes just one, untagged.
+export function detailFingerprintLines(entry, pairing) {
+  const ownFull = (entry && entry.fingerprint) || "";
+  const own = { role: "", full: ownFull, short: ownFull.slice(0, 12) };
+  if (!pairing || pairing.status !== "valid" || !pairing.partner) return [own];
+
+  const partnerFull = pairing.partner.fingerprint || "";
+  own.role = pairing.entryIsUpscale ? "rescaled" : "base";
+  return [
+    own,
+    {
+      role: pairing.partnerIsUpscale ? "rescaled" : "base",
+      full: partnerFull,
+      short: partnerFull.slice(0, 12),
+    },
+  ];
+}
+
 // --- HTTP ----------------------------------------------------------------
 
 async function fetchJson(path, options) {
@@ -403,6 +455,7 @@ function createPanel() {
           <button type="button" class="h3cm-button" data-h3cm-copy-prompt>Copy prompt</button>
           <button type="button" class="h3cm-button h3cm-danger" data-h3cm-delete>Delete</button>
           <span class="h3cm-detail-status" data-h3cm-detail-status></span>
+          <div class="h3cm-detail-fingerprint" data-h3cm-detail-fingerprint></div>
         </div>
         <div class="h3cm-copy-result" data-h3cm-copy-result hidden></div>
       </section>
@@ -925,12 +978,119 @@ function findNormalEntry(fingerprint) {
   ) || null;
 }
 
+// resolvePairing() needs to look up a pair partner by fingerprint over the
+// FULL last-/check entry set (renderList() builds the same map for the list
+// rows). The detail panel builds it here so it can resolve pairing for the
+// open entry without depending on renderList() having run.
+function entriesByFingerprintFromLastCheck() {
+  const map = new Map();
+  const entries = (lastCheckResult && lastCheckResult.entries) || [];
+  for (const e of entries) {
+    if (e && typeof e.fingerprint === "string") map.set(e.fingerprint, e);
+  }
+  return map;
+}
+
+// Paint the short-fingerprint block in the detail action bar from
+// detailFingerprintLines() -- one <code> per line, each optionally tagged
+// with its "base" / "rescaled" role for a dual-resolution pair.
+function renderDetailFingerprint(container, lines) {
+  container.innerHTML = "";
+  for (const line of lines) {
+    const row = document.createElement("span");
+    row.className = "h3cm-detail-fp-line";
+    if (line.role) {
+      const role = document.createElement("span");
+      role.className = "h3cm-detail-fp-role";
+      role.textContent = line.role;
+      row.appendChild(role);
+    }
+    const value = document.createElement("code");
+    value.className = "h3cm-fp";
+    value.textContent = line.short;
+    if (line.full) value.title = line.full;
+    row.appendChild(value);
+    container.appendChild(row);
+  }
+}
+
 // Ref2VA only: the "<Picture N>" / "<Video N>" / "<Audio N>" tags in the
 // prompt are positional, counted per type over the reference list in order.
 // The count is always derived here in JS, never read from a stored field.
 const REF_TYPE_LABEL = { image: "Picture", video: "Video", audio: "Audio" };
 
-function renderDetailRefs(container, fingerprint, variant, references) {
+// The render model for the Ref2VA detail grid: one cell per reference, in
+// order, carrying the positional label ("Picture 2", counted per type here
+// and nowhere else) and the file-provenance entries joined from
+// system.ref_sources by slot name. Kept pure and separate from the DOM
+// painting in renderDetailRefs() so the join and the counting are testable.
+export function detailRefCells(references, refSources) {
+  const counters = { image: 0, video: 0, audio: 0 };
+  return references.map((ref) => {
+    const type = ref.type || "image";
+    counters[type] = (counters[type] || 0) + 1;
+    return {
+      type,
+      index: ref.index,
+      posLabel: `${REF_TYPE_LABEL[type] || "Reference"} ${counters[type]}`,
+      sources: refSourcesForReference(ref, refSources),
+    };
+  });
+}
+
+// The file-provenance block under one reference's position label. Always
+// rendered, even with no sources: an explicit muted "no file source" tells a
+// correctly file-less reference (VAEDecode / EmptyImage output) apart from a
+// trace that failed. The raw slot name (ref_image_5) is never shown -- it is
+// the fifth input but perhaps the third picture, which misleads. The file
+// name is clipped to a single line in the tile, so the tooltip carries the
+// full name and, when the graph trace resolved one, the absolute path on a
+// second line; that path is the value a click copies (via
+// copyToClipboardWithFeedback). A source with no resolved path shows and
+// tooltips its annotated name only and is not clickable.
+function buildRefSourceLines(sources) {
+  const wrap = document.createElement("div");
+  wrap.className = "h3cm-detail-ref-sources";
+
+  if (sources.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "h3cm-detail-ref-file is-empty";
+    empty.textContent = "no file source";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  for (const source of sources) {
+    const line = document.createElement("span");
+    line.className = "h3cm-detail-ref-file";
+    line.textContent = source.annotated;
+
+    const path = typeof source.path === "string" ? source.path : "";
+    // Full name always in the tooltip (the tile clips it); the path, when
+    // resolved, on a second line. This same string is what the title reverts
+    // to after the transient "Copied!" -- passing the bare path there would
+    // drop the name from the tooltip on the first copy.
+    const fullTitle = path ? `${source.annotated}\n${path}` : source.annotated;
+    line.title = fullTitle;
+    if (path) {
+      line.classList.add("is-copyable");
+      line.setAttribute("role", "button");
+      line.setAttribute("tabindex", "0");
+      const copy = () => copyToClipboardWithFeedback(line, path, fullTitle);
+      line.addEventListener("click", copy);
+      line.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          copy();
+        }
+      });
+    }
+    wrap.appendChild(line);
+  }
+  return wrap;
+}
+
+function renderDetailRefs(container, fingerprint, variant, references, refSources) {
   container.innerHTML = "";
   // Detail thumbnails live in their own blob-URL pool (see the declaration of
   // detailRefObjectUrls): revoke the previous set here, where the <img>
@@ -954,16 +1114,11 @@ function renderDetailRefs(container, fingerprint, variant, references) {
   const grid = document.createElement("div");
   grid.className = "h3cm-detail-refs-grid";
 
-  const counters = { image: 0, video: 0, audio: 0 };
-  for (const ref of references) {
-    const type = ref.type || "image";
-    counters[type] = (counters[type] || 0) + 1;
-    const posLabel = `${REF_TYPE_LABEL[type] || "Reference"} ${counters[type]}`;
-
+  for (const cellModel of detailRefCells(references, refSources)) {
     const cell = document.createElement("div");
     cell.className = "h3cm-detail-ref-cell";
 
-    if (type === "audio") {
+    if (cellModel.type === "audio") {
       const pill = document.createElement("span");
       pill.className = "h3cm-audio-pill";
       pill.textContent = "audio";
@@ -971,16 +1126,17 @@ function renderDetailRefs(container, fingerprint, variant, references) {
     } else {
       const img = document.createElement("img");
       img.className = "h3cm-thumb";
-      img.alt = posLabel;
+      img.alt = cellModel.posLabel;
       cell.appendChild(img);
-      loadThumbnail(img, fingerprint, ref.index, renderGeneration, detailRefObjectUrls);
+      loadThumbnail(img, fingerprint, cellModel.index, renderGeneration, detailRefObjectUrls);
     }
 
     const cap = document.createElement("span");
     cap.className = "h3cm-detail-ref-label";
-    cap.textContent = posLabel;
+    cap.textContent = cellModel.posLabel;
     cell.appendChild(cap);
 
+    cell.appendChild(buildRefSourceLines(cellModel.sources));
     grid.appendChild(cell);
   }
   container.appendChild(grid);
@@ -1014,6 +1170,14 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
     entry.fingerprint,
     system.node_variant || "fl2va",
     Array.isArray(system.references) ? system.references : [],
+    system.ref_sources && typeof system.ref_sources === "object" ? system.ref_sources : {},
+  );
+  renderDetailFingerprint(
+    detailEl.querySelector("[data-h3cm-detail-fingerprint]"),
+    detailFingerprintLines(
+      entry,
+      resolvePairing(entry, entriesByFingerprintFromLastCheck()),
+    ),
   );
   if (!preserveEditableFields) {
     detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
@@ -1223,6 +1387,35 @@ function renderCopyResult(fingerprint, verbose, headline) {
   note.textContent =
     "Load these references manually into the matching inputs on the node.";
   resultEl.appendChild(note);
+}
+
+// Write `text` to the clipboard and give `el` the same transient "Copied!"
+// affordance the prompt copy button uses (an `is-copied` class + a title
+// swap that reverts after 1.5 s), so every click-to-copy control in the
+// panel behaves the same way. `revertTitle` is what the title returns to.
+async function copyToClipboardWithFeedback(el, text, revertTitle) {
+  // Cancel any pending revert from a previous click on this same element up
+  // front: without this a rapid second click lets the first click's timer
+  // fire mid-window and cuts the "Copied!" feedback short. The handle rides
+  // on the element, which the detail-panel rebuild discards whole.
+  if (el._h3cmCopyRevertTimer) {
+    clearTimeout(el._h3cmCopyRevertTimer);
+    el._h3cmCopyRevertTimer = null;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    el.title = "Copy failed - select the text manually";
+    return false;
+  }
+  el.classList.add("is-copied");
+  el.title = "Copied!";
+  el._h3cmCopyRevertTimer = setTimeout(() => {
+    el.classList.remove("is-copied");
+    el.title = revertTitle;
+    el._h3cmCopyRevertTimer = null;
+  }, 1500);
+  return true;
 }
 
 // The small icon on the prompt box is just a compact trigger for the same
