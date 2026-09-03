@@ -576,6 +576,15 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     assert "tooltip" in opt["generate_upscale_cond"][1]
 
 
+def test_fl2va_nodes_declare_no_hidden_inputs(node_module_with_real_comfy_nodes):
+    """Reference-source provenance is a Ref2VA-only feature: the FL2VA nodes
+    have no references to trace, so neither declares a "hidden" block."""
+    m = node_module_with_real_comfy_nodes
+
+    for cls in (m.MiniMaxH3CLIPCachedFL2VA, m.MiniMaxH3CLIPCachedFL2VADualRes):
+        assert "hidden" not in cls.INPUT_TYPES()
+
+
 def test_dual_registered_in_node_mappings():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_fl2va_dual_test", os.path.join(REPO_ROOT, "__init__.py"))

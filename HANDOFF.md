@@ -1,83 +1,137 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch chore/verbose-metadata-followups / PR (do otwarcia)
+## Stan na: 2026-09-03 / branch feat/ref-provenance-from-graph / PR #14 (otwarty)
 
 ## Ostatnio zrobione
 
-Dwie drobne poprawki po merge PR #12 (`fix/verbose-hit-generation-size`
--> `master`, `b84ea52`). Żadna nie zmienia zachowania cache'u,
-fingerprintu ani decyzji HIT/MISS. Gałąź `chore/verbose-metadata-followups`
-odcięta od `origin/master` (`b84ea52`).
+Backend proweniencji referencji dla obu węzłów Ref2VA
+(`MiniMaxH3CLIPCachedRef2VA`, `MiniMaxH3CLIPCachedRef2VADualRes`) + trzy
+poprawki po review botach na PR #14 + poprawka pokrycia reguły liściowej.
+Zero zmian w mechanice H3, w
+`compute_fingerprint()` ani w decyzji HIT/MISS. UI to osobna, późniejsza
+faza — tu wyłącznie zapis do sidecara.
 
-### Commit 1 — backend: martwy warunek w `_sync_verbose_metadata()` (`aa7abbe`)
+### Commit 1 — pierwotny backend (`b88890d`)
 
-- `nodes.py` `_sync_verbose_metadata()`, gałąź odświeżania rozmiaru
-  generacji przy normalnym HIT (dodana w `448ef9b`): z gate'a usunięty
-  warunek `isinstance(existing_system, dict)`. Był nieosiągalnie fałszywy —
-  dotarcie do tej gałęzi przy `proxy.last_hit is True` wymaga
-  `hit_needs_backfill == False`, co wymaga `has_created_at == True`, a to
-  jest liczone jako `True` wyłącznie gdy `existing_system` jest dictem z
-  niepustym stringiem `created_at`.
-- W miejsce warunku dodany komentarz WHY opisujący ten łańcuch, żeby
-  czytelnik nie musiał go odtwarzać ani nie dodał warunku ponownie.
-- Zero zmian w zachowaniu. Brak nowych testów; istniejące testy
-  `_sync_verbose_metadata` w `tests/test_node.py` bez modyfikacji, dalej
-  zielone.
+- Nowy moduł `minimaxh3_clipcache/provenance.py`:
+  `collect_ref_sources(prompt, unique_id)` przechodzi graf prompta
+  (format API) wstecz od każdego wejścia `ref_*` węzła.
+- Oba węzły Ref2VA dostały blok `"hidden"` z `"PROMPT"` i `"UNIQUE_ID"`.
+  Klucz to `prompt_graph`, NIE `prompt` (kolizja z wymaganym wejściem
+  tekstowym `prompt`; ComfyUI podaje hidden po nazwie przez `f(**inputs)`).
+- `nodes._sync_ref_sources(proxy, prompt_graph, unique_id)` dopisuje wynik
+  do `system.ref_sources` sidecara, tuż po `_sync_verbose_metadata`, pod
+  `get_lock(fingerprint)`, z re-checkiem `<fp>.json`, każdy wyjątek
+  połknięty jako WARNING.
 
-### Commit 2 — frontend: tooltip linii meta w Cache Manager (`0d9afcb`)
+### Commit 2 — hardening po review (`c2c0100`)
 
-- `web/main.js`: `generationSizeTooltip()` -> `entryMetaTooltip()`
-  (eksport + oba call sites: `buildNormalRow` ~735, `populateDetail`
-  ~1009). Stara nazwa nie występuje już nigdzie w repo.
-- Powód zmiany: helper jest ustawiany jako `title` całego elementu
-  `h3cm-row-created` / `[data-h3cm-detail-created]`, który renderuje
-  `formatEntryMetaLine()` = `DATA · SZERxWYS (N MP)` — więc tooltip
-  opisujący tylko rozdzielczość pokazywał się też nad datą.
-- Nowa treść tooltipa (po angielsku) tłumaczy, że data i rozdzielczość
-  pochodzą z dwóch różnych momentów: `created_at` jest ustalane przy
-  pierwszym zapisie wpisu, a rozdzielczość to rozdzielczość ostatniego
-  runu który użył wpisu.
-- Kontrakt pustego stringa bez zmian: gdy `formatGenerationSize()` zwraca
-  `""`, `entryMetaTooltip()` też zwraca `""` (wyjaśnienie dwóch momentów
-  ma sens tylko gdy oba pola są widoczne). Brak wariantu date-only.
-- Komentarz nad funkcją zaktualizowany do obecnego zakresu.
-- Bez zmian w `formatGenerationSize()`, `formatCreatedAt()`,
-  `formatEntryMetaLine()`, w obliczaniu MP oraz w DOM / `styles.css`.
+Trzy niezależnie potwierdzone znaleziska greptile / CodeRabbit:
 
-### Commit 3 — HANDOFF.md (osobno, w tym samym PR)
+1. **Reguła liściowa** zastąpiła "najbliższy literał media wygrywa".
+   Literał liczy się jako źródło referencji TYLKO na liściu grafu — node
+   bez żadnego wejścia będącego linkiem (prawdziwy loader). Literał
+   wyglądający na plik media na node'ie pośrednim (widget tekstowy
+   `note="shallow.png"` na pass-through) jest ignorowany, walk schodzi
+   dalej przez link. To test strukturalny, nie biała lista `class_type` —
+   działa dla `VHS_LoadVideo` i customowych loaderów.
+   `_MEDIA_EXTENSIONS` zostało jako wtórne zawężenie w obrębie liścia
+   (odcina np. `.pth` upscalera na `UpscaleModelLoader`), nie jako główny
+   filtr.
+
+2. **Wartość zawsze listą.** `collect_ref_sources()` zwraca
+   `{slot: [ {annotated[, path]}, ... ]}`. Gdy kilka loaderów wpada do
+   jednej referencji na tym samym poziomie grafu (dwa `LoadImage` ->
+   `ImageBatch` -> ref) — zapisywani są WSZYSCY, w kolejności BFS. Walk
+   zatrzymuje się na pierwszej głębokości, która daje trafienie liściowe;
+   głębszy loader z dłuższej ścieżki nie jest raportowany.
+
+3. **None vs {}.** `collect_ref_sources()` zwraca `None` gdy walk nie mógł
+   się wykonać (brak grafu, brak `unique_id`, nasz node nieobecny,
+   wyjątek) i `{}` gdy wykonał się czysto i nic nie znalazł.
+   `_sync_ref_sources()`:
+   - `None` → no-op, istniejące `system.ref_sources` zostaje nietknięte;
+   - `{}` → pod tą samą blokadą USUWA `system.ref_sources` jeśli jest
+     (i tylko wtedy zapisuje sidecar);
+   - niepusty → jak dotąd, zapis o ile się różni.
+   Naprawia: ten sam fingerprint (identyczne tensory refów) raz z
+   `LoadImage`, raz z nieprześledzalnego grafu — sidecar nie pokazuje już
+   dalej starej nazwy pliku.
+
+### Commit 3 — HANDOFF.md (osobno, w tym samym PR, `7fd5c97`)
+
+### Commit 4 — pokrycie reguły liściowej (`82a44cd`)
+
+`_walk_back_for_media_filenames()` (provenance.py) zatrzymywał się na
+pierwszej głębokości BFS z trafionym liściem. Przy asymetrycznym
+fan-inie gubiło to realne źródła:
+`ImageBatch(a <- LoadImage "SHALLOW.png", b <- ImageScale <- LoadImage
+"DEEPER.png")` zwracał dziś tylko `SHALLOW.png`.
+
+Walk przechodzi teraz CAŁY osiągalny podgraf wstecz i zwraca nazwę pliku
+z KAŻDEGO napotkanego liścia-loadera. Bez zmian: reguła liściowa,
+cycle-safety przez `visited`, kolejność BFS (płycej przed głębiej, w
+obrębie poziomu wg kolejności kluczy w prompcie). Dedup: ta sama nazwa
+pliku z kilku liści → zwracana raz, pierwsze wystąpienie.
+
+Uzasadnienie: nadmiarowi kandydaci w obrębie jednego poziomu byli już
+świadomie zaakceptowani (composite z maską → DEST/SRC/MASK razem);
+ograniczanie do jednego poziomu było niekonsekwentne.
+
+**Zmiana kontraktu testu:** `test_nearer_leaf_stops_the_walk_before_a_
+deeper_leaf` asertował stare zachowanie "stop na pierwszej głębokości" i
+został zastąpiony przez `test_asymmetric_fan_in_collects_a_leaf_from_
+every_depth` (oczekiwane obie nazwy, SHALLOW przed DEEPER). Żaden inny
+test nie zmienił kontraktu.
+
+### Commit 5 — HANDOFF.md (osobno, w tym samym PR)
 
 ## Weryfikacja
 
-- Pełny `python -m pytest -q` w comfyenv: **402 passed / 0 failed /
-  0 skipped** (4 `DeprecationWarning` z `transformers`, niezwiązane).
-  Bez modyfikacji istniejących testów. Ta sama liczba przed i po zmianie
-  backendu (zmiana jest czysto komentarzowa + usunięcie martwej gałęzi
-  warunku).
-- `node --check` na kopii `.mjs` z `web/main.js`: czysty.
-- Scratchpad harness Node (loader hook stubuje `/scripts/app.js` i
-  `/scripts/api.js`, minimalny `document`): moduł importuje się bez
-  wyjątku; `entryMetaTooltip()` zwraca dokładny nowy tekst tooltipa gdy
-  jest rozmiar, `""` gdy brak `width`/`height` (6/6 asercji, w tym
-  `generationSizeTooltip === undefined`). Harness w scratchpadzie,
-  niescommitowany.
-- `grep -rn "generationSizeTooltip"` po repo: brak wystąpień.
-- `git diff --check` czysty.
+- Pełny `conda run -n comfyenv python -m pytest -q`: **435 passed / 0
+  failed / 0 skipped** (4 `DeprecationWarning` z `transformers`,
+  niezwiązane). Baseline przed hardeningiem: 427.
+- `test_provenance.py` (20 testów): reguła liściowa, listy wartości,
+  `None`/`{}`, wiele liści, asymetryczny fan-in zbiera z każdej
+  głębokości, dedup nazwy, liść bez pliku nie blokuje głębszego, cykl
+  kończy się.
+- `test_node_ref2va.py`: `test_w2` (czysty pusty walk kasuje stare
+  `ref_sources`), `test_w3` (`prompt_graph=None` zostawia pole),
+  `test_w4` (wiele liści → wielopozycyjna lista); `test_v`/`test_z3`
+  pod listę.
+- `python -m py_compile` na zmienionych plikach: czysto.
+- `git diff --check`: czysto.
 
 ## Ustalenia istotne dla Chat
 
-- `_sync_verbose_metadata()` (`nodes.py`, gałąź `not (fresh_miss_written
-  or hit_needs_backfill)`) — gate odświeżania rozmiaru sprawdza teraz
-  tylko `proxy.last_hit is True and width is not None and height is not
-  None`; `existing_system` jest w tym punkcie gwarantowanym dictem
-  (komentarz WHY w kodzie).
-- `web/main.js` `entryMetaTooltip(system)` (dawniej
-  `generationSizeTooltip`) — tooltip całej linii meta wpisu (data +
-  rozdzielczość), nadal pusty string gdy wpis nie ma rozmiaru.
+- `system.ref_sources` w sidecarze — nowe, opcjonalne pole. Dict
+  kluczowany nazwą slotu (`ref_image_0`, `ref_video_2`,
+  `ref_video_audio_1`, `ref_audio_0`, …). Wartość: **lista**
+  `[{"annotated": str, "path"?: str}, ...]` (min. 1 element) — po jednym
+  wpisie na KAŻDY osiągalny liść-loader w podgrafie danego refa, w
+  kolejności BFS, zdeduplikowane po nazwie pliku. Wyłącznie informacyjne;
+  nie w fingerprincie.
+  `provenance.py:collect_ref_sources` — `None` = walk niemożliwy,
+  `{}` = walk czysty ale pusty, dict = trafienia.
+- `provenance.collect_ref_sources` nigdy nie rzuca; `_sync_ref_sources`
+  nigdy nie rzuca — awaria warstwy proweniencji nie może zepsuć
+  zwróconego cond/latent.
+- `MiniMaxH3CLIPCachedRef2VA` / `...Ref2VADualRes` — `INPUT_TYPES()` ma
+  `"hidden": {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}`
+  (`nodes.py` `_ref2va_hidden_input_spec`). Deklaracja `UNIQUE_ID`
+  włącza `include_unique_id_in_input()` → node_id wchodzi do sygnatury
+  cache'a WYKONANIA w RAM. Zaakceptowane: cache dyskowy jest kluczowany
+  fingerprintem enkodowania, przebudowany graf i tak trafia HIT z dysku.
 
 ## NIE zweryfikowane (do sprawdzenia przez Kamila w żywym ComfyUI)
 
-- Realny render nowego tooltipa po najechaniu na linię meta w wierszu
-  listy i w panelu szczegółów; brak błędów w konsoli przeglądarki.
+- Realny przebieg przez `/prompt` API: czy `prompt_graph`/`unique_id`
+  docierają jako hidden do `execute()` obu węzłów i czy
+  `system.ref_sources` pojawia się w `<fp>.verbose.json` po MISS z
+  podpiętym `LoadImage`/`LoadAudio`/`VHS_LoadVideo` — w nowym kształcie
+  (lista) i z regułą liściową.
+- Czy realne węzły ładujące w tym środowisku są liśćmi grafu (brak
+  wejść-linków) i czy nazwa pliku ma rozszerzenie z `_MEDIA_EXTENSIONS`.
 
 ## Otwarte pytania
 
@@ -85,4 +139,8 @@ odcięta od `origin/master` (`b84ea52`).
 
 ## Sugestie (nie polecenia)
 
-- brak
+- Faza UI: w Cache Managerze złączyć `system.ref_sources[slot]` (lista) z
+  wierszem referencji po kluczu slotu i pokazać `annotated` + (jeśli
+  jest) `path` jako trop do oryginału; obsłużyć >1 wpis na slot
+  (asymetryczny fan-in, composite z maską — realnie kilka plików na
+  jeden ref).

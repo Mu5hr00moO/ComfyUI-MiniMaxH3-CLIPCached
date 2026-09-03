@@ -31,6 +31,7 @@ from minimaxh3_clipcache.fingerprint import CACHE_SCHEMA_VERSION
 from minimaxh3_clipcache.last_used import record_last_used
 from minimaxh3_clipcache.loader import build_clip_loader_fn, resolve_clip_stat
 from minimaxh3_clipcache.locking import get_lock
+from minimaxh3_clipcache.provenance import collect_ref_sources
 from minimaxh3_clipcache.proxy import CachedClipProxy
 from minimaxh3_clipcache.thumbnails import save_thumbnail
 from minimaxh3_clipcache.verbose_store import add_pairing, load_verbose, save_verbose
@@ -222,6 +223,75 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
         logger.warning(
             "[VERBOSE WRITE FAILED] %s: could not persist Cache Manager "
             "metadata (%s) - core cache remains valid", fingerprint[:12], e,
+        )
+
+
+def _sync_ref_sources(proxy, prompt_graph, unique_id):
+    """Attach ``system.ref_sources`` to this Ref2VA run's verbose sidecar --
+    a best-effort ``{slot_name: [{annotated[, path]}, ...]}`` map of where
+    each reference input came from on disk (minimaxh3_clipcache.provenance).
+
+    Runs right after _sync_verbose_metadata(), on the Ref2VA path only, and
+    follows the same discipline: the whole check-then-write happens under
+    get_lock(fingerprint), the core ``<fingerprint>.json`` is re-checked
+    under that lock so a concurrent Cache Manager Delete cannot be undone,
+    and every failure is swallowed with a WARNING. Provenance is a
+    navigation aid for the Cache Manager UI, never part of the HIT/MISS
+    decision, so a failure here must not disturb the conditioning already
+    produced.
+
+    collect_ref_sources() reports three distinct outcomes and each is
+    handled differently, because the sidecar is content-addressed: a later
+    run can land on the same fingerprint with a different graph.
+
+    * ``None`` -- the walk could not run (no graph, no unique_id, our node
+      absent). A no-op: an untraceable run is no evidence against an
+      earlier traceable one, so any existing ``ref_sources`` is left alone.
+    * ``{}`` -- the walk ran cleanly and found no on-disk trail this time.
+      Any stale ``ref_sources`` from an earlier run of this fingerprint is
+      deleted (and only then is a write done at all).
+    * non-empty -- written as-is, unless it already matches.
+
+    Also a no-op when there is no ``system`` block to attach to yet --
+    _sync_verbose_metadata() owns creating that block, and on a plain HIT of
+    a pre-feature sidecar it deliberately leaves it as-is.
+    """
+    fingerprint = proxy.last_fingerprint
+    if fingerprint is None:
+        return  # defensive; should not happen after a successful execute()
+
+    try:
+        ref_sources = collect_ref_sources(prompt_graph, unique_id)
+        if ref_sources is None:
+            return  # traversal impossible -- leave any existing value alone
+
+        with get_lock(fingerprint):
+            core_path = Path(CACHE_DIR) / "{}.json".format(fingerprint)
+            if not core_path.exists():
+                return
+
+            existing = load_verbose(fingerprint, CACHE_DIR)
+            existing_system = existing.get("system") if isinstance(existing, dict) else None
+            if not isinstance(existing_system, dict):
+                return
+
+            if ref_sources:
+                if existing_system.get("ref_sources") == ref_sources:
+                    return
+                system = dict(existing_system)
+                system["ref_sources"] = ref_sources
+            else:
+                # Clean empty walk: drop stale provenance if present, and
+                # only touch the sidecar when there is something to drop.
+                if "ref_sources" not in existing_system:
+                    return
+                system = dict(existing_system)
+                del system["ref_sources"]
+            save_verbose(fingerprint, system, CACHE_DIR)
+    except Exception as e:
+        logger.warning(
+            "[VERBOSE REF-SOURCES FAILED] %s: could not persist reference "
+            "provenance (%s) - core cache remains valid", fingerprint[:12], e,
         )
 
 
@@ -844,6 +914,30 @@ def _ref_slots_input_spec():
     return optional
 
 
+def _ref2va_hidden_input_spec():
+    """The "hidden" INPUT_TYPES block shared by both cached Ref2VA nodes.
+
+    ``prompt_graph`` receives ComfyUI's "PROMPT" (the whole API-format
+    workflow dict) and ``unique_id`` receives "UNIQUE_ID" (this node's id).
+    _sync_ref_sources() walks that graph backward from each reference slot to
+    record, in the Cache Manager sidecar, which on-disk file the reference
+    came from. The key is deliberately ``prompt_graph``, not ``prompt``:
+    these nodes already have a required text input named ``prompt`` and
+    ComfyUI feeds hidden inputs by keyword, so reusing the name would
+    overwrite the text prompt with the graph dict.
+
+    WHY this is acceptable on a V1 node: ComfyUI's
+    include_unique_id_in_input() returns True for any class whose hidden
+    block mentions "UNIQUE_ID", which folds this node's id into ComfyUI's
+    in-memory execution-cache signature -- so a rebuilt/renumbered graph no
+    longer reuses ComfyUI's RAM-cached output for this node. That cost is
+    intended and harmless here: our on-disk cache is keyed by the encode
+    fingerprint, not by node id, so the rebuilt graph still HITs the saved
+    encode and the ~27 GB encoder still stays unloaded.
+    """
+    return {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}
+
+
 def _build_ref_slot_dicts(ref_image_slots, ref_video_slots, ref_video_audio_slots, ref_audio_slots):
     """Turn the four flat lists of fixed optional slots into the
     dict-of-named-slots shape the stock MiniMaxH3ReferenceToVideo.execute()
@@ -906,7 +1000,7 @@ def _build_reference_items(ref_images, ref_videos, ref_video_audios, ref_audios)
 
 def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, length,
                          ref_image_size, ref_images, ref_videos, ref_video_audios,
-                         ref_audios, cache_mode):
+                         ref_audios, cache_mode, prompt_graph=None, unique_id=None):
     """One full cached Ref2VA encode at a single resolution.
 
     This is the body of MiniMaxH3CLIPCachedRef2VA.execute() from the proxy
@@ -916,6 +1010,13 @@ def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, lengt
     already-assembled {name: value} dicts (the caller runs
     _build_ref_slot_dicts on its flat optional slots); everything else
     matches the stock MiniMaxH3ReferenceToVideo.execute() contract.
+
+    ``prompt_graph`` (the API-format workflow dict from the "PROMPT" hidden
+    input) and ``unique_id`` are passed straight to _sync_ref_sources() so
+    the Cache Manager sidecar can record which on-disk file each reference
+    slot came from. Both default to None -- a caller that has neither simply
+    skips that provenance write. They are NOT the text ``prompt`` argument
+    above and never reach the stock node or the fingerprint.
 
     As with _execute_fl2va_once nothing here branches on width/height -- the
     existing fingerprint/proxy alone decides HIT vs MISS.
@@ -939,6 +1040,7 @@ def _execute_ref2va_once(clip_name, vae, audio_vae, prompt, width, height, lengt
             proxy, "ref2va", prompt, clip_name, file_size, mtime_ns, items,
             clip_ctime_ns=ctime_ns, width=width, height=height,
         )
+        _sync_ref_sources(proxy, prompt_graph, unique_id)
         _record_last_used(proxy, "ref2va")
         # Read the fingerprint out while the proxy is still alive: the finally
         # below may `del proxy` as part of reclaiming the real encoder, and
@@ -982,6 +1084,7 @@ class MiniMaxH3CLIPCachedRef2VA:
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
             },
             "optional": optional,
+            "hidden": _ref2va_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
@@ -1004,12 +1107,14 @@ class MiniMaxH3CLIPCachedRef2VA:
                 ref_video_0=None, ref_video_1=None, ref_video_2=None,
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
-                cache_mode="auto"):
+                cache_mode="auto", prompt_graph=None, unique_id=None):
         # Thin wrapper: the flat optional slots are folded into the stock
         # {name: value} dicts here, then the whole encode body runs in
         # _execute_ref2va_once() -- shared verbatim with
         # MiniMaxH3CLIPCachedRef2VADualRes. Single-resolution behaviour is
-        # unchanged.
+        # unchanged. prompt_graph / unique_id arrive from the "PROMPT" /
+        # "UNIQUE_ID" hidden inputs (see _ref2va_hidden_input_spec) and only
+        # feed reference-source provenance -- never the encode or the stock node.
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
              ref_image_5, ref_image_6, ref_image_7, ref_image_8],
@@ -1020,7 +1125,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         cond, latent, _fingerprint = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width, height, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
-            cache_mode,
+            cache_mode, prompt_graph=prompt_graph, unique_id=unique_id,
         )
         return (cond, latent)
 
@@ -1113,6 +1218,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
             },
             "optional": optional,
+            "hidden": _ref2va_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")
@@ -1136,7 +1242,14 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 ref_video_0=None, ref_video_1=None, ref_video_2=None,
                 ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
                 ref_audio_0=None, ref_audio_1=None, ref_audio_2=None,
-                cache_mode="auto", generate_upscale_cond=True):
+                cache_mode="auto", generate_upscale_cond=True,
+                prompt_graph=None, unique_id=None):
+        # prompt_graph / unique_id arrive from the "PROMPT" / "UNIQUE_ID"
+        # hidden inputs (see _ref2va_hidden_input_spec) and feed only
+        # reference-source provenance. Both encode passes get them and each
+        # writes system.ref_sources into its own resolution's sidecar; when
+        # the two passes collapse onto one shared fingerprint the second
+        # write just matches and is a no-op.
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
              ref_image_5, ref_image_6, ref_image_7, ref_image_8],
@@ -1147,7 +1260,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         cond, latent, fp1 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width, height, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
-            cache_mode,
+            cache_mode, prompt_graph=prompt_graph, unique_id=unique_id,
         )
         if not generate_upscale_cond:
             # Upscale pass switched off: the second _execute_ref2va_once() does
@@ -1165,7 +1278,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
         cond_upscale, _, fp2 = _execute_ref2va_once(
             clip_name, vae, audio_vae, prompt, width_upscale, height_upscale, length,
             ref_image_size, ref_images, ref_videos, ref_video_audios, ref_audios,
-            cache_mode,
+            cache_mode, prompt_graph=prompt_graph, unique_id=unique_id,
         )
         # Both encodes succeeded (either call raising propagates before here),
         # so it is safe to cross-link the two Cache Manager entries now.

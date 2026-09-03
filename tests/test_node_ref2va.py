@@ -682,3 +682,227 @@ def test_g_node_class_mappings_keeps_both_nodes():
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedFL2VA"].__name__ == "MiniMaxH3CLIPCachedFL2VA"
     assert package.NODE_CLASS_MAPPINGS["MiniMaxH3CLIPCachedRef2VA"].__name__ == "MiniMaxH3CLIPCachedRef2VA"
     assert package.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3CLIPCachedRef2VA"] == "MiniMax H3 CLIP-Cached Ref2VA"
+
+
+# --- reference-source provenance (nodes._sync_ref_sources) -----------------
+
+_GRAPH_WITH_LOADER = {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "cat.png", "upload": "image"}},
+    "7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
+          "inputs": {"prompt": "a ref2va prompt", "ref_image_0": ["1", 0]}},
+}
+
+# A well-formed graph whose reference branch ends at a non-loader node: the
+# walk runs cleanly and finds nothing (collect_ref_sources returns {}).
+_GRAPH_WITHOUT_LOADER = {
+    "1": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512}},
+    "2": {"class_type": "VAEDecode", "inputs": {"samples": ["1", 0], "vae": ["9", 0]}},
+    "7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
+          "inputs": {"prompt": "a ref2va prompt", "ref_image_0": ["2", 0]}},
+}
+
+
+class _FakeProxyWithFingerprint:
+    last_fingerprint = "b" * 64
+
+
+def test_v_sync_ref_sources_appends_ref_sources_to_existing_system_block(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "a ref2va prompt", "node_variant": "ref2va",
+                            "created_at": "2020-01-01T00:00:00+00:00", "references": []}, tmp_path)
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITH_LOADER, "7")
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert system["ref_sources"]["ref_image_0"][0]["annotated"] == "cat.png"
+    assert system["ref_sources"]["ref_image_0"][0]["path"].endswith("/input/cat.png")
+    # the pre-existing system keys are preserved, not clobbered
+    assert system["node_variant"] == "ref2va"
+    assert system["created_at"] == "2020-01-01T00:00:00+00:00"
+
+
+def test_w_sync_ref_sources_noop_when_graph_walk_finds_nothing(monkeypatch, tmp_path):
+    """A clean walk that finds nothing and no ref_sources on the sidecar yet:
+    the sidecar is left byte-for-byte alone (nothing to add, nothing to
+    remove)."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
+    before = (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes()
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITHOUT_LOADER, "7")
+
+    assert (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes() == before
+
+
+def test_w2_sync_ref_sources_drops_stale_provenance_on_a_clean_empty_walk(monkeypatch, tmp_path):
+    """Same fingerprint (identical reference tensors), traced once from a
+    LoadImage and re-run from an untraceable-but-well-formed graph: the
+    stale ref_sources from the first run must not survive."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": [],
+                            "ref_sources": {"ref_image_0": [{"annotated": "old.png",
+                                                             "path": "/x/input/old.png"}]}},
+                 tmp_path)
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITHOUT_LOADER, "7")
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert "ref_sources" not in system
+    # the rest of the system block is untouched
+    assert system["prompt"] == "p"
+
+
+def test_w3_sync_ref_sources_keeps_provenance_when_traversal_is_impossible(monkeypatch, tmp_path):
+    """prompt_graph=None means the walk could not run at all -- an earlier
+    run's provenance is NOT evidence-free and must be left in place."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": [],
+                            "ref_sources": {"ref_image_0": [{"annotated": "keep.png"}]}},
+                 tmp_path)
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), None, None)
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert system["ref_sources"] == {"ref_image_0": [{"annotated": "keep.png"}]}
+
+
+def test_w4_sync_ref_sources_records_multiple_leaf_loaders_as_a_list(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
+
+    graph = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "b.png"}},
+        "3": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["2", 0]}},
+        "7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
+              "inputs": {"prompt": "p", "ref_image_0": ["3", 0]}},
+    }
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), graph, "7")
+
+    entries = load_verbose("b" * 64, tmp_path)["system"]["ref_sources"]["ref_image_0"]
+    assert [e["annotated"] for e in entries] == ["a.png", "b.png"]
+
+
+def test_x_sync_ref_sources_noop_when_no_system_block_yet(monkeypatch, tmp_path):
+    """_sync_verbose_metadata() owns creating the system block; on a plain HIT
+    of a pre-feature sidecar it leaves things as-is, and _sync_ref_sources()
+    must not resurrect a bare system block on its own."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+
+    _make_core_json(tmp_path)  # core entry exists, but no <fp>.verbose.json
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITH_LOADER, "7")
+
+    assert not (tmp_path / ("b" * 64 + ".verbose.json")).exists()
+
+
+def test_y_sync_ref_sources_noop_when_core_entry_is_gone(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    # sidecar present, but the core <fp>.json is NOT -- a Delete raced us.
+    save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITH_LOADER, "7")
+
+    assert "ref_sources" not in load_verbose("b" * 64, tmp_path)["system"]
+
+
+def test_z_sync_ref_sources_swallows_a_write_failure(monkeypatch, tmp_path, caplog):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(node_module, "save_verbose", _boom)
+
+    # must not raise
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITH_LOADER, "7")
+    assert any("REF-SOURCES FAILED" in r.getMessage() for r in caplog.records)
+
+
+def test_z2_sync_ref_sources_noop_when_fingerprint_is_none(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+
+    class _NoFingerprint:
+        last_fingerprint = None
+
+    node_module._sync_ref_sources(_NoFingerprint(), _GRAPH_WITH_LOADER, "7")  # must not raise
+
+
+def test_z3_execute_threads_ref_provenance_into_the_sidecar(monkeypatch, tmp_path):
+    """End to end: a real node.execute() MISS with the PROMPT/UNIQUE_ID hidden
+    inputs wired records system.ref_sources in that run's verbose sidecar."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    _execute(node, prompt_graph=_GRAPH_WITH_LOADER, unique_id="7")
+
+    fingerprint = last_used_module.get_last_used()["ref2va"]
+    system = load_verbose(fingerprint, tmp_path)["system"]
+    assert system["ref_sources"] == {
+        "ref_image_0": [{"annotated": "cat.png",
+                         "path": system["ref_sources"]["ref_image_0"][0]["path"]}]
+    }
+    assert system["ref_sources"]["ref_image_0"][0]["path"].endswith("/input/cat.png")
+
+
+def test_z4_execute_without_hidden_inputs_writes_no_ref_sources(monkeypatch, tmp_path):
+    """The hidden inputs default to None (e.g. a caller/test that does not
+    supply them); the run still succeeds and simply omits system.ref_sources."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, audio_vae, prompt, width, height, length,
+                     ref_image_size="match", ref_images=None, ref_videos=None,
+                     ref_video_audios=None, ref_audios=None):
+        tokens = clip.tokenize(prompt, minimax_ref_items=[])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    node = node_module.MiniMaxH3CLIPCachedRef2VA()
+    _execute(node)
+
+    fingerprint = last_used_module.get_last_used()["ref2va"]
+    assert "ref_sources" not in load_verbose(fingerprint, tmp_path)["system"]

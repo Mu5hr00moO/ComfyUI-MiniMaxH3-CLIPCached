@@ -561,6 +561,20 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     assert "tooltip" in dual_opt["generate_upscale_cond"][1]
 
 
+def test_both_ref2va_nodes_expose_prompt_and_unique_id_hidden(node_module_with_real_comfy_nodes):
+    """Both cached Ref2VA nodes declare the PROMPT / UNIQUE_ID hidden inputs
+    that feed reference-source provenance. The key is ``prompt_graph``, not
+    ``prompt`` -- these nodes already have a required text input named
+    ``prompt`` and ComfyUI feeds hidden inputs by keyword."""
+    m = node_module_with_real_comfy_nodes
+    expected = {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}
+
+    for cls in (m.MiniMaxH3CLIPCachedRef2VA, m.MiniMaxH3CLIPCachedRef2VADualRes):
+        hidden = cls.INPUT_TYPES()["hidden"]
+        assert hidden == expected
+        assert "prompt" not in hidden  # must not shadow the text prompt input
+
+
 def test_dual_registered_in_node_mappings():
     spec = importlib.util.spec_from_file_location(
         "minimaxh3clipcached_package_ref2va_dual_test", os.path.join(REPO_ROOT, "__init__.py"))
