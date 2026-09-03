@@ -1,6 +1,6 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch feat/example-workflow / PR do otwarcia
+## Stan na: 2026-09-03 / branch feat/example-workflow / PR #11
 
 ## Ostatnio zrobione
 
@@ -39,6 +39,21 @@ czyli stan po merge PR #10, tag `v1.0.0`).
 
 ### Commit 3 — HANDOFF.md (osobno, w tym samym PR)
 
+### Commit 4 — zgodność linków encodera (`7f7be67`)
+
+- Podmieniono wyłącznie tekst `widgets_values[0]` w top-level
+  `MarkdownNote` zatytułowanym `Note: Model Links`; strukturalne porównanie
+  JSON-a z poprzednią wersją nie wykazało żadnej innej zmienionej ścieżki.
+- Widget `clip_name` pozostaje na
+  `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` jako szerzej
+  kompatybilnym wariancie domyślnym.
+- Sekcja `text_encoders` notatki dokumentuje teraz oba warianty: INT8
+  (27.1 GB, domyślny) oraz NVFP4 (akceleracja na RTX 50-series z buildem
+  PyTorch CUDA 13). Drzewo `Model Storage Location` wskazuje INT8, zgodnie
+  z widgetem.
+- Bez zmian w grafie, pozostałych widgetach, prompcie, metadanych, miniaturze,
+  wersji `1.1.0`, `CHANGELOG.md` i `README.md`.
+
 ## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
 
 - `example_workflows/MiniMax H3 T2V (CLIP-Cached).json` parsuje się przez
@@ -58,8 +73,13 @@ czyli stan po merge PR #10, tag `v1.0.0`).
   `example_workflows/` są w zbiorze publikowanym; `git check-ignore`
   potwierdza, że żadna reguła ignorująca ich nie łapie.
 - `git diff --check` czysty.
-- Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
+- Pełny `pytest -s` w comfyenv: **399 passed / 0 failed / 0 skipped**
   (4 ostrzeżenia `DeprecationWarning` z `transformers`, niezwiązane).
+- Po odświeżeniu referencji `origin/feat/example-workflow...7f7be67` dla
+  `example_workflows/` pokazuje tylko zmianę JSON-a (1 insertion, 1 deletion),
+  a blob `.jpg` jest bez zmian. `origin/master...7f7be67` pokazuje oba pliki jako
+  dodane, ponieważ `origin/master` (`e47468a`) nie zawiera jeszcze żadnego
+  `example_workflows/`; jest to stat całego PR #11, nie samej poprawki review.
 
 ## Ustalenia istotne dla Chat
 
@@ -74,8 +94,8 @@ czyli stan po merge PR #10, tag `v1.0.0`).
 - Konwencja tagów: prefiks `v` (`v1.1.0`). Link `[1.1.0]` w stopce
   `CHANGELOG.md` wskazuje `releases/tag/v1.1.0` — zacznie działać
   dopiero po utworzeniu tagu i GitHub Release przez Kamila.
-- Zawartość workflow (graf, prompt, ustawienia) nie była modyfikowana —
-  poza zakresem zlecenia.
+- Zawartość workflow poza tekstem `Note: Model Links` (graf, prompt,
+  ustawienia i metadane) nie była modyfikowana.
 
 ## Otwarte pytania
 
