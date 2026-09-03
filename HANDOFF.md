@@ -5,9 +5,9 @@
 ## Ostatnio zrobione
 
 Metadane publikacyjne dla ComfyUI Registry (krok 3 planu przed wydaniem
-v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
-`chore/registry-metadata` odcięta od `origin/master` (e3191fb). PR #9 na
-`master`, otwarty, MERGEABLE.
+v1.0.0) plus poprawki po recenzji Chat oraz botów Greptile i CodeRabbit.
+Gałąź `chore/registry-metadata` odcięta od `origin/master` (e3191fb).
+PR #9 na `master`, otwarty, MERGEABLE.
 
 ### Pierwsza tura (commity 4af23af..36f52ff)
 
@@ -65,6 +65,39 @@ v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
   poza zakresem tego PR-a, nietknięte. SHA potwierdzone `git ls-remote`
   w momencie wykonania.
 
+### Czwarta tura — recenzja CodeRabbit na PR #9 (commit eaa539f)
+
+- `.github/workflows/publish.yml` (eaa539f) — trzy uwagi CodeRabbita
+  (wszystkie "Major, Security & Privacy"), jedna spójna zmiana. Dotyczą
+  ekspozycji tokenów na ścieżce publikacji:
+  * `permissions: contents: read` na poziomie workflow — job nie
+    dziedziczy już domyślnego zakresu `GITHUB_TOKEN` repo (mógł
+    zawierać write).
+  * `if: github.ref == 'refs/heads/master'` na jobie `publish-node` —
+    ręczny `workflow_dispatch` z niezmergowanego refa nie dosięgnie
+    kroku, który dostaje `REGISTRY_ACCESS_TOKEN` (`workflow_dispatch`
+    pozwala wybrać dowolną gałąź/tag/commit, a `github.ref` to
+    odzwierciedla). Environment z approval świadomie pominięty —
+    warunek na gałąź wystarcza dla tego repo.
+  * `persist-credentials: false` na przypiętym checkoucie + `skip_checkout:
+    'true'` przekazane do `publish-node-action`. Zweryfikowane w
+    `action.yml` akcji na przypiętym SHA `d2366e7`: wewnętrzny krok to
+    NIEPRZYPIĘTY `actions/checkout@v4` (`if: skip_checkout != 'true'`).
+    Bez `skip_checkout` robilibyśmy checkout dwukrotnie, a ten
+    wewnętrzny jest nieprzypięty — co częściowo unieważniało pinowanie
+    SHA z commita b827cce. Teraz jedyny checkout to nasz przypięty v7.0.1
+    bez trwałych poświadczeń.
+- Blok komentarza WHY nad krokiem Publish rozszerzony o: (a) po co
+  `skip_checkout`, (b) po co `persist-credentials: false`, (c) uczciwa
+  nota o ryzyku rezydualnym — `publish-node-action` uruchamia jeszcze
+  bezwarunkowo NIEPRZYPIĘTY `actions/setup-python@v5`, którego nie da
+  się przypiąć bez forka akcji (świadomie zaakceptowane, forkowanie
+  poza zakresem).
+- Oba `uses:` bez zmian, dalej na pełnych 40-znakowych SHA. SHA
+  `d2366e7` (main) i `3d3c42e` (v7=v7.0.1) potwierdzone ponownie przez
+  `git ls-remote` — bez ruchu względem b827cce.
+- `tests.yml` nietknięte (osobny PR po merge #9).
+
 ## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
 
 - `pyproject.toml` parsuje się przez `tomllib`; `requires-python == ">=3.10"`,
@@ -79,9 +112,12 @@ v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
   (anonimowo przekierowuje na login z zachowanym `?template=...` w
   `return_to` — zalogowany użytkownik trafia prosto na formularz).
 - `publish.yml` parsuje się przez `yaml.safe_load`; `push.branches ==
-  ["master"]`, brak `"main"`. Oba `uses:` mają pełny 40-znakowy SHA jako
-  ref (żadnego `@main`/`@v7` jako ref — te stringi zostają tylko w
-  komentarzu WHY).
+  ["master"]`, `push.paths == ["pyproject.toml"]`, brak `"main"`. Oba
+  `uses:` mają pełny 40-znakowy SHA jako ref (żadnego `@main`/`@v7` jako
+  ref — te stringi zostają tylko w komentarzu WHY). Po eaa539f dodatkowo:
+  `permissions == {"contents": "read"}`, `jobs.publish-node.if` zawiera
+  `refs/heads/master`, krok checkout ma `persist-credentials: false`,
+  krok Publish ma `skip_checkout: 'true'` (string, nie bool).
 - Symulacja paczki (git ls-files minus wzorce `.comfyignore`): **51 plików
   w paczce, 39 wykluczonych**. `pytest.ini` już wykluczony (wcześniej był
   w paczce). Wykluczone: `tests/` (32), `.github/` (3), `pytest.ini`,
@@ -91,7 +127,7 @@ v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
   `pyproject.toml`.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
   (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane) —
-  potwierdzone ponownie po commicie b827cce.
+  potwierdzone ponownie po commitach b827cce i eaa539f.
 
 ## Ustalenia istotne dla Chat
 
@@ -125,7 +161,16 @@ v1.0.0) plus poprawki po recenzji Chat i bota Greptile. Gałąź
   stopką link-referencji w CHANGELOG i z `publish-node-action`, które
   wiąże wydanie Registry z wersją z `pyproject.toml`).
 - `.github/workflows/tests.yml` też używa nieprzypiętych
-  `actions/checkout@v7` i `actions/setup-python@v7`. Ten workflow NIE
-  dostaje żadnego sekretu, więc ryzyko jest niższe niż w `publish.yml`
-  i było poza zakresem PR #9. Do przypięcia osobnym PR-em, jeśli chcemy
-  spójności.
+  `actions/checkout@v7` i `actions/setup-python@v7` i nie ma bloku
+  `permissions:`. Ten workflow NIE dostaje żadnego sekretu, więc ryzyko
+  jest niższe niż w `publish.yml` i było poza zakresem PR #9. Do
+  przypięcia (SHA + `permissions: contents: read` +
+  `persist-credentials: false`) osobnym PR-em po merge #9, jeśli chcemy
+  spójności — analogicznie do tego, co zrobiliśmy w `publish.yml`.
+- `Comfy-Org/publish-node-action` wewnętrznie odpala nieprzypięty
+  `actions/setup-python@v5`. `skip_checkout` usunął problem z
+  wewnętrznym checkoutem, ale setup-python zostaje. Jedyne pełne
+  domknięcie to fork akcji albo PR do upstreamu z pinowaniem — na
+  teraz świadomie zaakceptowane jako residual risk (akcja i tak jest
+  przypięta do SHA, więc `setup-python@v5` nie zmieni się bez naszego
+  świadomego bumpa SHA `publish-node-action`).
