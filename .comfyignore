@@ -1,0 +1,15 @@
+# Files excluded from the archive published to the ComfyUI Registry.
+# Uses .gitignore pattern syntax; layered on top of .gitignore.
+
+# Test suite and its CI (not needed at runtime)
+tests/
+.github/
+
+# Local-only runtime and benchmark output
+cache/
+benchmark_results/
+
+# Contributor / session notes, not user documentation
+CLAUDE.md
+HANDOFF.md
+TODO.md
