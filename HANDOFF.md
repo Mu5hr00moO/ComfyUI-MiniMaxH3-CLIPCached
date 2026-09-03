@@ -6,7 +6,8 @@
 
 Backend proweniencji referencji dla obu węzłów Ref2VA
 (`MiniMaxH3CLIPCachedRef2VA`, `MiniMaxH3CLIPCachedRef2VADualRes`) + trzy
-poprawki po review botach na PR #14. Zero zmian w mechanice H3, w
+poprawki po review botach na PR #14 + poprawka pokrycia reguły liściowej.
+Zero zmian w mechanice H3, w
 `compute_fingerprint()` ani w decyzji HIT/MISS. UI to osobna, późniejsza
 faza — tu wyłącznie zapis do sidecara.
 
@@ -57,20 +58,47 @@ Trzy niezależnie potwierdzone znaleziska greptile / CodeRabbit:
    `LoadImage`, raz z nieprześledzalnego grafu — sidecar nie pokazuje już
    dalej starej nazwy pliku.
 
-### Commit 3 — HANDOFF.md (osobno, w tym samym PR)
+### Commit 3 — HANDOFF.md (osobno, w tym samym PR, `7fd5c97`)
+
+### Commit 4 — pokrycie reguły liściowej (`82a44cd`)
+
+`_walk_back_for_media_filenames()` (provenance.py) zatrzymywał się na
+pierwszej głębokości BFS z trafionym liściem. Przy asymetrycznym
+fan-inie gubiło to realne źródła:
+`ImageBatch(a <- LoadImage "SHALLOW.png", b <- ImageScale <- LoadImage
+"DEEPER.png")` zwracał dziś tylko `SHALLOW.png`.
+
+Walk przechodzi teraz CAŁY osiągalny podgraf wstecz i zwraca nazwę pliku
+z KAŻDEGO napotkanego liścia-loadera. Bez zmian: reguła liściowa,
+cycle-safety przez `visited`, kolejność BFS (płycej przed głębiej, w
+obrębie poziomu wg kolejności kluczy w prompcie). Dedup: ta sama nazwa
+pliku z kilku liści → zwracana raz, pierwsze wystąpienie.
+
+Uzasadnienie: nadmiarowi kandydaci w obrębie jednego poziomu byli już
+świadomie zaakceptowani (composite z maską → DEST/SRC/MASK razem);
+ograniczanie do jednego poziomu było niekonsekwentne.
+
+**Zmiana kontraktu testu:** `test_nearer_leaf_stops_the_walk_before_a_
+deeper_leaf` asertował stare zachowanie "stop na pierwszej głębokości" i
+został zastąpiony przez `test_asymmetric_fan_in_collects_a_leaf_from_
+every_depth` (oczekiwane obie nazwy, SHALLOW przed DEEPER). Żaden inny
+test nie zmienił kontraktu.
+
+### Commit 5 — HANDOFF.md (osobno, w tym samym PR)
 
 ## Weryfikacja
 
-- Pełny `conda run -n comfyenv python -m pytest -q`: **433 passed / 0
+- Pełny `conda run -n comfyenv python -m pytest -q`: **435 passed / 0
   failed / 0 skipped** (4 `DeprecationWarning` z `transformers`,
   niezwiązane). Baseline przed hardeningiem: 427.
-- `test_provenance.py` przepisane pod nowy kontrakt (18 testów): reguła
-  liściowa, listy wartości, `None`/`{}`, wiele liści na tym samym
-  poziomie, bliższy liść zatrzymuje walk przed głębszym.
-- `test_node_ref2va.py`: nowe `test_w2` (czysty pusty walk kasuje stare
+- `test_provenance.py` (20 testów): reguła liściowa, listy wartości,
+  `None`/`{}`, wiele liści, asymetryczny fan-in zbiera z każdej
+  głębokości, dedup nazwy, liść bez pliku nie blokuje głębszego, cykl
+  kończy się.
+- `test_node_ref2va.py`: `test_w2` (czysty pusty walk kasuje stare
   `ref_sources`), `test_w3` (`prompt_graph=None` zostawia pole),
   `test_w4` (wiele liści → wielopozycyjna lista); `test_v`/`test_z3`
-  zaktualizowane pod listę.
+  pod listę.
 - `python -m py_compile` na zmienionych plikach: czysto.
 - `git diff --check`: czysto.
 
@@ -79,8 +107,10 @@ Trzy niezależnie potwierdzone znaleziska greptile / CodeRabbit:
 - `system.ref_sources` w sidecarze — nowe, opcjonalne pole. Dict
   kluczowany nazwą slotu (`ref_image_0`, `ref_video_2`,
   `ref_video_audio_1`, `ref_audio_0`, …). Wartość: **lista**
-  `[{"annotated": str, "path"?: str}, ...]` (min. 1 element).
-  Wyłącznie informacyjne; nie w fingerprincie.
+  `[{"annotated": str, "path"?: str}, ...]` (min. 1 element) — po jednym
+  wpisie na KAŻDY osiągalny liść-loader w podgrafie danego refa, w
+  kolejności BFS, zdeduplikowane po nazwie pliku. Wyłącznie informacyjne;
+  nie w fingerprincie.
   `provenance.py:collect_ref_sources` — `None` = walk niemożliwy,
   `{}` = walk czysty ale pusty, dict = trafienia.
 - `provenance.collect_ref_sources` nigdy nie rzuca; `_sync_ref_sources`
@@ -111,4 +141,6 @@ Trzy niezależnie potwierdzone znaleziska greptile / CodeRabbit:
 
 - Faza UI: w Cache Managerze złączyć `system.ref_sources[slot]` (lista) z
   wierszem referencji po kluczu slotu i pokazać `annotated` + (jeśli
-  jest) `path` jako trop do oryginału; obsłużyć >1 wpis na slot.
+  jest) `path` jako trop do oryginału; obsłużyć >1 wpis na slot
+  (asymetryczny fan-in, composite z maską — realnie kilka plików na
+  jeden ref).
