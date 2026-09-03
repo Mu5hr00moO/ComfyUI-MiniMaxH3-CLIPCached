@@ -692,6 +692,15 @@ _GRAPH_WITH_LOADER = {
           "inputs": {"prompt": "a ref2va prompt", "ref_image_0": ["1", 0]}},
 }
 
+# A well-formed graph whose reference branch ends at a non-loader node: the
+# walk runs cleanly and finds nothing (collect_ref_sources returns {}).
+_GRAPH_WITHOUT_LOADER = {
+    "1": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512}},
+    "2": {"class_type": "VAEDecode", "inputs": {"samples": ["1", 0], "vae": ["9", 0]}},
+    "7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
+          "inputs": {"prompt": "a ref2va prompt", "ref_image_0": ["2", 0]}},
+}
+
 
 class _FakeProxyWithFingerprint:
     last_fingerprint = "b" * 64
@@ -709,14 +718,17 @@ def test_v_sync_ref_sources_appends_ref_sources_to_existing_system_block(monkeyp
     node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITH_LOADER, "7")
 
     system = load_verbose("b" * 64, tmp_path)["system"]
-    assert system["ref_sources"]["ref_image_0"]["annotated"] == "cat.png"
-    assert system["ref_sources"]["ref_image_0"]["path"].endswith("/input/cat.png")
+    assert system["ref_sources"]["ref_image_0"][0]["annotated"] == "cat.png"
+    assert system["ref_sources"]["ref_image_0"][0]["path"].endswith("/input/cat.png")
     # the pre-existing system keys are preserved, not clobbered
     assert system["node_variant"] == "ref2va"
     assert system["created_at"] == "2020-01-01T00:00:00+00:00"
 
 
 def test_w_sync_ref_sources_noop_when_graph_walk_finds_nothing(monkeypatch, tmp_path):
+    """A clean walk that finds nothing and no ref_sources on the sidecar yet:
+    the sidecar is left byte-for-byte alone (nothing to add, nothing to
+    remove)."""
     node_module = _load_node_module()
     monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
     from minimaxh3_clipcache.verbose_store import save_verbose
@@ -725,12 +737,70 @@ def test_w_sync_ref_sources_noop_when_graph_walk_finds_nothing(monkeypatch, tmp_
     save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
     before = (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes()
 
-    graph = {"7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
-                   "inputs": {"prompt": "p", "ref_image_0": ["1", 0]}},
-             "1": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512}}}
-    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), graph, "7")
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITHOUT_LOADER, "7")
 
     assert (tmp_path / ("b" * 64 + ".verbose.json")).read_bytes() == before
+
+
+def test_w2_sync_ref_sources_drops_stale_provenance_on_a_clean_empty_walk(monkeypatch, tmp_path):
+    """Same fingerprint (identical reference tensors), traced once from a
+    LoadImage and re-run from an untraceable-but-well-formed graph: the
+    stale ref_sources from the first run must not survive."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": [],
+                            "ref_sources": {"ref_image_0": [{"annotated": "old.png",
+                                                             "path": "/x/input/old.png"}]}},
+                 tmp_path)
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), _GRAPH_WITHOUT_LOADER, "7")
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert "ref_sources" not in system
+    # the rest of the system block is untouched
+    assert system["prompt"] == "p"
+
+
+def test_w3_sync_ref_sources_keeps_provenance_when_traversal_is_impossible(monkeypatch, tmp_path):
+    """prompt_graph=None means the walk could not run at all -- an earlier
+    run's provenance is NOT evidence-free and must be left in place."""
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": [],
+                            "ref_sources": {"ref_image_0": [{"annotated": "keep.png"}]}},
+                 tmp_path)
+
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), None, None)
+
+    system = load_verbose("b" * 64, tmp_path)["system"]
+    assert system["ref_sources"] == {"ref_image_0": [{"annotated": "keep.png"}]}
+
+
+def test_w4_sync_ref_sources_records_multiple_leaf_loaders_as_a_list(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    monkeypatch.setattr(node_module, "CACHE_DIR", tmp_path)
+    from minimaxh3_clipcache.verbose_store import load_verbose, save_verbose
+
+    _make_core_json(tmp_path)
+    save_verbose("b" * 64, {"prompt": "p", "references": []}, tmp_path)
+
+    graph = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "b.png"}},
+        "3": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["2", 0]}},
+        "7": {"class_type": "MiniMaxH3CLIPCachedRef2VA",
+              "inputs": {"prompt": "p", "ref_image_0": ["3", 0]}},
+    }
+    node_module._sync_ref_sources(_FakeProxyWithFingerprint(), graph, "7")
+
+    entries = load_verbose("b" * 64, tmp_path)["system"]["ref_sources"]["ref_image_0"]
+    assert [e["annotated"] for e in entries] == ["a.png", "b.png"]
 
 
 def test_x_sync_ref_sources_noop_when_no_system_block_yet(monkeypatch, tmp_path):
@@ -809,10 +879,10 @@ def test_z3_execute_threads_ref_provenance_into_the_sidecar(monkeypatch, tmp_pat
     fingerprint = last_used_module.get_last_used()["ref2va"]
     system = load_verbose(fingerprint, tmp_path)["system"]
     assert system["ref_sources"] == {
-        "ref_image_0": {"annotated": "cat.png",
-                        "path": system["ref_sources"]["ref_image_0"]["path"]}
+        "ref_image_0": [{"annotated": "cat.png",
+                         "path": system["ref_sources"]["ref_image_0"][0]["path"]}]
     }
-    assert system["ref_sources"]["ref_image_0"]["path"].endswith("/input/cat.png")
+    assert system["ref_sources"]["ref_image_0"][0]["path"].endswith("/input/cat.png")
 
 
 def test_z4_execute_without_hidden_inputs_writes_no_ref_sources(monkeypatch, tmp_path):

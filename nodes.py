@@ -228,8 +228,8 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
 
 def _sync_ref_sources(proxy, prompt_graph, unique_id):
     """Attach ``system.ref_sources`` to this Ref2VA run's verbose sidecar --
-    a best-effort ``{slot_name: {annotated[, path]}}`` map of where each
-    reference input came from on disk (minimaxh3_clipcache.provenance).
+    a best-effort ``{slot_name: [{annotated[, path]}, ...]}`` map of where
+    each reference input came from on disk (minimaxh3_clipcache.provenance).
 
     Runs right after _sync_verbose_metadata(), on the Ref2VA path only, and
     follows the same discipline: the whole check-then-write happens under
@@ -240,10 +240,21 @@ def _sync_ref_sources(proxy, prompt_graph, unique_id):
     decision, so a failure here must not disturb the conditioning already
     produced.
 
-    A no-op when the graph walk yields nothing: the ``ref_sources`` key is
-    simply never written. Also a no-op when there is no ``system`` block to
-    attach to yet -- _sync_verbose_metadata() owns creating that block, and
-    on a plain HIT of a pre-feature sidecar it deliberately leaves it as-is.
+    collect_ref_sources() reports three distinct outcomes and each is
+    handled differently, because the sidecar is content-addressed: a later
+    run can land on the same fingerprint with a different graph.
+
+    * ``None`` -- the walk could not run (no graph, no unique_id, our node
+      absent). A no-op: an untraceable run is no evidence against an
+      earlier traceable one, so any existing ``ref_sources`` is left alone.
+    * ``{}`` -- the walk ran cleanly and found no on-disk trail this time.
+      Any stale ``ref_sources`` from an earlier run of this fingerprint is
+      deleted (and only then is a write done at all).
+    * non-empty -- written as-is, unless it already matches.
+
+    Also a no-op when there is no ``system`` block to attach to yet --
+    _sync_verbose_metadata() owns creating that block, and on a plain HIT of
+    a pre-feature sidecar it deliberately leaves it as-is.
     """
     fingerprint = proxy.last_fingerprint
     if fingerprint is None:
@@ -251,8 +262,8 @@ def _sync_ref_sources(proxy, prompt_graph, unique_id):
 
     try:
         ref_sources = collect_ref_sources(prompt_graph, unique_id)
-        if not ref_sources:
-            return
+        if ref_sources is None:
+            return  # traversal impossible -- leave any existing value alone
 
         with get_lock(fingerprint):
             core_path = Path(CACHE_DIR) / "{}.json".format(fingerprint)
@@ -263,11 +274,19 @@ def _sync_ref_sources(proxy, prompt_graph, unique_id):
             existing_system = existing.get("system") if isinstance(existing, dict) else None
             if not isinstance(existing_system, dict):
                 return
-            if existing_system.get("ref_sources") == ref_sources:
-                return
 
-            system = dict(existing_system)
-            system["ref_sources"] = ref_sources
+            if ref_sources:
+                if existing_system.get("ref_sources") == ref_sources:
+                    return
+                system = dict(existing_system)
+                system["ref_sources"] = ref_sources
+            else:
+                # Clean empty walk: drop stale provenance if present, and
+                # only touch the sidecar when there is something to drop.
+                if "ref_sources" not in existing_system:
+                    return
+                system = dict(existing_system)
+                del system["ref_sources"]
             save_verbose(fingerprint, system, CACHE_DIR)
     except Exception as e:
         logger.warning(
@@ -1227,9 +1246,10 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 prompt_graph=None, unique_id=None):
         # prompt_graph / unique_id arrive from the "PROMPT" / "UNIQUE_ID"
         # hidden inputs (see _ref2va_hidden_input_spec) and feed only
-        # reference-source provenance. Both encode passes get them: on the
-        # base pass they write system.ref_sources, on the upscale pass the
-        # write is a cheap no-op once the value already matches.
+        # reference-source provenance. Both encode passes get them and each
+        # writes system.ref_sources into its own resolution's sidecar; when
+        # the two passes collapse onto one shared fingerprint the second
+        # write just matches and is a no-op.
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
              ref_image_5, ref_image_6, ref_image_7, ref_image_8],
