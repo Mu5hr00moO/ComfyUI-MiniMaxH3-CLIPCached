@@ -1,114 +1,105 @@
 # HANDOFF
 
-## Stan na: 2026-09-03 / branch chore/registry-metadata / commit bb72f14
+## Stan na: 2026-09-03 / branch chore/registry-metadata / PR #9 (niezmergowany)
 
 ## Ostatnio zrobione
 
-Metadane publikacyjne dla ComfyUI Registry (krok 3 z planu przed tagiem
-v1.0.0). Gałąź `chore/registry-metadata` odcięta od `origin/master`
-(e3191fb, po mergu PR #8). Trzy nowe pliki, każdy osobny commit; PR na
-`master` niezmergowany.
+Metadane publikacyjne dla ComfyUI Registry (krok 3 planu przed wydaniem
+v1.0.0) plus poprawki po recenzji Chat. Gałąź `chore/registry-metadata`
+odcięta od `origin/master` (e3191fb). PR #9 na `master`, otwarty, MERGEABLE.
 
-- Commit 1 (4af23af): `pyproject.toml` w korzeniu repo.
-  * `[project].name = "minimaxh3-clipcached"` (id node'a w Registry,
-    nieodwracalne po publikacji), `version = "1.0.0"`,
-    `license = { file = "LICENSE" }` (LICENSE to MIT),
-    `dependencies = ["safetensors"]` (jedyna realna zależność spoza
-    ComfyUI; torch/aiohttp/PIL przychodzą z ComfyUI - nie dopisane),
-    `classifiers = ["Operating System :: OS Independent"]`.
-  * `requires-python = ">=3.9"` - patrz "Ustalenia" niżej.
-  * `[project.urls].Repository` = URL repo na GitHubie.
-  * `[tool.comfy]`: `PublisherId = "mu5hr00moo"` (małe litery, dokładnie
-    jak po @ na profilu publishera), `DisplayName = "MiniMax H3 CLIP-Cached"`,
-    `requires-comfyui = ">=0.30.0"` (natywne MiniMax H3 od ComfyUI 0.30.0;
-    ta sama wartość co sekcja Requirements w README).
-- Commit 2 (6ba3a2b): `.comfyignore` w korzeniu repo. Składnia .gitignore
-  (wymóg dokumentacji publishing). Wyklucza z paczki: `tests/`, `.github/`,
-  `cache/`, `benchmark_results/`, `CLAUDE.md`, `HANDOFF.md`, `TODO.md`.
-  Zostają: `docs/`, `scripts/`, `web/`, `minimaxh3_clipcache/`, `nodes.py`,
-  `__init__.py`, `README*.md`, `README_*.png`, `LICENSE`, `SECURITY.md`,
-  `CHANGELOG.md`.
-- Commit 3 (bb72f14): `.github/workflows/publish.yml`. Oficjalny wzór z
-  docs.comfy.org/registry/publishing (uses `Comfy-Org/publish-node-action@main`,
-  `personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}`,
-  `actions/checkout@v7`, trigger: push do gałęzi domyślnej zmieniający
-  `pyproject.toml` + `workflow_dispatch`). Wzór z dokumentacji ma zaszyte
-  `branches: - main` - zmienione na `master`, inaczej akcja nigdy by się
-  nie odpaliła. Istniejące `.github/workflows/tests.yml` nietknięte.
-- Commit HANDOFF: ten plik (osobno, w tym samym PR - nie push na master).
+### Pierwsza tura (commity 4af23af..36f52ff)
 
-### Weryfikacja (BEZ ComfyUI, BEZ serwera, BEZ GPU)
+- `pyproject.toml` (4af23af) — manifest Registry: `name =
+  "minimaxh3-clipcached"` (id node'a, nieodwracalne po publikacji),
+  `version = "1.0.0"`, `license = { file = "LICENSE" }` (MIT),
+  `dependencies = ["safetensors"]`, `[project.urls].Repository`,
+  `[tool.comfy]` z `PublisherId = "mu5hr00moo"` (małe litery),
+  `DisplayName = "MiniMax H3 CLIP-Cached"`, `requires-comfyui = ">=0.30.0"`.
+- `.comfyignore` (6ba3a2b) — składnia .gitignore, warstwa na .gitignore.
+- `.github/workflows/publish.yml` (bb72f14) — oficjalny wzór
+  `Comfy-Org/publish-node-action@main`; wzór z docs ma zaszyte
+  `branches: - main`, zmienione na `master`. `tests.yml` nietknięte.
 
-- `python -c "import tomllib; tomllib.load(open('pyproject.toml','rb'))"` -
-  parsuje się; asercje na name / version / license / dependencies /
-  PublisherId / DisplayName / requires-comfyui / Repository - wszystkie
-  przechodzą, PublisherId to małe `mu5hr00moo`.
-- `publish.yml` parsuje się przez `yaml.safe_load` w comfyenv; trigger
-  `push.branches == ["master"]`, brak `"main"` w pliku; `uses` i token
-  zgodne z wzorcem. `tests.yml` bez zmian (`git status`).
+### Druga tura — poprawki po recenzji (commity 5b99566..0099dd1)
+
+- `requires-python` (5b99566): `">=3.9"` → `">=3.10"`. Nad polem komentarz
+  WHY: floor pochodzi z ComfyUI (aktualne ComfyUI, v0.34.2, ma
+  `requires-python = ">=3.10"`), nie z samej składni tego repo. Kod repo
+  parsowałby się na 3.9 (jedyny konstrukt 3.9+ to subskrypcja generyków
+  PEP 585), ale bez ComfyUI node i tak nie działa. Komentarz ma zapobiec
+  cofnięciu wartości na 3.9 na podstawie analizy składni.
+- Martwy link + pytest.ini (9bfdd3e):
+  * `docs/TESTING_AND_LIMITATIONS.md:352` — względny link
+    `../.github/ISSUE_TEMPLATE/bug_report.yml` (martwy w publikowanej
+    paczce, bo `.comfyignore` wycina `.github/`) zamieniony na pełny URL
+    `https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/issues/new?template=bug_report.yml`.
+  * `.comfyignore` — dopisany `pytest.ini` (`testpaths = tests`, a
+    `tests/` jest wykluczone → martwa konfiguracja w kopii u użytkownika).
+    `.gitignore` zostawiony w paczce (drobny, nieszkodliwy).
+- `CHANGELOG.md` (0099dd1) — format Keep a Changelog, nagłówek z linkami
+  do keepachangelog.com i semver.org. `## [Unreleased]` → `### Planned`
+  z dwoma odłożonymi pozycjami z TODO.md (`cache_mode="cache_only"`,
+  dynamiczne sloty referencji Ref2VA). `## [1.0.0] - 2026-09-03` opisuje
+  CO repo zawiera (pięć węzłów, cache conditioning z uwolnieniem VRAM po
+  enkodowaniu, Cache Manager, docs/), nie historię commitów. Na końcu
+  sekcji 1.0.0 dwie informacje przedinstalacyjne: ComfyUI >= 0.30.0,
+  on-disk cache schema v2.
+- Commit HANDOFF: ten plik (osobno, w tym samym PR).
+
+## Weryfikacja (BEZ ComfyUI serwera, BEZ GPU)
+
+- `pyproject.toml` parsuje się przez `tomllib`; `requires-python == ">=3.10"`,
+  `version == "1.0.0"`, `PublisherId == "mu5hr00moo"`,
+  `requires-comfyui == ">=0.30.0"`.
+- `git grep -n "\.github/ISSUE_TEMPLATE" -- docs/` → brak trafień. Brak
+  jakiegokolwiek względnego linku `](../.github` / `](.github` w docs/ i
+  README.md.
+- URL nowego linku: `.github/ISSUE_TEMPLATE/bug_report.yml` istnieje na
+  `origin/master` (gałąź domyślna), nazwa pliku zgadza się z parametrem
+  `?template=bug_report.yml`, repo jest PUBLIC, `curl -L` → HTTP 200
+  (anonimowo przekierowuje na login z zachowanym `?template=...` w
+  `return_to` — zalogowany użytkownik trafia prosto na formularz).
+- `publish.yml` parsuje się przez `yaml.safe_load`; `push.branches ==
+  ["master"]`, brak `"main"`.
+- Symulacja paczki (git ls-files minus wzorce `.comfyignore`): **51 plików
+  w paczce, 39 wykluczonych**. `pytest.ini` już wykluczony (wcześniej był
+  w paczce). Wykluczone: `tests/` (32), `.github/` (3), `pytest.ini`,
+  `CLAUDE.md`, `HANDOFF.md`, `TODO.md`. `cache/` i `benchmark_results/`
+  już nieśledzone przez git.
+- `CHANGELOG.md`: `## [1.0.0]` zgadza się co do znaku z `version` w
+  `pyproject.toml`.
 - Pełny pytest w comfyenv: **399 passed / 0 failed / 0 skipped**
-  (nowe pliki to TOML/YAML/ignore - nic nie ruszają, potwierdzone).
-- Symulacja listy plików w publikowanej paczce (git ls-files minus wzorce
-  `.comfyignore`): 51 plików w paczce, 37 wykluczonych. Sprawdzone, czy
-  `.comfyignore` nie wycina czegoś linkowanego z README.md / `docs/*.md` -
-  patrz "Otwarte pytania" (jeden martwy link znaleziony).
+  (4 ostrzeżenia DeprecationWarning z transformers, niezwiązane).
 
 ## Ustalenia istotne dla Chat
 
-- `requires-python = ">=3.9"`. Podstawa: kod subskryptuje generyki
-  wbudowane (`list[...]`, `dict[...]`) w pozycjach ewaluowanych w
-  runtime, BEZ `from __future__ import annotations` (nigdzie w repo go
-  nie ma):
-  * `minimaxh3_clipcache/store.py:372` - adnotacja zwrotu funkcji
-    `def gc_orphaned_cache_files(cache_dir: Path) -> list[str]:`
-    (adnotacje funkcji są ewaluowane przy definicji).
-  * `minimaxh3_clipcache/locking.py:24` - adnotacja zmiennej na poziomie
-    modułu `_fingerprint_locks: dict[str, threading.Lock] = {}`
-    (adnotacje na poziomie modułu SĄ ewaluowane w runtime).
-  Oba rzucają `TypeError` na Pythonie 3.8 (PEP 585 dopiero od 3.9).
-  Skan AST całego `nodes.py` + `minimaxh3_clipcache/*.py`: brak `match`,
-  brak unii `X | Y` w pozycjach ewaluowanych, brak PEP 695, brak metod
-  stdlib z 3.9+ poza samymi generykami - nic nie wymusza >=3.10.
-- Dla informacji: sam ComfyUI v0.34.2 ma `requires-python = ">=3.10"`
-  (`~/ComfyUI/pyproject.toml:6`), więc w praktyce node i tak działa na
-  3.10+. Wartość `>=3.9` odzwierciedla NASZĄ składnię, zgodnie ze
-  zleceniem ("najniższą wersję faktycznie wynikającą ze składni").
-- Nazwa pola to `requires-comfyui` (z myślnikiem), należy do `[tool.comfy]`
-  - potwierdzone w verbatim przykładzie na
-    docs.comfy.org/registry/specifications (pierwsze streszczenie WebFetch
-    błędnie sugerowało `requires-comfy` - to była halucynacja modelu
-    streszczającego, sprostowana drugim, dosłownym pobraniem).
-- `.comfyignore` używa składni `.gitignore` i działa warstwowo na nią
-  (pliki nieśledzone przez git są już wykluczone). `cache/` i
-  `benchmark_results/` są w `.gitignore` jako nieśledzone - w
-  `.comfyignore` dodane redundantnie, świadomie (defense-in-depth).
-- Pliki w paczce, których zlecenie nie wymieniło wprost, a które tam
-  trafią: `.gitignore` (drobny), `pytest.ini` (`testpaths = tests` -
-  po wykluczeniu `tests/` to martwa konfiguracja, ale nieszkodliwa).
-  Świadomie NIE dodane do `.comfyignore` - zlecenie dało zamkniętą listę.
-- Sekret `REGISTRY_ACCESS_TOKEN` Kamil dodaje ręcznie w ustawieniach repo;
-  nic związanego z kluczem nie ma w commitach.
+- `requires-python = ">=3.10"` — na życzenie recenzji podniesione z `>=3.9`.
+  Uzasadnienie w komentarzu w pliku i w commicie: node bez ComfyUI nie
+  działa, a aktualne ComfyUI (v0.34.2, `~/ComfyUI/pyproject.toml:6`)
+  wymaga `>=3.10`. Analiza składni samego repo (floor = 3.9, jedyny
+  konstrukt 3.9+ to PEP 585 w `minimaxh3_clipcache/store.py:372` i
+  `minimaxh3_clipcache/locking.py:24`) jest odnotowana, ale świadomie
+  NIE jest podstawą wartości pola.
+- Data w nagłówku `## [1.0.0]` to 2026-09-03 (dzień przygotowania PR-a).
+  Jeśli merge nastąpi innego dnia — do ręcznego bumpa przed/przy mergu.
+- `CHANGELOG.md` nie ma stopki z link-referencjami `[1.0.0]: .../releases/tag/...`
+  — w repo nie ma jeszcze żadnego taga, więc nie zgadywano konwencji
+  nazwy (`v1.0.0` vs `1.0.0`). Do dodania przy pierwszym tagu, jeśli
+  potrzebne.
+- W paczce zostają też `.gitignore` (drobny) — świadomie, zlecenie kazało
+  zostawić.
 
 ## Otwarte pytania
 
-- `docs/TESTING_AND_LIMITATIONS.md:352` linkuje
-  `[Bug report template](../.github/ISSUE_TEMPLATE/bug_report.yml)`.
-  `.comfyignore` wyklucza całe `.github/`, więc w opublikowanej paczce
-  ten względny link jest martwy. Do decyzji: (a) zawęzić wykluczenie do
-  `.github/workflows/` (zostawić `ISSUE_TEMPLATE/` w paczce), czy
-  (b) zmienić link w docs na bezwzględny URL do GitHuba. Zmiana docs jest
-  poza zakresem tego zlecenia - zostawione jako decyzja dla Chat/Kamila.
-  To jedyny martwy link znaleziony w symulacji paczki.
+- brak
 
 ## Sugestie (nie polecenia)
 
-- Rekomendacja do otwartego pytania: wariant (b) - poprawić link w
-  `docs/TESTING_AND_LIMITATIONS.md` na pełny URL GitHuba. Wykluczenie
-  całego `.github/` z paczki jest czystsze niż selektywne wpuszczanie
-  jednego podkatalogu, a template zgłoszeń błędu i tak jest użyteczny
-  tylko z poziomu GitHuba (nie z lokalnej kopii node'a).
-- Po mergu tego PR-a workflow `publish.yml` odpali się automatycznie
-  (PR dodaje `pyproject.toml`, co pasuje do filtra `paths`). Upewnić się,
-  że sekret `REGISTRY_ACCESS_TOKEN` jest w repo PRZED mergem, inaczej
-  pierwszy przebieg padnie na braku tokenu.
-- `gh` w tej sesji: PR otwarty / do otwarcia ręcznie - patrz raport.
+- Przed mergem PR #9: upewnić się, że sekret `REGISTRY_ACCESS_TOKEN` jest
+  w ustawieniach repo. Merge doda `pyproject.toml` do `master`, co pasuje
+  do filtra `paths` w `publish.yml` i od razu odpali publikację do
+  Registry; bez tokenu pierwszy przebieg padnie.
+- Rozważyć tag `v1.0.0` na commicie merge'a (spójnie z hipotetyczną
+  stopką link-referencji w CHANGELOG i z `publish-node-action`, które
+  wiąże wydanie Registry z wersją z `pyproject.toml`).
