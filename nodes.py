@@ -157,8 +157,13 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
                 # resolution moves them forward. Only those three keys are
                 # rewritten, only when they actually differ, and only when this
                 # run supplied a width/height at all.
-                if (proxy.last_hit is True and width is not None and height is not None
-                        and isinstance(existing_system, dict)):
+                #
+                # existing_system is guaranteed to be a dict on this branch:
+                # reaching here with last_hit True means hit_needs_backfill was
+                # False, which means has_created_at was True, and has_created_at
+                # is only ever True when existing_system is a dict holding a
+                # non-empty "created_at" string.
+                if proxy.last_hit is True and width is not None and height is not None:
                     megapixels = round(width * height / 1_000_000, 2)
                     if (existing_system.get("width") != width
                             or existing_system.get("height") != height
