@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Cache Manager shows the on-disk size of every entry: normal entries get
+  it at the end of the meta line next to the date and resolution, legacy
+  and inconsistent entries next to their status hint. The figure covers
+  exactly the files that deleting that entry removes.
+- When a Dual Resolution pair is folded into one row, that row's size is
+  the pair total and is marked **(pair total)**. Delete still acts on the
+  single entry beside it; the paired entry has its own Delete button under
+  the `+ rescaled to` badge.
+- Ref2VA entries record where each reference came from: the source file
+  names traced back through the graph and the node input slot each
+  reference was wired to. The Cache Manager detail panel shows those file
+  names under each reference thumbnail, click-to-copy, alongside the
+  entry's short fingerprint.
+
 ### Planned
 
 - `cache_mode = "cache_only"`: serve conditioning from the cache or fail
