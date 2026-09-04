@@ -1,153 +1,136 @@
 # HANDOFF
 
-## Stan na: 2026-09-04 / branch fix/copy-prompt-feedback-timer / PR #18 (open)
+## Stan na: 2026-09-04 / branch `feat/cache-size-threshold` / kod w `2deb81c`
 
-Gałąź wyszła z czystego `origin/master` (`23f3f72`, już po zmergowanym
-PR #17). Cztery commity, PR zostaje OTWARTY:
+Gałąź wyszła z czystego `origin/master` (`d1863fc`, już po zmergowanym
+PR #18). Dwa commity: `2deb81c` — kod, ten commit — HANDOFF.md.
 
-1. `89e543c` — tura 1: kod.
-2. `1c702bb` — HANDOFF.md.
-3. `4554c0f` — tura 2: kod.
-4. ten commit — HANDOFF.md.
-
-Temat całości: ujednolicenie afordancji „Copied!” w Cache Managerze —
-jedna implementacja mechaniki dla wszystkich kontrolek kopiujących,
-odporna na nakładające się kliknięcia.
+Temat: tura 1 progu rozmiaru cache w Cache Managerze — logika,
+persystencja i kolorowanie paska statusu. BEZ interfejsu do ustawiania
+wartości; w tej turze konfiguracja jest wpisywana ręcznie do
+localStorage.
 
 ## Ostatnio zrobione
 
-### Tura 1 (`89e543c`): `copyPromptText()` bez anulowania timera
+### Zakres i granice funkcji
 
-`copyPromptText()` (ikonka kopiowania przy prompcie w panelu szczegółów)
-trzymała własną kopię mechaniki „Copied!”: klasa `is-copied`, podmiana
-`title`, `setTimeout` na revert po 1,5 s — bez anulowania timera z
-poprzedniego kliknięcia. Ten sam defekt, który dla
-`copyToClipboardWithFeedback()` naprawił PR #16.
+Wyłącznie warstwa wyświetlania. Limit żyje w przeglądarce: backend nigdy
+się o nim nie dowiaduje, nie ma eviction, nie ma blokowania zapisu, Python
+jest nietknięty.
 
-PEŁNE reużycie `copyToClipboardWithFeedback()` nie było możliwe bez
-naginania jej: ta funkcja sama wykonuje zapis do schowka, a
-`copyPromptText()` nie ma tekstu promptu — deleguje do `copyPrompt()`
-(`web/main.js:1563`), która robi zapis RAZEM z dwoma efektami ubocznymi,
-których ten przycisk nie jest właścicielem (`renderCopyResult()` i
-ustawienie `[data-h3cm-refs-hint]`). Wyjściem byłoby albo zduplikowanie w
-`copyPromptText()` wyszukiwania wpisu i obu efektów ubocznych (duplikacja
-większa niż usuwana), albo dorobienie wspólnej funkcji parametru-callbacka
-pod jednego wołającego. Zamiast tego wyciągnięta została sama afordancja,
-do helperów używanych przez obie funkcje.
+Ocenianą liczbą jest `total_size_bytes` z `/check` — czyli CAŁY katalog
+`cache/`, oba warianty węzła, miniatury i pliki-śmieci włącznie. To
+dokładnie ta liczba, którą pasek statusu już drukuje. Nie istnieje jej
+odpowiednik per wariant: `scan_cache()` mierzy katalog jako całość
+(`minimaxh3_clipcache/scanner.py:206`, helper `_dir_size_bytes` w
+`minimaxh3_clipcache/scanner.py:70-78`), a per-wpisowe `size_bytes` z
+założenia nie sumują się do tej wartości
+(`minimaxh3_clipcache/scanner.py:37-41`).
 
-### Tura 2 (`4554c0f`), poprawka A: `is-copied` na ścieżce błędu
+### Co doszło w `web/main.js`
 
-`copyToClipboardWithFeedback()` nie zdejmowała klasy `is-copied` przy
-nieudanym kopiowaniu. Gdy poprzednie kliknięcie się udało,
-`cancelCopyRevert()` zabijał timer, który by ją posprzątał — element
-zostawał podświetlony jako „skopiowany”, mając tytuł o błędzie.
-`copyPromptText()` tego nie miała, bo robiła `remove` jawnie. To była
-sugestia z raportu po turze 1, teraz zrealizowana.
+- `parseFiniteNumber(raw, {min, max})` (`web/main.js:71`) → liczba albo
+  `null`, dla wartości przychodzących z zewnątrz: pola tekstowego,
+  localStorage, odpowiedzi API. Przyjmuje string i liczbę; pusty string i
+  same spacje odrzuca, żeby `Number("")` nie zamieniło pustego pola w
+  zero. Nowy helper, a nie rozszerzenie `positiveBytes()`
+  (`web/main.js:170`) — tamten odpowiada na inne pytanie (podstawia `0`
+  przy porażce) i leży na ścieżce renderowania rozmiaru wpisu, więc
+  zmiana jego kontraktu dotknęłaby niepowiązanego kodu. `positiveBytes()`
+  został bez zmian.
+- `readCacheSizeOptions()` / `writeCacheSizeOptions()`
+  (`web/main.js:1050` i `web/main.js:1068`), klucz
+  `h3cm-cache-size-options`, kształt `{ limitBytes, warningPercent }`.
+  Zabezpieczone tym samym wzorcem co `readLauncherPosition()`
+  (`web/main.js:1762`): `null` przy braku klucza, uszkodzonym JSON-ie,
+  JSON-ie który nie jest obiektem, brakującym lub nieużywalnym polu oraz
+  przy niedostępnym localStorage; zapis w `try/catch` z cichą porażką.
+- `classifyCacheSize(totalBytes, options)` (`web/main.js:1081`) →
+  `"off" | "ok" | "warning" | "alert"`. Funkcja czysta: bez DOM, bez
+  storage. Oba progi porównują przez `>=`, więc dokładne trafienie w próg
+  liczy się jako jego przekroczenie; przy `warningPercent = 100` oba progi
+  pokrywają się i wygrywa `alert`.
+- `setCacheStatus(text, level)` (`web/main.js:1114`) jest teraz JEDYNYM
+  miejscem zapisującym pasek statusu i nakłada tekst razem z poziomem.
+  Powód jest konkretny, nie kosmetyczny: rozdzielone, poziom z
+  poprzedniego `/check` przeżywał tekst, do którego należał, i malował na
+  czerwono niezwiązany komunikat. Wszystkie pięć dotychczasowych
+  przypisań `panel.statusEl.textContent` przeszło na tę funkcję i podaje
+  poziom `"off"` wszędzie poza udanym `/check`. Prefiksy: `"⚠ "` dla
+  `warning`, `"ALERT: "` dla `alert`.
 
-### Tura 2, poprawka B: osierocone timery przy nakładających się wywołaniach
+### Co doszło w `web/styles.css`
 
-Zgłoszenie review bota — zweryfikowane, realne. Anulowanie PRZED `await`
-nie wystarcza: dwa kliknięcia mogą oba wyczyścić jeszcze pusty uchwyt,
-zanim którekolwiek cokolwiek zaplanuje (próba kopiowania jest
-asynchroniczna, więc pierwsze kliknięcie może nie dojść do swojego timera,
-zanim drugie go poszuka). Oba planują potem revert, element pamięta tylko
-późniejszy uchwyt, a osierocony wcześniejszy timer odpala w środku okna
-tego późniejszego.
+Dwie klasy tuż za `.h3cm-status` (`web/styles.css:200-206`):
+`.h3cm-status-warning` (`#f0bd69`) i `.h3cm-status-alert` (`#ef9a9a` +
+`font-weight: 700`). Te same odcienie, które w tym panelu noszą już plakietki
+wpisów `legacy` i `inconsistent` (`web/styles.css:379-386`), więc jeden
+kolor zachowuje jedno znaczenie. Bez zmiennych CSS motywu ComfyUI — plik
+ich nie używa nigdzie (0 wystąpień `var(--`, 92 zahardkodowane wartości
+hex), a wprowadzanie ich pod jedną funkcję rozjechałoby się z resztą.
 
-`markCopied()` (`web/main.js:1508`) i nowa `markCopyFailed()`
-(`web/main.js:1522`) anulują PONOWNIE w momencie nakładania wyniku — to
-ostatnia chwila, w której osierocony timer da się jeszcze złapać.
-Anulowanie przed `await` ZOSTAJE: chroni przed czym innym, timerem z
-wcześniejszego, już rozstrzygniętego kliknięcia, odpalającym w trakcie
-długiego oczekiwania na zgodę użytkownika. Anulowanie jest idempotentne,
-więc oba mogą stać obok siebie.
-
-Ścieżka błędu została wyciągnięta do `markCopyFailed()`, żeby obaj
-wołający nie mogli się znowu rozjechać tak, jak rozjechali się przy
-poprawce A — jedna implementacja zamiast dwóch kopii trzech linijek.
-
-### Świadomie POZA zakresem (odnotowane komentarzem, nie zaimplementowane)
-
-Gdy nałożone wywołania rozstrzygną się w odwrotnej kolejności, a
-wcześniejsze zawiedzie, element pokaże „Copy failed” mimo udanego
-późniejszego kopiowania. Numerowanie generacji pod ten przypadek byłoby
-przerostem formy nad treścią przy tooltipie żyjącym 1,5 s. Zapisane w
-komentarzu nad stałymi (`web/main.js:1474`).
-
-### Inne miejsca z tym wzorcem (punkt 3 zlecenia z tury 1)
-
-W `web/main.js` są dokładnie DWA `setTimeout`. Drugi (`web/main.js:1754`,
-w `endDrag()` pływającego launchera) to inny wzorzec i NIE ma tego błędu:
-zeruje flagę `suppressClick` z opóźnieniem 0 ms, nie revertuje żadnego
-tytułu ani klasy, a flaga jest niezależnie zerowana przy każdym
-`pointerdown` (`web/main.js:1721`) i w samym handlerze `click`. Nakładające
-się timery nie mogą tam zostawić złego stanu. Zostawiony bez zmian. Poza
-tym w pliku nie ma `setInterval` ani `requestAnimationFrame`.
+Reguły stoją PO `.h3cm-status` i mają tę samą specyficzność, i to
+kolejność w pliku decyduje o nadpisaniu koloru.
 
 ## Weryfikacja (stan bieżący)
 
 - `node --check` na kopii `.mjs`: czysto. `git diff --check`: czysto.
+  Bilans nawiasów `web/styles.css`: 106/106.
 - Pełny pytest: **446 passed** (bez zmian — ta gałąź nie rusza Pythona).
 - Harness ESM w scratchpadzie, na REALNYM `web/main.js` (loader podstawia
-  `/scripts/app.js` i `/scripts/api.js` i dopisuje `export` dla prywatnych
-  `copyPromptText` i `copyToClipboardWithFeedback`, więc testowany jest
-  bieżący kod, nie kopia; wirtualny zegar zamiast prawdziwych timerów;
-  sterowalny stub `navigator.clipboard.writeText` zwracający obietnice
-  rozstrzygane ręcznie, dzięki czemu dwa wywołania mogą być „w locie”
-  naraz; harness i loader NIE commitowane) — **33 asercje PASS** (po
-  turze 1 było 18).
-- Zgodnie ze stałą zasadą projektu asercje regresyjne były w OBU turach
-  uruchamiane NAJPIERW na kodzie sprzed naprawy (przez `git stash` na
-  `web/main.js`) i tam FAILowały:
-  - tura 1 — `5c` „stale timer never reverts the failure title”;
-  - tura 2 — **6 asercji**: `3a` (przepisany dawny test kontrolny:
-    `markCopied()` bez jawnego anulowania przez wołającego ma utrzymać
-    drugie okno), `6b`/`6c` (dwa nałożone wywołania, `writeText`
-    rozstrzygane ręcznie w t=0 i t=500 — potwierdzenie żyje w 1500 ms i
-    1999 ms, revert dopiero w 2000 ms, czyli osierocony timer został
-    złapany), `7a` (`is-copied` zdjęte na ścieżce błędu po udanym
-    poprzednim kliknięciu), `8a`/`8c` (nałożone wywołania, gdzie
-    późniejsze zawodzi po tym, jak wcześniejsze zaplanowało revert —
-    klasa zdjęta, tytuł błędu nie jest wycierany o 1500 ms; dokładnie ten
-    przypadek wymaga anulowania PO `await`).
+  `/scripts/app.js` i `/scripts/api.js`, wymusza format `module` i dopisuje
+  `export` dla prywatnych `setCacheStatus`, `runCheck`, `toggleFavorite`,
+  `deleteEntry` oraz settera na module-level `panel` — testowany jest więc
+  bieżący kod, nie kopia; harness i loader NIE commitowane) — **65
+  asercji PASS**. Pokryte: wszystkie gałęzie klasyfikatora, dokładne
+  trafienie w każdy próg (i o bajt poniżej), `limitBytes` zero i ujemny,
+  `totalBytes` zero i nieużywalny, `warningPercent` 1 i 100, brak klucza w
+  localStorage, pusta wartość, uszkodzony JSON, JSON nie-obiekt, brakujące
+  i zakresowo złe pola, localStorage rzucający wyjątkiem przy odczycie i
+  przy zapisie, round-trip zapis/odczyt, prefiksy i klasy dla każdego
+  poziomu, oraz `runCheck()` przejechane end-to-end na podstawionym
+  `/check` (mały cache → bez klasy, powyżej progu → `warning`, powyżej
+  limitu → `alert`).
+- Asercja regresyjna została sprawdzona przez mutację: trzy przypisania
+  statusu przywrócone do postaci sprzed zmiany
+  (`panel.statusEl.textContent = …`) i harness wtedy FAILuje — klasa
+  `h3cm-status-alert` zostaje na komunikatach „Update failed” i „Delete
+  failed”, a linia „Cache: checking…” startuje z odziedziczonym alarmem.
+  Po przywróceniu kodu 65/65 PASS.
+- Uwaga na przyszłość: ścieżka NIEUDANEGO `/check` jest dodatkowo
+  osłonięta resetem „Cache: checking…”, którym otwiera się `runCheck()`,
+  więc sama w sobie czyściłaby klasę nawet bez poziomu. Realnie
+  niezabezpieczone bez `setCacheStatus()` są dwa inne miejsca — „Update
+  failed” w `toggleFavorite()` i „Delete failed” w `deleteEntry()` — i to
+  one są testowane w sekcji 5b harnessu.
 
 ## NIE zweryfikowane (do sprawdzenia przez Kamila w żywym ComfyUI)
 
-- Ścieżka SUKCESU realnej `copyPromptText()` end-to-end. Harness jej nie
-  dosięga: `copyPrompt()` musiałoby znaleźć otwarty wpis i wyrenderować
-  `renderCopyResult()`, co wymaga pełnego DOM panelu (`createPanel()`
-  buduje go przez `innerHTML` + selektory atrybutowe, czego minimalny fake
-  document nie odtworzy). Pokryta jest przez helpery, na których ta
-  ścieżka stoi. `copyToClipboardWithFeedback()` jest natomiast pokryta
-  bezpośrednio, na obu ścieżkach.
-- Wizualnie: że dwa szybkie kliknięcia w ikonkę kopiowania przy prompcie
-  faktycznie utrzymują podświetlenie i tooltip „Copied!” przez pełne 1,5 s
-  od drugiego kliknięcia.
-- Realna odmowa dostępu do schowka w przeglądarce (w harnessie ścieżka
-  błędu jest symulowana odrzuconą obietnicą).
+- Realny wygląd obu kolorów na pasku statusu i czytelność pogrubionego
+  `ALERT:` w ciemnym motywie ComfyUI.
+- Że wpisanie konfiguracji ręcznie w konsoli przeglądarki działa
+  end-to-end, np.:
+  `localStorage.setItem("h3cm-cache-size-options", JSON.stringify({limitBytes: 10*1024**3, warningPercent: 80}))`
+  a następnie kliknięcie „Check”.
+- Przetrwanie ustawienia przez odświeżenie strony.
 - Brak błędów w konsoli przeglądarki.
 
 ## Ustalenia istotne dla Chat
 
-- Afordancja kopiowania stoi teraz na trzech eksportowanych helperach:
-  `cancelCopyRevert()` (`web/main.js:1501`), `markCopied()`
-  (`web/main.js:1508`), `markCopyFailed()` (`web/main.js:1522`). Oba
-  helpery nakładające wynik anulują na wejściu — to NIE jest redundancja
-  wobec anulowania przed `await`; każde chroni przed innym przypadkiem
-  (opis w komentarzu nad stałymi, `web/main.js:1474`).
-- `copyPrompt()` (`web/main.js:1563`) łączy zapis do schowka z dwoma
-  efektami ubocznymi w panelu (`renderCopyResult()` i ustawienie
-  `[data-h3cm-refs-hint]`) i zwraca `bool`. To ona, a nie
-  `copyPromptText()`, jest podpięta pod duży przycisk „Copy prompt”
-  (`web/main.js:553`); ikonka przy prompcie woła `copyPromptText()`
-  (`web/main.js:557`). To jest powód, dla którego `copyPromptText()` nie
-  może po prostu wołać `copyToClipboardWithFeedback()`.
-- Helpery są eksportowane zgodnie z konwencją tego pliku, gdzie helpery
-  dotykające DOM/localStorage (`clampLauncherPosition`,
-  `writeLauncherPosition`) też są eksportowane pod harness.
-- Uchwyt timera nadal jedzie na elemencie (`el._h3cmCopyRevertTimer`), a
-  przebudowa panelu szczegółów wyrzuca element w całości — bez zmian
-  względem PR #16.
+- `total_size_bytes` i `total_count` z `/check` są ślepe na wariant i na
+  `favorite`: `scan_cache()` zwraca je bez filtrów
+  (`minimaxh3_clipcache/scanner.py:203-207`), a `check()` oddaje wynik
+  verbatim, doklejając wyłącznie `last_used`
+  (`minimaxh3_clipcache/routes.py:126-140`).
+- `setCacheStatus()` jest funkcją prywatną modułu, bo operuje na
+  module-level `panel`. Harness sięga po nią przez loader hook, nie przez
+  eksport — `web/main.js` nie ma kodu istniejącego wyłącznie dla testów.
+- Czyste helpery (`parseFiniteNumber`, `classifyCacheSize`,
+  `readCacheSizeOptions`, `writeCacheSizeOptions`) są eksportowane zgodnie
+  z konwencją tego pliku, w którym helpery dotykające localStorage
+  (`readLauncherPosition`, `writeLauncherPosition`) też są eksportowane.
+- Tura 1 nie dodaje żadnej kontrolki UI. Wartości ustawia się ręcznie w
+  localStorage; interfejs do ich wpisywania jest tematem tury 2.
 
 ## Otwarte pytania
 
@@ -155,4 +138,13 @@ tym w pliku nie ma `setInterval` ani `requestAnimationFrame`.
 
 ## Sugestie (nie polecenia)
 
-- brak
+- (sugestia) W turze 2, przy polu na limit, warto zdecydować w jakiej
+  jednostce użytkownik wpisuje wartość. `limitBytes` jest w bajtach, więc
+  pole „GB” wymaga przeliczenia przy zapisie i przy odczycie do pola —
+  najlepiej w jednym miejscu, obok `readCacheSizeOptions()`, żeby format
+  na dysku pozostał jednoznaczny.
+- (sugestia) `writeCacheSizeOptions()` nie waliduje tego, co dostaje —
+  waliduje dopiero odczyt. Przy dokładaniu UI warto walidować na wejściu
+  (przez `parseFiniteNumber`) i nie zapisywać wartości, których odczyt i
+  tak odrzuci, bo inaczej pole może wyglądać na zapisane, a po odświeżeniu
+  wrócić do „brak limitu”.
