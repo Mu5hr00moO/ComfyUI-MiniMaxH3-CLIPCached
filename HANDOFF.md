@@ -1,140 +1,130 @@
 # HANDOFF
 
-## Stan na: 2026-09-04 / branch feat/entry-size-in-meta-line / PR #17 (open)
+## Stan na: 2026-09-04 / branch fix/copy-prompt-feedback-timer (od origin/master 23f3f72)
+
+PR #17 (rozmiar wpisu) został w międzyczasie zmergowany do `master`
+(`23f3f72`), więc ta gałąź startuje z czystego `origin/master` i nie ma z
+nim kolizji — `copyPromptText()` nie był w PR #17 dotykany.
 
 ## Ostatnio zrobione
 
-PR #17 (rozmiar wpisu w Cache Managerze) plus domknięcie dwóch uwag review
-bota. PR zostaje OTWARTY. Gałąź ma teraz sześć commitów:
+Ujednolicenie feedbacku kopiowania w Cache Managerze. Gałąź ma dwa
+commity: `89e543c` (kod) i ten (HANDOFF.md).
 
-1. `2de30b5` — backend (`size_bytes` per wpis) + frontend (formatowanie,
-   sumowanie przy dual-res) + testy.
-2. `f4896f0` — HANDOFF.md.
-3. `bf3b855` — oznaczenie sumy pary na ekranie + zdanie w tooltipie.
-4. `d50f05a` — rozmiar w wierszach legacy / inconsistent.
-5. `5589af4` — dokumentacja (`docs/CACHE_MANAGER.md` + `CHANGELOG.md`).
-6. ten commit — HANDOFF.md (osobno, ten sam PR).
+### Problem
 
-### Uwaga 1: suma pary vs zakres Delete (`bf3b855`)
+`copyPromptText()` (ikonka kopiowania przy prompcie w panelu szczegółów)
+trzymała własną kopię mechaniki „Copied!”: dodanie klasy `is-copied`,
+podmiana `title`, `setTimeout` na revert po 1,5 s. Bez anulowania timera z
+poprzedniego kliknięcia — czyli dokładnie ten sam defekt, który dla
+`copyToClipboardWithFeedback()` naprawił PR #16. Drugie kliknięcie w ciągu
+okna dostawało skrócone potwierdzenie, bo timer z pierwszego kliknięcia
+odpalał w jego środku.
 
-Problem był realny: `deleteEntry()` bierze JEDEN fingerprint (panel
-szczegółów woła go z własnym — `web/main.js:1582`, pasek partnera ze swoim
-— `web/main.js:811`), a wiersz pokazywał sumę obu stron. Suma ZOSTAJE (o to
-prosił Kamil); naprawą jest oznaczenie liczby.
+### Czego NIE dało się zrobić: pełne reużycie `copyToClipboardWithFeedback()`
 
-Na ekranie, przy złożonej parze:
+`copyToClipboardWithFeedback(el, text, revertTitle)` sama wykonuje zapis do
+schowka. `copyPromptText()` nie ma tekstu promptu — deleguje do
+`copyPrompt()` (`web/main.js:1540`), która robi zapis do schowka RAZEM z
+efektami ubocznymi, których ten przycisk nie jest właścicielem:
+`renderCopyResult()` (panel referencji pod promptem) i ustawienie
+`[data-h3cm-refs-hint]` w pasku narzędzi. Żeby oddać zapis wspólnej
+funkcji, trzeba by albo zduplikować w `copyPromptText()` wyszukiwanie
+wpisu i te dwa efekty uboczne (duplikacja większa niż ta usuwana), albo
+dorobić `copyToClipboardWithFeedback()` parametr-callback z operacją
+kopiowania — czyli naginanie wspólnej funkcji pod jednego wołającego,
+czego zlecenie zakazywało.
 
-    04.09.2026, 01:53 · 768×1376 (1.06 MP) - 1.5 GB (pair total)
+Dochodzi druga, mniejsza różnica: na ścieżce błędu
+`copyToClipboardWithFeedback()` NIE zdejmuje klasy `is-copied` (wychodzi
+przez `return false` zaraz po ustawieniu tytułu), a `copyPromptText()`
+zdejmowała ją przez `toggle("is-copied", ok)`. Sklejenie obu w jedno
+wywołanie wymusiłoby zmianę zachowania jednej ze stron, a zlecenie
+wymagało zachowania widocznego dla użytkownika bez zmian.
 
-Oznaczenie to dosłownie ` (pair total)` doklejone po rozmiarze, w treści
-linii — widoczne bez najeżdżania myszą. Pojawia się dokładnie tam, gdzie
-pojawia się suma: wiersz listy i panel szczegółów. Pasek partnera i wpis
-bez ważnego parowania oznaczenia NIE dostają.
+### Co zostało zrobione zamiast tego
 
-`entryDisplaySizeBytes()` → `entryDisplaySize()`, zwraca teraz
-`{ bytes, isPairTotal }`. Flaga jedzie RAZEM z liczbą, zamiast być
-wyprowadzana ponownie w każdym miejscu wywołania — dzięki temu liczba i
-oznaczenie nie mogą się rozjechać. `formatEntryMetaLine(system, sizeBytes,
-{ isPairTotal })` dalej tylko formatuje i nigdy nie sięga po parowanie.
+Sama afordancja została wyciągnięta do dwóch małych helperów, z których
+korzystają OBIE funkcje — jedna implementacja mechaniki zamiast dwóch:
 
-### Uwaga 2: tooltip (`bf3b855`)
+- `cancelCopyRevert(el)` — anuluje wiszący `_h3cmCopyRevertTimer`;
+- `markCopied(el, revertTitle)` — dodaje klasę, ustawia „Copied!”,
+  planuje revert po `COPY_FEEDBACK_MS`.
 
-`entryMetaTooltip(system, size)` składa się teraz z niezależnych zdań, po
-jednym na pole, które wymaga wyjaśnienia. Pełna treść przy złożonej parze
-z rozdzielczością (dwa zdania sklejone spacją):
+Podział na dwie połówki jest celowy: anulowanie MUSI się wykonać PRZED
+próbą kopiowania (jest asynchroniczna — zapis do schowka może czekać na
+zgodę użytkownika, a wtedy stary timer odpaliłby w trakcie `await` i dał
+mignięcie), a potwierdzenie ma sens dopiero po niej. Wspólne stałe:
+`COPY_FEEDBACK_MS = 1500`, `COPY_FAILED_TITLE`.
 
-> Creation date and generation resolution come from two different moments:
-> the date is fixed when the entry is first written, while the resolution
-> is that of the most recent run that used it. One cached encode serves
-> every resolution when no keyframes are connected -- the encode itself
-> does not depend on width/height. The size shown is the pair total: this
-> entry plus its rescaled partner. Delete removes only this entry -- the
-> partner is listed under the "+ rescaled to" badge and has its own Delete
-> button.
+Zachowanie widoczne dla użytkownika: bez zmian poza samą naprawą — ta sama
+klasa, te same teksty, te same 1,5 s. Efekt uboczny naprawy na ścieżce
+błędu `copyPromptText()`: stary timer nie nadpisze już tytułu „Copy failed
+- select the text manually” po 1,5 s (wcześniej nadpisywał, wracając do
+„Copy prompt”).
 
-Zwykły wpis dostaje samo pierwsze zdanie (bez zmian względem stanu sprzed
-PR). Warunek `return ""` był FAKTYCZNIE niepoprawny po dodaniu zdania o
-rozmiarze i został naprawiony: stara wersja zwracała `""` zawsze, gdy nie
-było rozdzielczości, więc złożona para bez `width`/`height` straciłaby
-ostrzeżenie. Teraz zdanie o parze jest bramkowane flagą `size.isPairTotal`,
-nie rozdzielczością; `""` wraca tylko wtedy, gdy nie ma czego wyjaśniać.
+### Inne miejsca z tym wzorcem (punkt 3 zlecenia)
 
-### Uwaga 3: rozmiar w wierszach legacy / inconsistent (`d50f05a`)
-
-Te wiersze buduje `buildSimpleRow()` (`web/main.js:700`), które nie
-przechodzi przez `formatEntryMetaLine()`, więc `size_bytes` z backendu
-nigdzie się nie pokazywało. Rozmiar siedzi teraz obok hintu, przed
-przyciskiem Delete, tym samym `formatBytes()`; brak rozmiaru albo 0 → nic
-nie renderujemy. Nowa klasa `.h3cm-row-size` w `web/styles.css` (ten sam
-wygląd co `.h3cm-row-created`).
-
-Sumowanie tych wierszy nie dotyczy i dotyczyć nie może: `renderList()`
-kieruje obie klasyfikacje do `buildSimpleRow()` ZANIM policzy parowanie, a
-`resolvePairing()` i tak odmówiłoby złożenia pary (wymaga czytelnego wpisu
-`normal` po obu stronach). To, co widać w takim wierszu, jest dokładnie
-tym, co zwolni jego Delete.
-
-### Dokumentacja (`5589af4`)
-
-- `docs/CACHE_MANAGER.md`: rozmiar dopisany do listy pól wpisu, nowa
-  sekcja "Entry size" (co liczy, dlaczego total w nagłówku jest nieco
-  większy niż suma wpisów, suma przy złożonej parze), oraz jasne
-  stwierdzenie w sekcji o kasowaniu, że Delete zawsze działa na jeden wpis
-  i gdzie jest przycisk partnera.
-- `CHANGELOG.md`: sekcja `[Unreleased]` nie miała `Added` w ogóle. Dodane:
-  rozmiar wpisu + oznaczenie sumy pary ORAZ proweniencja referencji z PR
-  #14/#15/#16 (nazwy plików z grafu, nazwa slotu, prezentacja w panelu
-  szczegółów) — tego w pliku nie było.
+W `web/main.js` są dokładnie DWA `setTimeout`. Drugi (`web/main.js:1730`,
+w `endDrag()` pływającego launchera) to inny wzorzec i NIE ma tego błędu:
+zeruje flagę `suppressClick` z opóźnieniem 0 ms, nie revertuje żadnego
+tytułu ani klasy, a flaga jest niezależnie zerowana przy każdym
+`pointerdown` (`web/main.js:1698`) i w samym handlerze `click`. Nakładające
+się timery nie mogą tam zostawić złego stanu. Zostawione bez zmian.
+Poza tym w pliku nie ma `setInterval` ani `requestAnimationFrame`.
 
 ## Weryfikacja
 
-- Pełny pytest: **446 passed**, 0 skipped (bez zmian — ta paczka nie rusza
-  Pythona).
-- `node --check` na kopii `.mjs`: czysto. Bilans klamer `web/styles.css`:
-  0. `git diff --check`: czysto.
+- `node --check` na kopii `.mjs`: czysto. `git diff --check`: czysto.
+- Pełny pytest: **446 passed** (bez zmian — ta paczka nie rusza Pythona).
 - Scratchpadowy harness ESM na REALNYM `web/main.js` (loader podstawia
-  `/scripts/app.js` i `/scripts/api.js` i dopisuje `export` do trzech
-  prywatnych builderów wierszy, więc testowany jest bieżący kod, nie
-  kopia; harness i loader NIE commitowane) — **27 asercji PASS** (było
-  16). Nowe pokrycie:
-  - oznaczenie jest przy sumie, nie ma go przy własnym rozmiarze, nie ma
-    go gdy nie ma bajtów do pokazania, i deskryptor z `entryDisplaySize()`
-    da się podać wprost do formattera;
-  - `entryDisplaySize()` zwraca `{bytes, isPairTotal}` dla wszystkich
-    statusów parowania;
-  - tooltip: bez zmian dla zwykłego wpisu, zdanie o parze doklejone przy
-    złożonej parze, zdanie o parze obecne TAKŻE gdy wpis nie ma
-    rozdzielczości, `""` gdy nie ma czego wyjaśniać;
-  - realny wiersz legacy i realny wiersz inconsistent zbudowane przez
-    własne buildery modułu: tekst spanu rozmiaru, jego pozycja przed
-    przyciskiem Delete, brak spanu przy `size_bytes` brakującym / 0 /
-    ujemnym / nieliczbowym.
+  `/scripts/app.js` i `/scripts/api.js`, dopisuje `export` dla prywatnej
+  `copyPromptText`, wirtualny zegar zamiast prawdziwych timerów; harness
+  NIE commitowany) — **18 asercji PASS**:
+  - moduł importuje się bez wyjątku, oba helpery są eksportowane;
+  - jedno kliknięcie: potwierdzenie widoczne, revert dokładnie na 1500 ms,
+    uchwyt timera wyzerowany;
+  - **regresja**: dwa kliknięcia w odstępie 1000 ms — stan potwierdzenia
+    trwa do końca DRUGIEGO okna (żywy w 1500 ms i w 2499 ms, revert w
+    2500 ms), a nie do końca pierwszego;
+  - kontrola: ta sama sekwencja BEZ anulowania urywa się w 1500 ms (czyli
+    test faktycznie łapie stary błąd);
+  - `cancelCopyRevert()` bez wiszącego timera nie rzuca;
+  - realna `copyPromptText()` na ścieżce błędu (brak otwartego wpisu →
+    `copyPrompt()` zwraca `false`): zdejmuje klasę, ustawia tytuł błędu, a
+    stary timer po naprawie już go nie nadpisuje.
+- Test regresyjny uruchomiony NAJPIERW na kodzie sprzed naprawy (przez
+  `git stash` na `web/main.js`) — asercja „stale timer never reverts the
+  failure title” FAIL, po naprawie PASS.
 
 ## NIE zweryfikowane (do sprawdzenia przez Kamila w żywym ComfyUI)
 
-- Jak `(pair total)` wygląda w wierszu listy — czy nie rozpycha wiersza
-  przy długiej nazwie/prompcie (wiersz ma `flex-wrap`, więc w najgorszym
-  razie powinien się zawinąć, nie rozjechać).
-- Pełna treść tooltipa po najechaniu na linię meta złożonej pary.
-- Rozmiar w realnym wierszu legacy / inconsistent (wymaga takiego wpisu w
-  cache; obecny `cache/` ma 29 wpisów, wszystkie `normal`).
+- Ścieżka SUKCESU realnej `copyPromptText()` end-to-end. Harness jej nie
+  dosięga: `copyPrompt()` musiałoby znaleźć otwarty wpis i wyrenderować
+  `renderCopyResult()`, co wymaga pełnego DOM panelu (`createPanel()`
+  buduje go przez `innerHTML` + selektory atrybutowe, czego minimalny fake
+  document nie odtworzy). Pokryta jest przez helpery, na których ta
+  ścieżka teraz stoi, nie przez samą funkcję.
+- Wizualnie: że dwa szybkie kliknięcia w ikonkę kopiowania przy prompcie
+  faktycznie utrzymują podświetlenie i tooltip „Copied!” przez pełne 1,5 s
+  od drugiego kliknięcia.
 - Brak błędów w konsoli przeglądarki.
 
 ## Ustalenia istotne dla Chat
 
-- `deleteEntry()` przyjmuje JEDEN fingerprint i nie kaskaduje — to jest
-  źródło rozjazdu z sumą pary. Panel szczegółów: `web/main.js:1582`, pasek
-  partnera: `web/main.js:811`. Nie zmienione; oznaczona została liczba.
-- `entryDisplaySize()` (`web/main.js:175`) zwraca `{bytes, isPairTotal}`;
-  `isPairTotal` jest `true` WYŁĄCZNIE dla `resolvePairing()` o statusie
-  `"valid"`.
-- `entryMetaTooltip(system, size)` (`web/main.js:126`) skleja niezależne
-  zdania; zdanie o parze jest bramkowane flagą, a nie obecnością
-  rozdzielczości.
-- `buildSimpleRow()` (`web/main.js:700`) pokazuje `entryOwnSizeBytes()` —
-  nigdy sumy, bo te klasyfikacje nie mogą wejść w złożoną parę.
-- Backend bez zmian w tej paczce: `scan_cache()` dalej podaje `size_bytes`
-  dla wszystkich trzech klasyfikacji (`minimaxh3_clipcache/scanner.py`).
+- `copyPrompt()` (`web/main.js:1540`) łączy zapis do schowka z dwoma
+  efektami ubocznymi w panelu (`renderCopyResult()` i ustawienie
+  `[data-h3cm-refs-hint]`) i zwraca `bool`. To ona, a nie
+  `copyPromptText()`, jest podpięta pod duży przycisk „Copy prompt”
+  (`web/main.js:553`); ikonka przy prompcie woła `copyPromptText()`
+  (`web/main.js:557`).
+- `cancelCopyRevert()` / `markCopied()` (`web/main.js:1486` i
+  `web/main.js:1494`) są eksportowane — zgodnie z konwencją tego pliku,
+  gdzie helpery dotykające DOM/localStorage (`clampLauncherPosition`,
+  `writeLauncherPosition`) też są eksportowane pod harness.
+- Uchwyt timera nadal jedzie na elemencie (`el._h3cmCopyRevertTimer`), a
+  przebudowa panelu szczegółów wyrzuca element w całości — bez zmian
+  względem PR #16.
 
 ## Otwarte pytania
 
@@ -142,11 +132,10 @@ tym, co zwolni jego Delete.
 
 ## Sugestie (nie polecenia)
 
-- Wiersz listy zwykłego wpisu nie ma dziś własnego przycisku Delete
-  (kasowanie idzie przez panel szczegółów), więc rozjazd „suma vs jeden
-  fingerprint” jest tam tylko koncepcyjny. Gdyby kiedyś dochodził Delete
-  bezpośrednio w wierszu, warto od razu przemyśleć, czy nie powinien
-  proponować skasowania obu stron pary.
-- `README.md` ma sekcję o Cache Managerze ze zrzutami ekranu; zrzuty są
-  sprzed tej zmiany i nie pokazują rozmiaru. Odświeżenie ich to zadanie
-  dla Kamila (wymaga żywego ComfyUI), nie do zautomatyzowania.
+- Ścieżka błędu `copyToClipboardWithFeedback()` nadal zostawia klasę
+  `is-copied` na elemencie, jeśli poprzednie kliknięcie się udało, a
+  bieżące zawiodło (wychodzi przez `return false` bez zdjęcia klasy, a
+  timer jest już anulowany, więc nikt jej nie zdejmie). Element wygląda
+  wtedy na „skopiowany”, mając tytuł o błędzie. `copyPromptText()` tego
+  problemu nie ma. Nie ruszone — to kod z PR #16, poza zakresem tego
+  zlecenia; osobna, jednolinijkowa poprawka, jeśli uznasz za wartą.
