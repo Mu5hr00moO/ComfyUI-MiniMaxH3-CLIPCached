@@ -102,18 +102,21 @@ In particular:
 - deleting the cache entry also removes that cached item's role in the manager,
 - Cache Manager is not intended to replace a dedicated prompt-management tool.
 
-### Original reference filenames are not tracked
+### Reference source filenames: tracked for Ref2VA, not yet for FL2VA
 
-Cache Manager can store reference thumbnails and positional metadata, but the
-current cached nodes do not know the original source filename of an image,
-video, or audio input.
+For Ref2VA, Cache Manager can show the on-disk file a reference was
+originally loaded from -- for example, that a reference came from
+`portrait.png` or `reference.mp4` -- alongside the thumbnail and positional
+metadata it already stored. This depends on the workflow: it works when a
+reference traces back to a loader node, and may find nothing for a reference
+built through less direct graph paths.
 
-For example, a cached reference can be shown visually, but the manager cannot
-reliably say that it originally came from `portrait.png` or `reference.mp4`.
+FL2VA's `first_frame` / `last_frame` keyframes do not have this yet. Cache
+Manager can still show their thumbnails, but not the file they came from.
 
-Recovering source filenames correctly would require dedicated loader wrappers
-that carry filename metadata through the graph explicitly. Inferring it by
-inspecting arbitrary upstream graph structure was intentionally avoided.
+Either way, this is descriptive information only: it does not restore the
+original files into workflow inputs, and it plays no part in the cache
+fingerprint or HIT/MISS decision for either node.
 
 ### Known Cache Manager pairing UI edge case
 

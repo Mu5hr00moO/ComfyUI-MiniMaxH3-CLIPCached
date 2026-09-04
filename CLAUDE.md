@@ -453,6 +453,10 @@ graf czy bezpośrednim źródłem jest LoadImage) byłaby krucha i sięgałaby
 poza własny kontrakt węzła - ten sam powód co analogiczna decyzja przy
 Ref2VA (MANAGER_TODO_ref2video.md punkt 10: węzeł ma zostać zgodny z
 oryginalnym kontraktem stockowego węzła, żadnych dodatkowych pól).
+MANAGER_TODO_ref2video.md był dokumentem roboczym z etapu planowania i
+nigdy nie trafił do tego repozytorium (git log --all po tej ścieżce jest
+pusty) - odwołanie zostaje jako ślad ówczesnego uzasadnienia, nie jako
+wskazówka gdzie szukać tego pliku.
 
 Poprawna implementacja wymagałaby zamiast tego osobnych, dedykowanych
 wrapperów na węzły ładujące (LoadImage/LoadVideo/LoadAudio i pochodne),

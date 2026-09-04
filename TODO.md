@@ -94,3 +94,15 @@ cached encode, the result is a navigation aid for the Cache Manager UI, not
 part of the cache contract). Those limits are stated authoritatively in
 `provenance.py`'s module docstring and would have to hold for FL2VA too.
 The slots were simply left out when the walk was built for Ref2VA.
+
+Adding that `hidden` block is not free, though. Declaring `UNIQUE_ID` opts
+a node's class into ComfyUI's own in-memory execution-cache signature --
+folding the node's id into it, so a rebuilt or renumbered graph stops
+reusing ComfyUI's RAM-cached output for that node (see the docstring of
+`_ref2va_hidden_input_spec()` in `nodes.py:936` for the mechanism). For
+Ref2VA this was accepted as an intended, harmless cost: the on-disk cache
+is keyed by the encode fingerprint, not by node id, so a rebuilt graph
+still HITs the saved encode regardless. The same reasoning would presumably
+carry over to FL2VA, but that is an assumption to verify against FL2VA's
+own execution path at implementation time, not something to inherit from
+the Ref2VA precedent without checking.
