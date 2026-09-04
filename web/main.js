@@ -722,7 +722,21 @@ function buildSimpleRow(entry, { rowClass, badgeClass, badgeText, hintClass, hin
     deleteEntry(entry.fingerprint, null);
   });
 
-  row.append(fp, badge, hint, del);
+  row.append(fp, badge, hint);
+  // A legacy or inconsistent row has no meta line to hang the size off, but
+  // these entries can be the largest ones on disk and Delete is usually the
+  // only thing anyone does with them -- so the size goes next to the hint.
+  // Never a pair total: neither classification is ever folded into a pair
+  // (resolvePairing() rejects a partner that is not a readable "normal"
+  // entry), so what is shown here is exactly what this Delete frees.
+  const sizeBytes = entryOwnSizeBytes(entry);
+  if (sizeBytes) {
+    const size = document.createElement("span");
+    size.className = "h3cm-row-size";
+    size.textContent = formatBytes(sizeBytes);
+    row.appendChild(size);
+  }
+  row.appendChild(del);
   return row;
 }
 

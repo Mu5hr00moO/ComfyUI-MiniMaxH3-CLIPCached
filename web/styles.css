@@ -258,6 +258,14 @@
 .h3cm-star.is-on {
   color: #f5c451;
 }
+/* On-disk size of a legacy / inconsistent entry -- these rows have no meta
+   line, so the figure sits beside the hint. Same muted, non-wrapping
+   treatment as .h3cm-row-created so both kinds of row read alike. */
+.h3cm-row-size {
+  color: #9aa1ad;
+  font-size: 11px;
+  white-space: nowrap;
+}
 .h3cm-legacy-hint {
   color: #6f7580;
   font-size: 11px;
