@@ -34,6 +34,12 @@ after the orphan-".safetensors" sweep -- entries, ".verbose.json"/".json"
 orphans, thumbnails, stray temp files, anything -- i.e. the "size" figure
 from plan section 13.6, not just the normal/legacy entries.
 
+Each entry additionally carries its own "size_bytes": the bytes that
+deleting THAT entry would free, and nothing else. The two figures are not
+built from each other -- the per-entry sum covers only the files listed by
+entry_file_paths(), so the orphans and stray files inside total_size_bytes
+belong to no entry and the per-entry values do not add up to the total.
+
 Fingerprints are always 64 lowercase hex chars (sha256). Files are matched
 by anchored regex rather than a bare glob("*.json"), so "<fp>.verbose.json"
 is never mistaken for a core "<fp>.json".
@@ -45,8 +51,13 @@ import re
 from pathlib import Path
 
 from minimaxh3_clipcache.locking import get_lock
-from minimaxh3_clipcache.store import gc_orphaned_cache_files, inspect_conditioning_pair
-from minimaxh3_clipcache.verbose_store import load_verbose
+from minimaxh3_clipcache.store import (
+    conditioning_paths,
+    gc_orphaned_cache_files,
+    inspect_conditioning_pair,
+)
+from minimaxh3_clipcache.thumbnails import thumbnail_paths
+from minimaxh3_clipcache.verbose_store import load_verbose, verbose_paths
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +75,48 @@ def _dir_size_bytes(root: Path) -> int:
                 total += os.path.getsize(os.path.join(dirpath, name))
             except OSError:
                 pass  # file vanished between listing and stat -- ignore
+    return total
+
+
+def entry_file_paths(fingerprint, cache_dir) -> list[Path]:
+    """Every file that deleting this cache entry would remove.
+
+    Composed from the three per-artifact path helpers that the corresponding
+    delete steps use (routes._delete_entry_files -> store.delete_conditioning,
+    verbose_store.delete_verbose, thumbnails.delete_thumbnails), so "size of
+    this entry" and "what Delete frees" can never drift apart. Nothing here
+    re-spells a filename suffix; add a new per-entry artifact to its own
+    module's path helper and both sides pick it up.
+
+    Paths for the core pair and the sidecar are returned whether or not the
+    files exist -- a legacy entry has no ".verbose.json", which is normal, not
+    an error -- so callers must tolerate a missing file.
+    """
+    return [
+        *conditioning_paths(fingerprint, cache_dir),
+        *verbose_paths(fingerprint, cache_dir),
+        *thumbnail_paths(fingerprint, cache_dir),
+    ]
+
+
+def _entry_size_bytes(fingerprint, cache_dir) -> int:
+    """On-disk bytes of one entry: the files a Delete of it would free.
+
+    Deliberately a separate set of stat() calls rather than a slice of the
+    _dir_size_bytes() walk. Reusing that walk would mean re-deriving which
+    filename belongs to which entry inside this module -- a second spelling of
+    the naming convention that entry_file_paths() exists to avoid -- to save a
+    handful of stat calls on a directory that is already being walked.
+
+    A file that is missing (legacy entry, no thumbnails) or vanishes mid-scan
+    simply contributes nothing.
+    """
+    total = 0
+    for path in entry_file_paths(fingerprint, cache_dir):
+        try:
+            total += path.stat().st_size
+        except OSError:
+            pass
     return total
 
 
@@ -118,12 +171,17 @@ def scan_cache(cache_dir) -> dict:
 
     entries = []
     for fp in sorted(core_json & safetensors):
+        # Every classification carries size_bytes, including "inconsistent":
+        # a broken pair still occupies disk, and its row offers the same
+        # Delete as any other.
+        size_bytes = _entry_size_bytes(fp, cache_dir)
         issue = _stable_pair_issue(fp, cache_dir)
         if issue is not None:
             entries.append({
                 "fingerprint": fp,
                 "classification": "inconsistent",
                 "reason": issue,
+                "size_bytes": size_bytes,
                 "verbose": load_verbose(fp, cache_dir) if fp in verbose else None,
             })
             continue
@@ -131,12 +189,14 @@ def scan_cache(cache_dir) -> dict:
             entries.append({
                 "fingerprint": fp,
                 "classification": "normal",
+                "size_bytes": size_bytes,
                 "verbose": load_verbose(fp, cache_dir),
             })
         else:
             entries.append({
                 "fingerprint": fp,
                 "classification": "legacy",
+                "size_bytes": size_bytes,
                 "verbose": None,
             })
 

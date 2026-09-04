@@ -23,11 +23,16 @@ Normal entries can show information such as:
 - prompt,
 - creation date,
 - generation resolution,
+- on-disk size,
 - encoder checkpoint,
 - reference thumbnails,
 - user tags and notes,
 - favorite state,
 - whether the entry was the most recently used cache for that node type.
+
+Legacy and inconsistent entries show far less, but they do show their size:
+these are often the entries worth removing, and deleting them is usually the
+only thing to do with them.
 
 The information displayed by Cache Manager is descriptive metadata. Editing a
 name, note, tag, or favorite does **not** change the fingerprint and does not
@@ -91,6 +96,23 @@ follows whichever run last reused it.
 For a Dual Resolution run whose two passes share one fingerprint, the single
 entry keeps the **base** resolution rather than the upscale one.
 
+## Entry size
+
+Each entry reports how much disk it occupies. The figure covers exactly the
+files that removing that entry deletes: the cached conditioning, its metadata,
+and its reference thumbnails.
+
+The header above the list (`Cache: N entries / size`) is a separate figure --
+the size of the whole cache directory. It is normally a little larger than the
+entry sizes added together, because stray files that belong to no entry still
+count toward it.
+
+For a Dual Resolution pair folded into a single row, the size shown is the
+**pair total** for both halves and is marked as such on the line. Only the
+folded row reports a total; the paired entry inside the expanded
+`+ rescaled to` strip reports just its own size. Delete acts on one entry at
+a time either way -- see below.
+
 ## Last Used
 
 Cache Manager highlights the cache entry most recently used by the corresponding
@@ -125,6 +147,11 @@ and there is nothing to pair.
 
 Press **Delete** in an entry's detail view to remove that cache entry after
 confirmation.
+
+**Delete always acts on one entry.** For a folded Dual Resolution pair that
+matters, because the size shown on the row is the pair total: pressing Delete
+there frees only this entry's share of it. The paired entry has its own
+Delete button inside the expanded `+ rescaled to` strip.
 
 Deleting one side of a Dual Resolution pair does **not** automatically delete
 the other side. This is intentional: the remaining conditioning may still be

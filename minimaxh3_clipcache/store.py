@@ -179,21 +179,37 @@ def save_conditioning(fingerprint: str, cond, cache_dir: Path) -> None:
         raise
 
 
+def conditioning_paths(fingerprint: str, cache_dir: Path) -> list[Path]:
+    """The core files of one cache entry, in delete order.
+
+    The single place that spells out the core-pair filenames for callers
+    outside this module's own read/write paths: delete_conditioning() unlinks
+    exactly this list, and the Cache Manager sizes an entry from it, so the
+    number it puts on screen describes the bytes a Delete actually frees.
+    Paths are returned whether or not the files exist.
+    """
+    cache_dir = Path(cache_dir)
+    return [
+        cache_dir / "{}.json".format(fingerprint),
+        cache_dir / "{}.safetensors".format(fingerprint),
+    ]
+
+
 def delete_conditioning(fingerprint: str, cache_dir: Path) -> None:
     """Remove a cache entry's core files.
 
     Order is deliberate and mirrors the write order in reverse (plan
     sections 15/20): the skeleton ".json" goes first, so the entry stops
     being a HIT the instant it is gone (load_conditioning() returns None as
-    soon as ".json" is absent), then the ".safetensors" payload.
+    soon as ".json" is absent), then the ".safetensors" payload --
+    conditioning_paths() returns them in that order.
 
     Idempotent: a missing file is silently skipped, so a Delete can be
     retried on the same fingerprint without raising.
     """
-    cache_dir = Path(cache_dir)
-    for suffix in (".json", ".safetensors"):
+    for path in conditioning_paths(fingerprint, cache_dir):
         try:
-            (cache_dir / "{}{}".format(fingerprint, suffix)).unlink()
+            path.unlink()
         except FileNotFoundError:
             pass
 

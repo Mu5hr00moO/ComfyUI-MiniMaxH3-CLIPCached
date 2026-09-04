@@ -96,14 +96,27 @@ def save_thumbnail(image_tensor, fingerprint, index, cache_dir, max_size=256) ->
     return "{}/{}".format(THUMBNAILS_SUBDIR, filename)
 
 
+def thumbnail_paths(fingerprint, cache_dir) -> list[Path]:
+    """Every existing "thumbnails/<fingerprint>_*.jpg" of one cache entry.
+
+    Unlike the core/sidecar path helpers this one has to look at the disk --
+    the number of thumbnails is not derivable from the fingerprint alone --
+    so it lists only files that exist, and returns an empty list when there
+    is no thumbnails directory at all. delete_thumbnails() removes exactly
+    this list, and the Cache Manager sizes an entry from it, so the two never
+    disagree about which files belong to the entry.
+    """
+    thumb_dir = Path(cache_dir) / THUMBNAILS_SUBDIR
+    return sorted(thumb_dir.glob("{}_*.jpg".format(fingerprint)))
+
+
 def delete_thumbnails(fingerprint, cache_dir) -> None:
     """Remove every "thumbnails/<fingerprint>_*.jpg" for this cache entry.
 
     Idempotent: nothing to delete (no thumbnails dir, no matching files) is
     not an error, so a Delete can be retried on the same fingerprint.
     """
-    thumb_dir = Path(cache_dir) / THUMBNAILS_SUBDIR
-    for path in sorted(thumb_dir.glob("{}_*.jpg".format(fingerprint))):
+    for path in thumbnail_paths(fingerprint, cache_dir):
         try:
             path.unlink()
         except FileNotFoundError:

@@ -230,13 +230,26 @@ def update_user_metadata(fingerprint: str, updates: dict, cache_dir: Path) -> di
     return existing
 
 
+def verbose_paths(fingerprint: str, cache_dir: Path) -> list[Path]:
+    """The manager-only sidecar files of one cache entry.
+
+    A list of one today, kept list-shaped so callers that need the whole file
+    set of an entry (delete_verbose() below, and the Cache Manager's per-entry
+    size) share one source of truth for the naming instead of each rebuilding
+    "<fingerprint>.verbose.json". The path is returned whether or not the file
+    exists.
+    """
+    return [_verbose_path(fingerprint, Path(cache_dir))]
+
+
 def delete_verbose(fingerprint: str, cache_dir: Path) -> None:
     """Remove "<fingerprint>.verbose.json" if it exists.
 
     Idempotent: a missing file is not an error, so a Delete can be retried
     on the same fingerprint without blowing up.
     """
-    try:
-        _verbose_path(fingerprint, Path(cache_dir)).unlink()
-    except FileNotFoundError:
-        pass
+    for path in verbose_paths(fingerprint, cache_dir):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
