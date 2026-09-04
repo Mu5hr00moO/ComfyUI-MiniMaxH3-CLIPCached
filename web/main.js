@@ -105,23 +105,43 @@ export function formatGenerationSize(system) {
   return `${width}×${height} (${megapixels.toFixed(2)} MP)`;
 }
 
-// Tooltip for the whole entry meta line (formatEntryMetaLine): the creation
-// date and, when present, the generation resolution. The two fields come
-// from different moments -- created_at is fixed at first write, while
-// system.width/.height/.megapixels track the most recent run -- and the
-// resolution trio is informational only, never part of the fingerprint or
-// the HIT/MISS decision. Empty string when there is no size to describe
-// (matching formatGenerationSize()): the two-moments explanation only makes
-// sense once both fields are on screen.
-export function entryMetaTooltip(system) {
-  if (!formatGenerationSize(system)) return "";
-  return (
-    "Creation date and generation resolution come from two different " +
-    "moments: the date is fixed when the entry is first written, while the " +
-    "resolution is that of the most recent run that used it. One cached " +
-    "encode serves every resolution when no keyframes are connected -- the " +
-    "encode itself does not depend on width/height."
-  );
+// Tooltip for the whole entry meta line (formatEntryMetaLine). It is built
+// from independent sentences, one per field on the line that needs
+// explaining, so a field that is not on screen contributes nothing:
+//
+//   resolution -- created_at is fixed at first write while
+//     system.width/.height/.megapixels track the most recent run, so the two
+//     halves of the line come from different moments. The resolution trio is
+//     informational only, never part of the fingerprint or the HIT/MISS
+//     decision.
+//   pair total -- the byte figure covers BOTH halves of a folded
+//     dual-resolution pair, while the Delete beside it takes one fingerprint.
+//     Without this the number reads as a promise about that button.
+//
+// The pair-total sentence is gated on `size`, NOT on the resolution: an entry
+// can carry a size with no width/height at all (nothing connected to the node
+// records a resolution), and that entry still needs the warning. Returns ""
+// when neither sentence applies, so nothing gets an empty tooltip attribute
+// with a stray hover target.
+export function entryMetaTooltip(system, size = null) {
+  const sentences = [];
+  if (formatGenerationSize(system)) {
+    sentences.push(
+      "Creation date and generation resolution come from two different " +
+      "moments: the date is fixed when the entry is first written, while the " +
+      "resolution is that of the most recent run that used it. One cached " +
+      "encode serves every resolution when no keyframes are connected -- the " +
+      "encode itself does not depend on width/height.",
+    );
+  }
+  if (size && size.isPairTotal) {
+    sentences.push(
+      "The size shown is the pair total: this entry plus its rescaled " +
+      "partner. Delete removes only this entry -- the partner is listed " +
+      "under the \"+ rescaled to\" badge and has its own Delete button.",
+    );
+  }
+  return sentences.join(" ");
 }
 
 function positiveBytes(value) {
@@ -137,7 +157,7 @@ export function entryOwnSizeBytes(entry) {
   return positiveBytes(entry && entry.size_bytes);
 }
 
-// The byte figure ONE line should report for `entry`.
+// What ONE line should report for `entry`: { bytes, isPairTotal }.
 //
 // A valid dual-resolution pair is folded into a single visible row
 // (resolvePairing() -> "valid"), so that row answers for both halves and gets
@@ -146,21 +166,33 @@ export function entryOwnSizeBytes(entry) {
 // itself. The partner strip under a folded row skips this function and takes
 // entryOwnSizeBytes() instead: it is the second line describing the same pair,
 // and repeating the total there would read as double counting.
-export function entryDisplaySizeBytes(entry, pairing) {
+//
+// `isPairTotal` travels WITH the number rather than being re-derived by each
+// caller, because the two must never disagree: the flag is what puts the
+// "(pair total)" marker on the line and the matching warning in the tooltip,
+// and a sum shown without it reads as a promise about the adjacent Delete
+// button -- which acts on this one fingerprint, not on the pair.
+export function entryDisplaySize(entry, pairing) {
   const own = entryOwnSizeBytes(entry);
-  if (!pairing || pairing.status !== "valid" || !pairing.partner) return own;
-  return own + entryOwnSizeBytes(pairing.partner);
+  if (!pairing || pairing.status !== "valid" || !pairing.partner) {
+    return { bytes: own, isPairTotal: false };
+  }
+  return { bytes: own + entryOwnSizeBytes(pairing.partner), isPairTotal: true };
 }
 
-// `sizeBytes` is supplied by the caller rather than derived here: only the
-// caller knows whether its line stands for one entry or for a folded pair
-// (see entryDisplaySizeBytes). This function never looks at pairing.
-export function formatEntryMetaLine(system, sizeBytes = 0) {
+// `sizeBytes` and the pair-total flag are supplied by the caller rather than
+// derived here: only the caller knows whether its line stands for one entry or
+// for a folded pair (see entryDisplaySize). This function never looks at
+// pairing. The third argument is normally the entryDisplaySize() descriptor
+// itself, which carries `isPairTotal`; the partner strip passes a bare byte
+// count and so gets no marker.
+export function formatEntryMetaLine(system, sizeBytes = 0, { isPairTotal = false } = {}) {
   const sizeText = formatGenerationSize(system);
   const dateText = formatCreatedAt(system && system.created_at);
   const line = sizeText ? `${dateText} · ${sizeText}` : dateText;
   const bytes = positiveBytes(sizeBytes);
-  return bytes ? `${line} - ${formatBytes(bytes)}` : line;
+  if (!bytes) return line;
+  return `${line} - ${formatBytes(bytes)}${isPairTotal ? " (pair total)" : ""}`;
 }
 
 // Which entries survive the current toolbar state. Reads the module-level
@@ -816,10 +848,11 @@ function buildNormalRow(entry, generation, lastUsedFingerprint, pairing = null) 
   label.className = "h3cm-row-label";
   label.textContent = entryLabel(entry);
 
+  const size = entryDisplaySize(entry, pairing);
   const created = document.createElement("span");
   created.className = "h3cm-row-created";
-  created.textContent = formatEntryMetaLine(system, entryDisplaySizeBytes(entry, pairing));
-  created.title = entryMetaTooltip(system);
+  created.textContent = formatEntryMetaLine(system, size.bytes, size);
+  created.title = entryMetaTooltip(system, size);
 
   row.append(star, label, created);
   if (tags.length) row.appendChild(buildTagChips(tags));
@@ -1199,8 +1232,9 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
 
   detailEl.querySelector("[data-h3cm-detail-title]").textContent = entryLabel(entry);
   const detailCreated = detailEl.querySelector("[data-h3cm-detail-created]");
-  detailCreated.textContent = formatEntryMetaLine(system, entryDisplaySizeBytes(entry, pairing));
-  detailCreated.title = entryMetaTooltip(system);
+  const size = entryDisplaySize(entry, pairing);
+  detailCreated.textContent = formatEntryMetaLine(system, size.bytes, size);
+  detailCreated.title = entryMetaTooltip(system, size);
   detailEl.querySelector("[data-h3cm-detail-prompt]").textContent = system.prompt || "(no prompt)";
   renderDetailRefs(
     detailEl.querySelector("[data-h3cm-detail-refs]"),
