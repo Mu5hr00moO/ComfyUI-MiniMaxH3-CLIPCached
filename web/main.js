@@ -61,6 +61,29 @@ export function formatBytes(bytes) {
   return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
 }
 
+// Parse a number that arrived from outside this module -- a text <input>, a
+// localStorage value, an API field -- and return null (never NaN, never a
+// substituted default) when it is not a finite number inside [min, max].
+// Returning null is what lets a caller tell "not configured" apart from
+// "configured to something unusable". positiveBytes() answers a different
+// question (it substitutes 0, which entryOwnSizeBytes() renders as "nothing
+// to show") and sits on the entry-size render path, so it is left alone.
+export function parseFiniteNumber(raw, { min = -Infinity, max = Infinity } = {}) {
+  let value;
+  if (typeof raw === "number") {
+    value = raw;
+  } else if (typeof raw === "string") {
+    // Number("") and Number("   ") are both 0, which would silently turn an
+    // empty input box into a real value.
+    if (raw.trim() === "") return null;
+    value = Number(raw);
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(value)) return null;
+  return value >= min && value <= max ? value : null;
+}
+
 export function parseTags(raw) {
   return String(raw || "")
     .split(",")
@@ -995,19 +1018,123 @@ function renderList() {
   reattachOpenDetailAfterRender();
 }
 
+// --- cache size threshold --------------------------------------------------
+//
+// Display only: the limit lives in the browser and the backend never learns
+// about it. Nothing is evicted, no write is blocked -- the status line just
+// changes colour once the cache passes the configured size.
+//
+// The figure being judged is "total_size_bytes" from /check, i.e. the whole
+// cache directory (both node variants, thumbnails and stray files included),
+// which is exactly the number the status line already prints. There is no
+// per-variant equivalent to compare against: scan_cache() measures the
+// directory as a whole (minimaxh3_clipcache/scanner.py, _dir_size_bytes) and
+// the per-entry "size_bytes" values deliberately do not add up to it.
+//
+// This turn ships no UI for the values; they are written into localStorage
+// by hand.
+
+const CACHE_SIZE_OPTIONS_KEY = "h3cm-cache-size-options";
+const WARNING_PERCENT_MIN = 1;
+const WARNING_PERCENT_MAX = 100;
+
+// Read the persisted { limitBytes, warningPercent }. Returns null on any
+// problem -- missing key, malformed JSON, a missing or unusable field, or
+// localStorage being unavailable (private mode, storage disabled) -- so the
+// caller falls back to "no threshold configured" instead of throwing. Same
+// shape of guard as readLauncherPosition().
+//
+// A limitBytes of 0 is accepted and passed through: classifyCacheSize() reads
+// it as the off switch. A negative one is rejected here as malformed data,
+// which reaches the same "off" result by the other route.
+export function readCacheSizeOptions() {
+  try {
+    const raw = window.localStorage.getItem(CACHE_SIZE_OPTIONS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const limitBytes = parseFiniteNumber(parsed.limitBytes, { min: 0 });
+    const warningPercent = parseFiniteNumber(parsed.warningPercent, {
+      min: WARNING_PERCENT_MIN,
+      max: WARNING_PERCENT_MAX,
+    });
+    if (limitBytes === null || warningPercent === null) return null;
+    return { limitBytes, warningPercent };
+  } catch (err) {
+    return null;
+  }
+}
+
+export function writeCacheSizeOptions(options) {
+  try {
+    window.localStorage.setItem(CACHE_SIZE_OPTIONS_KEY, JSON.stringify(options));
+  } catch (err) {
+    /* storage unavailable / over quota -- the options just won't persist */
+  }
+}
+
+// "off" | "ok" | "warning" | "alert" for a cache of `totalBytes` under
+// `options`. Pure: no DOM, no storage, no clamping of its inputs.
+//
+// Both thresholds compare with ">=", so landing exactly on one counts as
+// reaching it rather than as staying below it.
+export function classifyCacheSize(totalBytes, options) {
+  if (!options) return "off";
+  const limitBytes = parseFiniteNumber(options.limitBytes);
+  const warningPercent = parseFiniteNumber(options.warningPercent, {
+    min: WARNING_PERCENT_MIN,
+    max: WARNING_PERCENT_MAX,
+  });
+  if (limitBytes === null || warningPercent === null) return "off";
+  if (limitBytes <= 0) return "off"; // zero / negative -- no limit configured
+  // A /check payload without a usable total (an older build, a truncated
+  // response) is treated the way the entry count already is: nothing to
+  // report. formatBytes() prints "—" for it in the same line.
+  const total = parseFiniteNumber(totalBytes, { min: 0 });
+  if (total === null) return "off";
+  if (total >= limitBytes) return "alert";
+  if (total >= (limitBytes * warningPercent) / 100) return "warning";
+  return "ok";
+}
+
+const CACHE_STATUS_LEVEL_CLASS = {
+  warning: "h3cm-status-warning",
+  alert: "h3cm-status-alert",
+};
+const CACHE_STATUS_LEVEL_PREFIX = {
+  warning: "⚠ ",
+  alert: "ALERT: ",
+};
+
+// The only writer of the panel's status line. Text and threshold level are
+// applied together on purpose: kept apart, a level left over from the
+// previous /check outlives the text it belonged to and paints an unrelated
+// message ("Cache: checking…", "Delete failed (…)") red. Every path
+// that is not a successful /check passes "off", which clears it.
+function setCacheStatus(text, level) {
+  const el = panel.statusEl;
+  el.textContent = (CACHE_STATUS_LEVEL_PREFIX[level] || "") + text;
+  for (const cls of Object.values(CACHE_STATUS_LEVEL_CLASS)) el.classList.remove(cls);
+  const active = CACHE_STATUS_LEVEL_CLASS[level];
+  if (active) el.classList.add(active);
+}
+
 // --- check ---------------------------------------------------------------
 
 async function runCheck() {
   if (!panel) return;
   const generation = ++checkGeneration;
-  panel.statusEl.textContent = "Cache: checking…";
+  setCacheStatus("Cache: checking…", "off");
 
   try {
     const data = await fetchJson(`${API_PREFIX}/check`);
     if (generation !== checkGeneration) return;
     lastCheckResult = data;
     const count = typeof data.total_count === "number" ? data.total_count : "—";
-    panel.statusEl.textContent = `Cache: ${count} entries / ${formatBytes(data.total_size_bytes)}`;
+    setCacheStatus(
+      `Cache: ${count} entries / ${formatBytes(data.total_size_bytes)}`,
+      classifyCacheSize(data.total_size_bytes, readCacheSizeOptions()),
+    );
 
     refreshTagFilterOptions();
     renderList(); // also re-attaches the open detail panel, or closes it when
@@ -1015,7 +1142,7 @@ async function runCheck() {
   } catch (err) {
     if (generation !== checkGeneration) return;
     lastCheckResult = null;
-    panel.statusEl.textContent = `Cache: check failed (${err && err.message ? err.message : err})`;
+    setCacheStatus(`Cache: check failed (${err && err.message ? err.message : err})`, "off");
     panel.listEl.innerHTML = "";
   }
 }
@@ -1027,7 +1154,7 @@ async function toggleFavorite(fingerprint, currentlyFavorite) {
     await postUpdate({ fingerprint, favorite: !currentlyFavorite });
     await runCheck(); // re-render from the real state, never patch JS state
   } catch (err) {
-    panel.statusEl.textContent = `Update failed (${err && err.message ? err.message : err})`;
+    setCacheStatus(`Update failed (${err && err.message ? err.message : err})`, "off");
   }
 }
 
@@ -1614,7 +1741,7 @@ async function deleteEntry(fingerprint, statusEl) {
   } catch (err) {
     const message = `Delete failed (${err && err.message ? err.message : err})`;
     if (statusEl) statusEl.textContent = message;
-    else panel.statusEl.textContent = message;
+    else setCacheStatus(message, "off");
   }
 }
 

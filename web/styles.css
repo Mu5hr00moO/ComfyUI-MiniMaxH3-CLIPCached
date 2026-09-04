@@ -193,6 +193,17 @@
   color: #9aa1ad;
   font-size: 12px;
 }
+/* Cache size threshold, applied by setCacheStatus() in main.js. The same
+   amber and red as the "legacy" / "inconsistent" entry badges further down,
+   so one colour keeps one meaning across the panel. Both rules come after
+   .h3cm-status, which is how they win its colour at equal specificity. */
+.h3cm-status-warning {
+  color: #f0bd69;
+}
+.h3cm-status-alert {
+  color: #ef9a9a;
+  font-weight: 700;
+}
 
 .h3cm-list {
   flex: 1;
