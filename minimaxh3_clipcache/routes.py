@@ -101,6 +101,11 @@ def _run_under_fingerprint_lock(fingerprint, operation):
 
 
 def _delete_entry_files(fingerprint, cache_dir):
+    # The three steps here define what "a cache entry" is on disk. Each one
+    # removes exactly the files its module's own path helper lists, and
+    # scanner.entry_file_paths() composes those same three helpers for the
+    # per-entry "size_bytes" the Cache Manager displays -- so the size shown
+    # next to an entry is the size this function frees.
     delete_conditioning(fingerprint, cache_dir)
     delete_verbose(fingerprint, cache_dir)
     delete_thumbnails(fingerprint, cache_dir)

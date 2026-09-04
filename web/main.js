@@ -124,10 +124,43 @@ export function entryMetaTooltip(system) {
   );
 }
 
-function formatEntryMetaLine(system) {
+function positiveBytes(value) {
+  return typeof value === "number" && isFinite(value) && value > 0 ? value : 0;
+}
+
+// One entry's own on-disk bytes, as reported by scan_cache(): exactly the
+// files a Delete of that entry frees (scanner.entry_file_paths()). Anything
+// that is not a positive finite number -- a "/check" response from a build
+// before the field existed, a 0 -- counts as "nothing to show", which
+// formatEntryMetaLine() renders by leaving the meta line untouched.
+export function entryOwnSizeBytes(entry) {
+  return positiveBytes(entry && entry.size_bytes);
+}
+
+// The byte figure ONE line should report for `entry`.
+//
+// A valid dual-resolution pair is folded into a single visible row
+// (resolvePairing() -> "valid"), so that row answers for both halves and gets
+// the sum. Every other status -- none / orphaned / inconsistent-pair /
+// role-unknown -- renders each side as its own row, so each reports only
+// itself. The partner strip under a folded row skips this function and takes
+// entryOwnSizeBytes() instead: it is the second line describing the same pair,
+// and repeating the total there would read as double counting.
+export function entryDisplaySizeBytes(entry, pairing) {
+  const own = entryOwnSizeBytes(entry);
+  if (!pairing || pairing.status !== "valid" || !pairing.partner) return own;
+  return own + entryOwnSizeBytes(pairing.partner);
+}
+
+// `sizeBytes` is supplied by the caller rather than derived here: only the
+// caller knows whether its line stands for one entry or for a folded pair
+// (see entryDisplaySizeBytes). This function never looks at pairing.
+export function formatEntryMetaLine(system, sizeBytes = 0) {
   const sizeText = formatGenerationSize(system);
   const dateText = formatCreatedAt(system && system.created_at);
-  return sizeText ? `${dateText} · ${sizeText}` : dateText;
+  const line = sizeText ? `${dateText} · ${sizeText}` : dateText;
+  const bytes = positiveBytes(sizeBytes);
+  return bytes ? `${line} - ${formatBytes(bytes)}` : line;
 }
 
 // Which entries survive the current toolbar state. Reads the module-level
@@ -721,7 +754,7 @@ function appendRescaledBadge(row, baseSystem, partner) {
 
   const meta = document.createElement("span");
   meta.className = "h3cm-pair-strip-meta";
-  meta.textContent = formatEntryMetaLine(partnerSystem);
+  meta.textContent = formatEntryMetaLine(partnerSystem, entryOwnSizeBytes(partner));
 
   const del = document.createElement("button");
   del.type = "button";
@@ -785,7 +818,7 @@ function buildNormalRow(entry, generation, lastUsedFingerprint, pairing = null) 
 
   const created = document.createElement("span");
   created.className = "h3cm-row-created";
-  created.textContent = formatEntryMetaLine(system);
+  created.textContent = formatEntryMetaLine(system, entryDisplaySizeBytes(entry, pairing));
   created.title = entryMetaTooltip(system);
 
   row.append(star, label, created);
@@ -1160,9 +1193,13 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
   const user = (entry.verbose && entry.verbose.user) || {};
   const system = (entry.verbose && entry.verbose.system) || {};
 
+  // One resolution for the whole panel: the meta line's byte figure and the
+  // fingerprint list must describe the same pair.
+  const pairing = resolvePairing(entry, entriesByFingerprintFromLastCheck());
+
   detailEl.querySelector("[data-h3cm-detail-title]").textContent = entryLabel(entry);
   const detailCreated = detailEl.querySelector("[data-h3cm-detail-created]");
-  detailCreated.textContent = formatEntryMetaLine(system);
+  detailCreated.textContent = formatEntryMetaLine(system, entryDisplaySizeBytes(entry, pairing));
   detailCreated.title = entryMetaTooltip(system);
   detailEl.querySelector("[data-h3cm-detail-prompt]").textContent = system.prompt || "(no prompt)";
   renderDetailRefs(
@@ -1174,10 +1211,7 @@ function populateDetail(entry, { preserveEditableFields = false } = {}) {
   );
   renderDetailFingerprint(
     detailEl.querySelector("[data-h3cm-detail-fingerprint]"),
-    detailFingerprintLines(
-      entry,
-      resolvePairing(entry, entriesByFingerprintFromLastCheck()),
-    ),
+    detailFingerprintLines(entry, pairing),
   );
   if (!preserveEditableFields) {
     detailEl.querySelector("[data-h3cm-edit-name]").value = user.name || "";
