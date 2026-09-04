@@ -1471,48 +1471,66 @@ function renderCopyResult(fingerprint, verbose, headline) {
   resultEl.appendChild(note);
 }
 
-// Write `text` to the clipboard and give `el` the same transient "Copied!"
-// affordance the prompt copy button uses (an `is-copied` class + a title
-// swap that reverts after 1.5 s), so every click-to-copy control in the
-// panel behaves the same way. `revertTitle` is what the title returns to.
-async function copyToClipboardWithFeedback(el, text, revertTitle) {
-  // Cancel any pending revert from a previous click on this same element up
-  // front: without this a rapid second click lets the first click's timer
-  // fire mid-window and cuts the "Copied!" feedback short. The handle rides
-  // on the element, which the detail-panel rebuild discards whole.
-  if (el._h3cmCopyRevertTimer) {
-    clearTimeout(el._h3cmCopyRevertTimer);
-    el._h3cmCopyRevertTimer = null;
-  }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (_) {
-    el.title = "Copy failed - select the text manually";
-    return false;
-  }
+// The transient "Copied!" affordance every click-to-copy control in the panel
+// shares: an `is-copied` class plus a title swap that reverts after
+// COPY_FEEDBACK_MS. It lives in two halves rather than one call because the
+// cancel has to run *before* the copy attempt, which is async, while the
+// confirmation only makes sense after it.
+const COPY_FEEDBACK_MS = 1500;
+const COPY_FAILED_TITLE = "Copy failed - select the text manually";
+
+// Cancel any pending revert from a previous click on this same element.
+// Without this a rapid second click lets the first click's timer fire
+// mid-window and cut the "Copied!" feedback short. The handle rides on the
+// element, which the detail-panel rebuild discards whole.
+export function cancelCopyRevert(el) {
+  if (!el._h3cmCopyRevertTimer) return;
+  clearTimeout(el._h3cmCopyRevertTimer);
+  el._h3cmCopyRevertTimer = null;
+}
+
+// Show the confirmation on `el` and schedule the revert back to
+// `revertTitle`. Assumes cancelCopyRevert(el) has already run for this click.
+export function markCopied(el, revertTitle) {
   el.classList.add("is-copied");
   el.title = "Copied!";
   el._h3cmCopyRevertTimer = setTimeout(() => {
     el.classList.remove("is-copied");
     el.title = revertTitle;
     el._h3cmCopyRevertTimer = null;
-  }, 1500);
+  }, COPY_FEEDBACK_MS);
+}
+
+// Write `text` to the clipboard and give `el` that affordance, so every
+// click-to-copy control in the panel behaves the same way. `revertTitle` is
+// what the title returns to.
+async function copyToClipboardWithFeedback(el, text, revertTitle) {
+  cancelCopyRevert(el);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    el.title = COPY_FAILED_TITLE;
+    return false;
+  }
+  markCopied(el, revertTitle);
   return true;
 }
 
 // The small icon on the prompt box is just a compact trigger for the same
 // action as the big "Copy prompt" button -- it defers entirely to
-// copyPrompt() and only adds its own transient "Copied!" affordance.
+// copyPrompt() and only adds its own transient "Copied!" affordance. It
+// cannot go through copyToClipboardWithFeedback(): the clipboard write
+// happens inside copyPrompt(), together with side effects this button does
+// not own, so it shares the two affordance helpers instead.
 async function copyPromptText(button) {
+  cancelCopyRevert(button);
   const ok = await copyPrompt();
-  button.classList.toggle("is-copied", ok);
-  button.title = ok ? "Copied!" : "Copy failed - select the text manually";
-  if (ok) {
-    setTimeout(() => {
-      button.classList.remove("is-copied");
-      button.title = "Copy prompt";
-    }, 1500);
+  if (!ok) {
+    button.classList.remove("is-copied");
+    button.title = COPY_FAILED_TITLE;
+    return;
   }
+  markCopied(button, "Copy prompt");
 }
 
 // Copies the open entry's prompt to the clipboard, renders the reference
