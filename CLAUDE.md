@@ -444,7 +444,7 @@ przez użytkownika w ComfyUI): realny render wiersza uszkodzonego wpisu
 przez buildLegacyRow, faktyczne przełączenie wariantu w dropdownie tagów
 na żywym DOM, brak błędów w konsoli.
 
-### Rozważone i ODŁOŻONE (nie odrzucone na stałe): nazwy plików referencji
+### Nazwy plików referencji: Ref2VA zrealizowane, FL2VA nadal odłożone
 
 Rozważone i ODŁOŻONE (nie odrzucone na stałe): śledzenie nazwy pliku
 źródłowego dla referencji first_frame/last_frame. Prosta wersja (ukryte
@@ -462,6 +462,34 @@ H3-cached zgadywał to z grafu przez introspekcję. To realny, ale znacznie
 większy projekt niż drobna poprawka (osobna rodzina wrapperów, nie jedna
 linijka) - może zostać podjęty kiedyś, jeśli okaże się wystarczająco
 wartościowy, nie jest odrzucony na stałe.
+
+Wariant Ref2VA ZOSTAŁ JEDNAK ZREALIZOWANY - inną drogą niż zakładał
+akapit powyżej: bez rodziny wrapperów, dokładnie tą introspekcją grafu,
+która została wyżej odrzucona. minimaxh3_clipcache/provenance.py chodzi
+po API-formatowym grafie wstecz od każdego slotu ref_* do węzła-liścia
+(prawdziwej ładowarki) i odczytuje jego literalną nazwę pliku;
+_sync_ref_sources() w nodes.py dopisuje wynik jako system.ref_sources w
+sidecarze verbose, a Cache Manager pokazuje go pod każdą referencją w
+panelu szczegółów.
+
+Pierwotne zastrzeżenie nie zostało zignorowane - obeszło je zawężenie
+zakresu na tyle mocne, że waga tego zastrzeżenia spadła. Nic z
+prowenancji nie wchodzi do compute_fingerprint(), nieudany przejazd po
+grafie nie jest w stanie naruszyć zapisanego encode'u
+(collect_ref_sources() nigdy nie rzuca, a wynik None oznacza "zostaw
+to, co już jest"), całość jest pomocą nawigacyjną dla UI Managera, nie
+częścią kontraktu cache'a. Wyjście "poza kontrakt węzła" ograniczyło się
+do dwóch ukrytych inputów (PROMPT/UNIQUE_ID) na parze węzłów Ref2VA -
+publiczny kontrakt wejść/wyjść względem stockowego węzła się nie zmienił.
+
+Granice tego zakresu są opisane autorytatywnie w docstringu modułu
+minimaxh3_clipcache/provenance.py (reguła liścia, dlaczego wynik jest
+kluczowany nazwą slotu a nie pozycją, rozróżnienie None vs {}) - czytać
+stamtąd, nie powielać ich tutaj.
+
+Nadal ODŁOŻONE i objęte akapitami powyżej: first_frame/last_frame w
+FL2VA. Węzły FL2VA nie deklarują bloku "hidden", więc w ogóle nie
+dostają grafu do przejścia - szczegóły w TODO.md.
 
 ### comfyui_version w verbose metadata (informacyjnie)
 
