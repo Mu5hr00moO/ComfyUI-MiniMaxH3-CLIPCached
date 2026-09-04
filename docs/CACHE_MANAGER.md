@@ -70,8 +70,10 @@ Reference images are shown as thumbnails when available.
 **Copy prompt** copies only the stored prompt string to the clipboard. When the
 cached entry contains image references, the panel also shows thumbnails and
 positional reference information as a visual reminder of what produced the
-entry. It does not preserve the original source filenames or automatically
-restore those files into workflow inputs.
+entry. For a Ref2VA entry, the panel can also show the original source
+filename under each reference, when one could be traced back to a loader
+node; FL2VA keyframes do not have this yet. Neither case automatically
+restores those files into workflow inputs.
 
 These organizational fields belong only to Cache Manager. They are never used
 to decide whether CLIPCached returns a HIT or MISS.

@@ -67,15 +67,42 @@ mentioned as planned in `README.md` ("Limitations") but not implemented.
 Useful for batch/headless runs where an unexpected 27 GB load is worse than
 a clear error.
 
-## Reference source filenames -- dedicated loader wrappers
+## Reference source filenames -- FL2VA's `first_frame` / `last_frame`
 
-Tracking the source filename of a `first_frame` / `last_frame` / reference
-input (so the Cache Manager could show "portrait.png" instead of only a
-thumbnail) was considered and deferred -- see the "Rozważone i ODŁOŻONE"
-section in `CLAUDE.md` for the full reasoning. The short version: doing it
-by graph introspection inside the H3-cached node would be brittle and reach
-outside the node's own contract; the correct design is a separate family of
-dedicated `LoadImage` / `LoadVideo` / `LoadAudio` wrapper nodes that pass
-the filename through explicitly as part of their own output contract. That
-is a real but much larger project than a one-line change, not rejected --
-just not worth it yet.
+The Ref2VA nodes already track where each reference came from on disk:
+`minimaxh3_clipcache/provenance.py` walks the API-format prompt graph
+backward from every `ref_*` slot to the leaf loader that supplied it and
+reads that loader's literal filename, `_sync_ref_sources()` in `nodes.py`
+stores the result as `system.ref_sources` in the verbose sidecar, and the
+Cache Manager shows it under each reference in the detail panel. The FL2VA
+nodes have no equivalent: their `first_frame` / `last_frame` remain
+thumbnail-only, so the manager cannot say a keyframe came from
+`portrait.png`.
+
+Extending it would not mean a new mechanism. The walk itself is generic --
+only its slot-name filter (`_REF_INPUT_PREFIXES`) is Ref2VA-specific. What
+is actually missing is the walk's input: `MiniMaxH3CLIPCachedFL2VA` and its
+Dual Resolution sibling declare no `hidden` block, so unlike the Ref2VA pair
+(`_ref2va_hidden_input_spec()`) they never receive ComfyUI's `PROMPT` /
+`UNIQUE_ID` in the first place.
+
+The original objection to graph introspection -- brittle, and reaching
+outside the node's own contract -- is no longer what stands in the way: the
+Ref2VA implementation went ahead with it under a deliberately narrow scope
+(nothing feeds `compute_fingerprint()`, a failed walk cannot disturb a
+cached encode, the result is a navigation aid for the Cache Manager UI, not
+part of the cache contract). Those limits are stated authoritatively in
+`provenance.py`'s module docstring and would have to hold for FL2VA too.
+The slots were simply left out when the walk was built for Ref2VA.
+
+Adding that `hidden` block is not free, though. Declaring `UNIQUE_ID` opts
+a node's class into ComfyUI's own in-memory execution-cache signature --
+folding the node's id into it, so a rebuilt or renumbered graph stops
+reusing ComfyUI's RAM-cached output for that node (see the docstring of
+`_ref2va_hidden_input_spec()` in `nodes.py:936` for the mechanism). For
+Ref2VA this was accepted as an intended, harmless cost: the on-disk cache
+is keyed by the encode fingerprint, not by node id, so a rebuilt graph
+still HITs the saved encode regardless. The same reasoning would presumably
+carry over to FL2VA, but that is an assumption to verify against FL2VA's
+own execution path at implementation time, not something to inherit from
+the Ref2VA precedent without checking.
