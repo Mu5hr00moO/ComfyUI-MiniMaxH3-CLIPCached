@@ -500,9 +500,29 @@ function createPanel() {
         <select class="h3cm-select" data-h3cm-tag-filter aria-label="Filter by tag">
           <option value="">All tags</option>
         </select>
-        <label class="h3cm-check-label">
-          <input type="checkbox" data-h3cm-favorites-only> ★ Favorites only
-        </label>
+        <div class="h3cm-options-wrap">
+          <label class="h3cm-check-label">
+            <input type="checkbox" data-h3cm-favorites-only> ★ Favorites only
+          </label>
+          <button type="button" class="h3cm-options-trigger" data-h3cm-options-toggle
+            id="h3cm-options-trigger" aria-expanded="false" aria-controls="h3cm-options-panel">
+            <span class="h3cm-options-caret" aria-hidden="true">&gt;&gt;&gt;</span>
+            <span>options</span>
+          </button>
+          <div class="h3cm-options-panel" id="h3cm-options-panel" data-h3cm-options
+            role="group" aria-labelledby="h3cm-options-trigger" hidden>
+            <label class="h3cm-field">Cache size limit (GB, 0 = off)
+              <input type="text" inputmode="decimal" data-h3cm-options-limit>
+            </label>
+            <label class="h3cm-field">Warn at (% of limit)
+              <input type="text" inputmode="decimal" data-h3cm-options-warning>
+            </label>
+            <div class="h3cm-options-actions">
+              <button type="button" class="h3cm-button" data-h3cm-options-save>Save</button>
+              <span class="h3cm-options-error" data-h3cm-options-error></span>
+            </div>
+          </div>
+        </div>
         <span class="h3cm-status" data-h3cm-status>Cache: — entries / —</span>
       </div>
       <div class="h3cm-list" data-h3cm-list></div>
@@ -561,6 +581,11 @@ function createPanel() {
     favoritesOnlyEl: root.querySelector("[data-h3cm-favorites-only]"),
     variantBtns: [...root.querySelectorAll("[data-h3cm-variant]")],
     detailEl: root.querySelector("[data-h3cm-detail]"),
+    optionsEl: root.querySelector("[data-h3cm-options]"),
+    optionsToggleEl: root.querySelector("[data-h3cm-options-toggle]"),
+    optionsLimitEl: root.querySelector("[data-h3cm-options-limit]"),
+    optionsWarningEl: root.querySelector("[data-h3cm-options-warning]"),
+    optionsErrorEl: root.querySelector("[data-h3cm-options-error]"),
   };
 
   root.querySelectorAll("[data-h3cm-close]").forEach((el) => el.addEventListener("click", closePanel));
@@ -570,6 +595,20 @@ function createPanel() {
   panel.tagFilterEl.addEventListener("change", renderList);
   panel.favoritesOnlyEl.addEventListener("change", renderList);
   panel.sortEl.addEventListener("change", renderList);
+  panel.optionsToggleEl.addEventListener("click", toggleCacheOptions);
+  root.querySelector("[data-h3cm-options-save]").addEventListener("click", saveCacheOptions);
+  [panel.optionsLimitEl, panel.optionsWarningEl].forEach((el) =>
+    el.addEventListener("keydown", onCacheOptionsKeydown));
+  // Closing on a pointer outside the drawer is bound to the whole modal, not
+  // to the document: the backdrop covers everything else while the modal is
+  // open, so nothing reachable is missed. It runs on pointerdown so the
+  // drawer is gone before the click it belongs to lands, and it ignores
+  // .h3cm-options-wrap -- the trigger lives there and toggles on its own.
+  root.addEventListener("pointerdown", (event) => {
+    if (panel.optionsEl.hidden) return;
+    if (event.target instanceof Element && event.target.closest(".h3cm-options-wrap")) return;
+    closeCacheOptions();
+  });
   root.querySelector("[data-h3cm-detail-close]").addEventListener("click", closeDetail);
   root.querySelector("[data-h3cm-save]").addEventListener("click", saveDetail);
   root.querySelector("[data-h3cm-edit-favorite]").addEventListener("change", onDetailFavoriteChange);
@@ -591,6 +630,7 @@ function openPanel() {
 
 function closePanel() {
   if (!panel) return;
+  closeCacheOptions(); // the drawer is part of the modal, never outlives it
   panel.root.classList.remove("is-open");
   panel.root.setAttribute("aria-hidden", "true");
 }
@@ -1031,8 +1071,9 @@ function renderList() {
 // directory as a whole (minimaxh3_clipcache/scanner.py, _dir_size_bytes) and
 // the per-entry "size_bytes" values deliberately do not add up to it.
 //
-// This turn ships no UI for the values; they are written into localStorage
-// by hand.
+// The pair is edited in the "options" drawer under the toolbar's favorites
+// checkbox (see "cache size options UI" below). localStorage stays the only
+// store -- no Comfy setting, no backend field.
 
 const CACHE_SIZE_OPTIONS_KEY = "h3cm-cache-size-options";
 const WARNING_PERCENT_MIN = 1;
@@ -1065,11 +1106,16 @@ export function readCacheSizeOptions() {
   }
 }
 
+// Returns true when the pair was persisted, false when localStorage refused
+// it (disabled, private mode, over quota). The caller has to be able to tell:
+// an editor that closes and a status line that repaints on a write which
+// never landed would show a threshold that is not the one in force.
 export function writeCacheSizeOptions(options) {
   try {
     window.localStorage.setItem(CACHE_SIZE_OPTIONS_KEY, JSON.stringify(options));
+    return true;
   } catch (err) {
-    /* storage unavailable / over quota -- the options just won't persist */
+    return false;
   }
 }
 
@@ -1117,6 +1163,152 @@ function setCacheStatus(text, level) {
   for (const cls of Object.values(CACHE_STATUS_LEVEL_CLASS)) el.classList.remove(cls);
   const active = CACHE_STATUS_LEVEL_CLASS[level];
   if (active) el.classList.add(active);
+}
+
+// --- cache size options UI -----------------------------------------------
+//
+// A drawer under the toolbar's favorites checkbox, opened by the ">>> options"
+// trigger. It edits the same { limitBytes, warningPercent } pair the store
+// above reads -- there is no second source of truth and no backend call.
+//
+// The trigger and the drawer are children of the label's wrapper rather than
+// further toolbar items: the toolbar wraps (styles.css, .h3cm-toolbar), so a
+// sibling would be free to land on a line of its own, away from the control
+// it belongs to.
+//
+// It closes on the trigger, on Escape, on a pointer landing outside it, and
+// on a Save that actually persisted -- which is also what Enter in either
+// field does. A rejected value and a refused write both leave it open with
+// the reason on its error line.
+
+// The limit field is in GB -- the unit a cache this size is actually talked
+// about in -- with one decimal, so its resolution is 0.1 GB (~102 MB). GB
+// here is 1024^3, the same binary step formatBytes() prints on the status
+// line, so a limit of 2 reads back as "2.0 GB" there rather than "1.9 GB".
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+const LIMIT_DECIMALS = 1;
+const LIMIT_STEP_GB = 10 ** -LIMIT_DECIMALS; // 0.1 GB, the smallest limit
+const DEFAULT_WARNING_PERCENT = 80;
+
+// GB from the field -> the byte count that gets stored. The value is snapped
+// to the field's one decimal first, so what a reopened drawer shows is what
+// is stored; bytes are then rounded because a fractional byte is not a size.
+function gbToBytes(gb) {
+  return Math.round(Number(gb.toFixed(LIMIT_DECIMALS)) * BYTES_PER_GB);
+}
+
+// Bytes -> what the field shows. A stored limit off the 0.1 GB grid (an older
+// value, a hand-written one) is shown rounded to it: that is the field's
+// resolution and Save would snap it there anyway. The single value that must
+// not be rounded is a live limit small enough to print as "0" -- the field
+// would then read as "off" while a limit is in force, and the next Save would
+// silently make it true. It prints in full instead, and Save refuses it.
+export function bytesToGbText(limitBytes) {
+  const bytes = parseFiniteNumber(limitBytes, { min: 0 });
+  if (bytes === null) return "";
+  const gb = bytes / BYTES_PER_GB;
+  const snapped = Number(gb.toFixed(LIMIT_DECIMALS));
+  return snapped === 0 && bytes > 0 ? String(gb) : String(snapped);
+}
+
+// Only ever an error: a successful save closes the drawer, and the outcome is
+// then visible on the status line the save just refreshed.
+function setCacheOptionsError(text) {
+  panel.optionsErrorEl.textContent = text;
+}
+
+// Fill both fields from storage. Nothing configured -- or something
+// unreadable, which readCacheSizeOptions() reports the same way -- shows the
+// off state (limit 0) rather than a limit nobody set.
+function populateCacheOptions() {
+  const stored = readCacheSizeOptions();
+  panel.optionsLimitEl.value = stored ? bytesToGbText(stored.limitBytes) : "0";
+  panel.optionsWarningEl.value = String(
+    stored ? stored.warningPercent : DEFAULT_WARNING_PERCENT,
+  );
+  setCacheOptionsError("");
+}
+
+function openCacheOptions() {
+  populateCacheOptions(); // always from storage, never from the last edit
+  panel.optionsEl.hidden = false;
+  panel.optionsToggleEl.setAttribute("aria-expanded", "true");
+  panel.root.classList.add("is-options-open"); // holds the modal tall enough
+  panel.optionsLimitEl.focus();
+}
+
+function closeCacheOptions() {
+  if (!panel || panel.optionsEl.hidden) return;
+  // Hiding the element that holds the focus drops it on <body>, leaving a
+  // keyboard user with nothing visibly focused. Hand it back to the trigger
+  // that opened the drawer -- but only when the drawer really had it, so a
+  // close triggered by a click elsewhere does not steal that click's focus.
+  const hadFocus = panel.optionsEl.contains(document.activeElement);
+  panel.optionsEl.hidden = true;
+  panel.optionsToggleEl.setAttribute("aria-expanded", "false");
+  panel.root.classList.remove("is-options-open");
+  if (hadFocus) panel.optionsToggleEl.focus();
+}
+
+function toggleCacheOptions() {
+  if (panel.optionsEl.hidden) openCacheOptions();
+  else closeCacheOptions();
+}
+
+// The two fields are not in a <form>, so Enter does nothing on its own --
+// wire it to the Save the drawer's only button performs.
+function onCacheOptionsKeydown(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveCacheOptions();
+}
+
+// Both fields are validated before anything is written, so a rejected value
+// leaves the stored pair exactly as it was -- no half-applied setting.
+function saveCacheOptions() {
+  const limitGb = parseFiniteNumber(panel.optionsLimitEl.value, { min: 0 });
+  if (limitGb === null) {
+    setCacheOptionsError("Limit: a number of GB, 0 or more (0 turns it off).");
+    return;
+  }
+  const warningPercent = parseFiniteNumber(panel.optionsWarningEl.value, {
+    min: WARNING_PERCENT_MIN,
+    max: WARNING_PERCENT_MAX,
+  });
+  if (warningPercent === null) {
+    setCacheOptionsError(
+      `Warn at: ${WARNING_PERCENT_MIN}\u2013${WARNING_PERCENT_MAX} percent.`,
+    );
+    return;
+  }
+  // parseFiniteNumber() only asks for a finite number, and 1e308 GB is one:
+  // in bytes it overflows to Infinity, which JSON.stringify() writes as null
+  // and readCacheSizeOptions() then rejects -- a working threshold destroyed
+  // by a value the form appeared to accept.
+  const limitBytes = gbToBytes(limitGb);
+  if (!Number.isSafeInteger(limitBytes)) {
+    setCacheOptionsError("Limit: too large to store as a byte count.");
+    return;
+  }
+  // Anything under half the field's step rounds to zero bytes, which is the
+  // off switch. Turning the limit off has to be asked for, not arrived at by
+  // rounding, so only a literal 0 is allowed to do it.
+  if (limitGb > 0 && limitBytes === 0) {
+    setCacheOptionsError(
+      `Limit: below ${LIMIT_STEP_GB} GB. Enter 0 to turn the limit off.`,
+    );
+    return;
+  }
+  // One setItem of the whole object (writeCacheSizeOptions), so the two
+  // fields can never be half-written against each other.
+  if (!writeCacheSizeOptions({ limitBytes, warningPercent })) {
+    // Nothing was persisted, so the pair in force is still the old one: the
+    // drawer stays open with its values rather than closing on a lie.
+    setCacheOptionsError("Could not save: browser storage refused the write.");
+    return;
+  }
+  closeCacheOptions();
+  runCheck(); // repaint the status line, and its colour, under the new pair
 }
 
 // --- check ---------------------------------------------------------------
@@ -1912,7 +2104,8 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!panel || !panel.root.classList.contains("is-open")) return;
   event.preventDefault();
-  if (!panel.detailEl.hidden) closeDetail();
+  if (!panel.optionsEl.hidden) closeCacheOptions();
+  else if (!panel.detailEl.hidden) closeDetail();
   else closePanel();
 });
 
