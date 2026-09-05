@@ -247,7 +247,7 @@
    enough to show all of it: header + toolbar + the drawer's own ~170px. A
    near-empty cache is short enough to cut off the Save button otherwise. */
 .h3cm-root.is-options-open .h3cm-modal {
-  min-height: 320px;
+  min-height: min(320px, 80vh);
 }
 .h3cm-options-panel .h3cm-field {
   margin-bottom: 8px;
