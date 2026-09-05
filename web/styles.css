@@ -188,6 +188,81 @@
   white-space: nowrap;
   cursor: pointer;
 }
+/* Cache size options drawer. The wrapper is the toolbar item; the favorites
+   label, the trigger under it and the drawer itself are its children, so the
+   wrapping toolbar can never separate the trigger from the control it sits
+   under. */
+.h3cm-options-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.h3cm-options-trigger {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9aa1ad;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.h3cm-options-trigger:hover {
+  color: #eceef1;
+}
+.h3cm-options-caret {
+  display: inline-block;
+  letter-spacing: -1px;
+  transition: transform 120ms ease;
+}
+/* Open: the same chevrons turn to point at the drawer they opened. */
+.h3cm-options-trigger[aria-expanded="true"] .h3cm-options-caret {
+  transform: rotate(90deg);
+}
+/* Anchored to the wrapper's right edge so the drawer stays inside .h3cm-modal,
+   which clips whatever leaves it (overflow: hidden). The z-index is not
+   decoration: list thumbnails fade in through opacity, which makes each of
+   them a stacking context that would otherwise paint over this. */
+.h3cm-options-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  width: 236px;
+  padding: 10px 12px 12px;
+  border: 1px solid #3a3f4b;
+  border-radius: 8px;
+  background: #1b1e24;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+.h3cm-options-panel[hidden] {
+  display: none;
+}
+/* The drawer hangs from the toolbar down into the list, and .h3cm-modal clips
+   whatever leaves it, so while the drawer is open the modal is held tall
+   enough to show all of it: header + toolbar + the drawer's own ~170px. A
+   near-empty cache is short enough to cut off the Save button otherwise. */
+.h3cm-root.is-options-open .h3cm-modal {
+  min-height: 320px;
+}
+.h3cm-options-panel .h3cm-field {
+  margin-bottom: 8px;
+}
+.h3cm-options-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.h3cm-options-error {
+  color: #ef9a9a;
+  font-size: 11px;
+}
+
 .h3cm-status {
   flex-basis: 100%;
   color: #9aa1ad;
