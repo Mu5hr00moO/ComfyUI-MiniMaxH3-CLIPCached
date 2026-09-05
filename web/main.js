@@ -511,7 +511,7 @@ function createPanel() {
           </button>
           <div class="h3cm-options-panel" id="h3cm-options-panel" data-h3cm-options
             role="group" aria-labelledby="h3cm-options-trigger" hidden>
-            <label class="h3cm-field">Cache size limit (MB, 0 = off)
+            <label class="h3cm-field">Cache size limit (GB, 0 = off)
               <input type="text" inputmode="decimal" data-h3cm-options-limit>
             </label>
             <label class="h3cm-field">Warn at (% of limit)
@@ -1106,11 +1106,16 @@ export function readCacheSizeOptions() {
   }
 }
 
+// Returns true when the pair was persisted, false when localStorage refused
+// it (disabled, private mode, over quota). The caller has to be able to tell:
+// an editor that closes and a status line that repaints on a write which
+// never landed would show a threshold that is not the one in force.
 export function writeCacheSizeOptions(options) {
   try {
     window.localStorage.setItem(CACHE_SIZE_OPTIONS_KEY, JSON.stringify(options));
+    return true;
   } catch (err) {
-    /* storage unavailable / over quota -- the options just won't persist */
+    return false;
   }
 }
 
@@ -1172,22 +1177,38 @@ function setCacheStatus(text, level) {
 // it belongs to.
 //
 // It closes on the trigger, on Escape, on a pointer landing outside it, and
-// on a successful Save -- which is also what Enter in either field does.
+// on a Save that actually persisted -- which is also what Enter in either
+// field does. A rejected value and a refused write both leave it open with
+// the reason on its error line.
 
-const BYTES_PER_MB = 1024 * 1024;
+// The limit field is in GB -- the unit a cache this size is actually talked
+// about in -- with one decimal, so its resolution is 0.1 GB (~102 MB). GB
+// here is 1024^3, the same binary step formatBytes() prints on the status
+// line, so a limit of 2 reads back as "2.0 GB" there rather than "1.9 GB".
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+const LIMIT_DECIMALS = 1;
+const LIMIT_STEP_GB = 10 ** -LIMIT_DECIMALS; // 0.1 GB, the smallest limit
 const DEFAULT_WARNING_PERCENT = 80;
 
-// The limit is shown in MB and stored in bytes. Trailing zeros are dropped so
-// a whole number of MB reads as "2048", and a fractional one keeps three
-// decimals ("0.5"). Below that the field cannot show the value: a hand-written
-// limit under ~1 KB reads as "0", and saving the form would then turn the
-// limit off -- an edge no UI path can produce, since every value this field
-// writes is a whole number of bytes it can print back.
-export function bytesToMbText(limitBytes) {
+// GB from the field -> the byte count that gets stored. The value is snapped
+// to the field's one decimal first, so what a reopened drawer shows is what
+// is stored; bytes are then rounded because a fractional byte is not a size.
+function gbToBytes(gb) {
+  return Math.round(Number(gb.toFixed(LIMIT_DECIMALS)) * BYTES_PER_GB);
+}
+
+// Bytes -> what the field shows. A stored limit off the 0.1 GB grid (an older
+// value, a hand-written one) is shown rounded to it: that is the field's
+// resolution and Save would snap it there anyway. The single value that must
+// not be rounded is a live limit small enough to print as "0" -- the field
+// would then read as "off" while a limit is in force, and the next Save would
+// silently make it true. It prints in full instead, and Save refuses it.
+export function bytesToGbText(limitBytes) {
   const bytes = parseFiniteNumber(limitBytes, { min: 0 });
   if (bytes === null) return "";
-  const mb = bytes / BYTES_PER_MB;
-  return Number.isInteger(mb) ? String(mb) : String(Number(mb.toFixed(3)));
+  const gb = bytes / BYTES_PER_GB;
+  const snapped = Number(gb.toFixed(LIMIT_DECIMALS));
+  return snapped === 0 && bytes > 0 ? String(gb) : String(snapped);
 }
 
 // Only ever an error: a successful save closes the drawer, and the outcome is
@@ -1201,7 +1222,7 @@ function setCacheOptionsError(text) {
 // off state (limit 0) rather than a limit nobody set.
 function populateCacheOptions() {
   const stored = readCacheSizeOptions();
-  panel.optionsLimitEl.value = stored ? bytesToMbText(stored.limitBytes) : "0";
+  panel.optionsLimitEl.value = stored ? bytesToGbText(stored.limitBytes) : "0";
   panel.optionsWarningEl.value = String(
     stored ? stored.warningPercent : DEFAULT_WARNING_PERCENT,
   );
@@ -1218,9 +1239,15 @@ function openCacheOptions() {
 
 function closeCacheOptions() {
   if (!panel || panel.optionsEl.hidden) return;
+  // Hiding the element that holds the focus drops it on <body>, leaving a
+  // keyboard user with nothing visibly focused. Hand it back to the trigger
+  // that opened the drawer -- but only when the drawer really had it, so a
+  // close triggered by a click elsewhere does not steal that click's focus.
+  const hadFocus = panel.optionsEl.contains(document.activeElement);
   panel.optionsEl.hidden = true;
   panel.optionsToggleEl.setAttribute("aria-expanded", "false");
   panel.root.classList.remove("is-options-open");
+  if (hadFocus) panel.optionsToggleEl.focus();
 }
 
 function toggleCacheOptions() {
@@ -1239,9 +1266,9 @@ function onCacheOptionsKeydown(event) {
 // Both fields are validated before anything is written, so a rejected value
 // leaves the stored pair exactly as it was -- no half-applied setting.
 function saveCacheOptions() {
-  const limitMb = parseFiniteNumber(panel.optionsLimitEl.value, { min: 0 });
-  if (limitMb === null) {
-    setCacheOptionsError("Limit: a number of MB, 0 or more (0 turns it off).");
+  const limitGb = parseFiniteNumber(panel.optionsLimitEl.value, { min: 0 });
+  if (limitGb === null) {
+    setCacheOptionsError("Limit: a number of GB, 0 or more (0 turns it off).");
     return;
   }
   const warningPercent = parseFiniteNumber(panel.optionsWarningEl.value, {
@@ -1254,13 +1281,32 @@ function saveCacheOptions() {
     );
     return;
   }
+  // parseFiniteNumber() only asks for a finite number, and 1e308 GB is one:
+  // in bytes it overflows to Infinity, which JSON.stringify() writes as null
+  // and readCacheSizeOptions() then rejects -- a working threshold destroyed
+  // by a value the form appeared to accept.
+  const limitBytes = gbToBytes(limitGb);
+  if (!Number.isSafeInteger(limitBytes)) {
+    setCacheOptionsError("Limit: too large to store as a byte count.");
+    return;
+  }
+  // Anything under half the field's step rounds to zero bytes, which is the
+  // off switch. Turning the limit off has to be asked for, not arrived at by
+  // rounding, so only a literal 0 is allowed to do it.
+  if (limitGb > 0 && limitBytes === 0) {
+    setCacheOptionsError(
+      `Limit: below ${LIMIT_STEP_GB} GB. Enter 0 to turn the limit off.`,
+    );
+    return;
+  }
   // One setItem of the whole object (writeCacheSizeOptions), so the two
-  // fields can never be half-written against each other. Bytes are rounded
-  // to an integer: the field is in MB and a fractional byte is not a size.
-  writeCacheSizeOptions({
-    limitBytes: Math.round(limitMb * BYTES_PER_MB),
-    warningPercent,
-  });
+  // fields can never be half-written against each other.
+  if (!writeCacheSizeOptions({ limitBytes, warningPercent })) {
+    // Nothing was persisted, so the pair in force is still the old one: the
+    // drawer stays open with its values rather than closing on a lie.
+    setCacheOptionsError("Could not save: browser storage refused the write.");
+    return;
+  }
   closeCacheOptions();
   runCheck(); // repaint the status line, and its colour, under the new pair
 }
