@@ -1,6 +1,6 @@
 # Cache Manager
 
-![MiniMax H3 Cache Manager populated with cached entries and management controls](../README_cache_manager.png)
+![MiniMax H3 Cache Manager populated with cached entries and management controls](img/manager_list.png)
 
 CLIPCached includes a built-in **MiniMax H3 Cache Manager** for inspecting,
 organizing, and deleting cached conditioning entries without manually browsing
@@ -184,7 +184,7 @@ it through the normal Qwen3-VL path.
 
 ## Cache Manager example
 
-![Cache Manager entry details with metadata and reference information](../README_cache_manager_detail.png)
+![Cache Manager entry details with metadata and reference information](img/manager_entry.png)
 
 The populated view shows the manager in normal use with accumulated cache
 entries and its search, filtering, sorting, and organization controls.

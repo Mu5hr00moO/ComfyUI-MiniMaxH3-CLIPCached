@@ -6,8 +6,8 @@
 <td align="center"><strong>CLIP-Cached FL2VA — cache HIT</strong></td>
 </tr>
 <tr>
-<td><img src="README_intro_native_memory.png" alt="Native MiniMax H3 FL2VA memory usage" width="360"></td>
-<td><img src="README_intro_cached_memory.png" alt="CLIP-Cached MiniMax H3 FL2VA cache HIT memory usage" width="360"></td>
+<td><img src="docs/img/intro_native_memory.png" alt="Native MiniMax H3 FL2VA memory usage" width="360"></td>
+<td><img src="docs/img/intro_cached_memory.png" alt="CLIP-Cached MiniMax H3 FL2VA cache HIT memory usage" width="360"></td>
 </tr>
 </table>
 
@@ -117,6 +117,8 @@ This repository includes an example workflow, **MiniMax H3 T2V
 **Workflow → Browse Templates**, and the file itself lives in
 [`example_workflows/`](example_workflows/) in this repository. It uses
 only ComfyUI core nodes plus the CLIP-Cached FL2VA node.
+
+![MiniMax H3 T2V CLIP-Cached example workflow](docs/img/workflow_t2v_template.png)
 
 ## Included Nodes
 
