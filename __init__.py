@@ -54,12 +54,6 @@ MiniMaxH3CLIPName = _nodes_module.MiniMaxH3CLIPName
 # not a "silent fallback" on the cache-correctness path, it is a genuinely
 # optional feature. Under a bare pytest collection there is no real server;
 # tests/conftest.py stubs `server` so this still succeeds there.
-try:
-    import minimaxh3_clipcache.routes  # noqa: F401
-except Exception as _routes_err:  # pragma: no cover
-    import logging as _logging
-    _logging.getLogger(__name__).warning(
-        "MiniMax H3 CLIP-Cached: Cache Manager REST routes not registered (%s)", _routes_err)
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3CLIPCachedFL2VA": MiniMaxH3CLIPCachedFL2VA,
@@ -76,9 +70,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3CLIPName": "MiniMax H3 CLIP Name",
 }
 
-# ComfyUI serves this directory's files under /extensions/<repo>/ and loads
-# every .js in it as a frontend extension. web/main.js registers the Cache
-# Manager panel (Phase 6). Same declaration style as MiniMaxH3-Prompt-Writer.
-WEB_DIRECTORY = "./web"
-
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
