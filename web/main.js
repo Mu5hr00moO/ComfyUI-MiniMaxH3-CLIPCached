@@ -492,17 +492,17 @@ function createPanel() {
           <button type="button" data-h3cm-variant="fl2va" class="h3cm-variant-btn is-active">FL2VA</button>
           <button type="button" data-h3cm-variant="ref2va" class="h3cm-variant-btn">Ref2VA</button>
         </div>
-        <input type="text" class="h3cm-search" data-h3cm-search aria-label="Search" placeholder="Search…">
-        <select class="h3cm-select" data-h3cm-sort aria-label="Sort by">
+        <input type="text" class="h3cm-search" data-h3cm-search id="h3cm-search" aria-label="Search" placeholder="Search…">
+        <select class="h3cm-select" data-h3cm-sort id="h3cm-sort" aria-label="Sort by">
           <option value="date">Date</option>
           <option value="name">Name</option>
         </select>
-        <select class="h3cm-select" data-h3cm-tag-filter aria-label="Filter by tag">
+        <select class="h3cm-select" data-h3cm-tag-filter id="h3cm-tag-filter" aria-label="Filter by tag">
           <option value="">All tags</option>
         </select>
         <div class="h3cm-options-wrap">
           <label class="h3cm-check-label">
-            <input type="checkbox" data-h3cm-favorites-only> ★ Favorites only
+            <input type="checkbox" data-h3cm-favorites-only id="h3cm-favorites-only"> ★ Favorites only
           </label>
           <button type="button" class="h3cm-options-trigger" data-h3cm-options-toggle
             id="h3cm-options-trigger" aria-expanded="false" aria-controls="h3cm-options-panel">
@@ -512,10 +512,10 @@ function createPanel() {
           <div class="h3cm-options-panel" id="h3cm-options-panel" data-h3cm-options
             role="group" aria-labelledby="h3cm-options-trigger" hidden>
             <label class="h3cm-field">Cache size limit (GB, 0 = off)
-              <input type="text" inputmode="decimal" data-h3cm-options-limit>
+              <input type="text" inputmode="decimal" data-h3cm-options-limit id="h3cm-options-limit">
             </label>
             <label class="h3cm-field">Warn at (% of limit)
-              <input type="text" inputmode="decimal" data-h3cm-options-warning>
+              <input type="text" inputmode="decimal" data-h3cm-options-warning id="h3cm-options-warning">
             </label>
             <div class="h3cm-options-actions">
               <button type="button" class="h3cm-button" data-h3cm-options-save>Save</button>
@@ -547,16 +547,16 @@ function createPanel() {
         </div>
         <div class="h3cm-detail-refs" data-h3cm-detail-refs hidden></div>
         <label class="h3cm-field">Name
-          <input type="text" data-h3cm-edit-name>
+          <input type="text" data-h3cm-edit-name id="h3cm-edit-name">
         </label>
         <label class="h3cm-field">Notes
-          <textarea rows="3" data-h3cm-edit-notes></textarea>
+          <textarea rows="3" data-h3cm-edit-notes id="h3cm-edit-notes"></textarea>
         </label>
         <label class="h3cm-field">Tags (comma-separated)
-          <input type="text" data-h3cm-edit-tags>
+          <input type="text" data-h3cm-edit-tags id="h3cm-edit-tags">
         </label>
         <label class="h3cm-check-label">
-          <input type="checkbox" data-h3cm-edit-favorite> Favorite
+          <input type="checkbox" data-h3cm-edit-favorite id="h3cm-edit-favorite"> Favorite
         </label>
         <div class="h3cm-detail-actions">
           <button type="button" class="h3cm-button" data-h3cm-save>Save</button>
