@@ -56,12 +56,17 @@ def _build_references(fingerprint, items, labels=None):
     "slot". They are NOT the same thing: "index" is the reference's position
     in the flat batch the encoder sees, AFTER empty slots have been
     compacted out; "slot" is the name of the node input it was wired into
-    (ref_image_0, ref_video_audio_1, ...). "slot" is the only key that also
-    appears in system.ref_sources, so the Cache Manager joins reference
-    provenance on it rather than reconstructing the compaction positionally.
-    FL2VA items carry no slot -- its inputs are the fixed first_frame /
-    last_frame, already recorded via "label", and its sidecars never hold
-    system.ref_sources -- so no "slot" key is written for them.
+    (ref_image_0, ref_video_audio_1, ...). On the Ref2VA path "slot" is the
+    key the Cache Manager joins reference provenance on -- it also keys that
+    node's system.ref_sources -- rather than reconstructing the compaction
+    positionally.
+
+    FL2VA reference records carry no "slot": its inputs are the fixed
+    first_frame / last_frame, already recorded via "label". FL2VA sidecars
+    DO hold system.ref_sources (persisted by _sync_ref_sources()), but it is
+    keyed by those same "first_frame" / "last_frame" label names, so the
+    Cache Manager joins FL2VA provenance on "label" and Ref2VA provenance on
+    "slot".
 
     The thumbnail write for one reference must not lose the others or abort
     the verbose write, so the try/except is inside the loop: on failure that
@@ -73,8 +78,9 @@ def _build_references(fingerprint, items, labels=None):
         item_type, tensor = item[0], item[1]
         entry = {"index": i, "type": item_type}
         # index = position after empty-slot compaction (what the encoder
-        # sees); slot = the node input name, the only key shared with
-        # system.ref_sources. Both are kept -- see the docstring.
+        # sees); slot = the node input name, the key Ref2VA's
+        # system.ref_sources is joined on (FL2VA joins on "label" instead).
+        # Both index and slot are kept -- see the docstring.
         slot = item[2] if len(item) > 2 else None
         if slot is not None:
             entry["slot"] = slot
@@ -246,12 +252,17 @@ def _sync_verbose_metadata(proxy, node_variant, prompt, clip_name,
 
 
 def _sync_ref_sources(proxy, prompt_graph, unique_id):
-    """Attach ``system.ref_sources`` to this Ref2VA run's verbose sidecar --
-    a best-effort ``{slot_name: [{annotated[, path]}, ...]}`` map of where
-    each reference input came from on disk (minimaxh3_clipcache.provenance).
+    """Attach ``system.ref_sources`` to this run's verbose sidecar -- a
+    best-effort ``{slot_name: [{annotated[, path]}, ...]}`` map of where each
+    traced file input came from on disk (minimaxh3_clipcache.provenance).
 
-    Runs right after _sync_verbose_metadata(), on the Ref2VA path only, and
-    follows the same discipline: the whole check-then-write happens under
+    Used by both the Ref2VA path (its flat ``ref_*`` reference slots) and the
+    FL2VA path (its ``first_frame`` / ``last_frame`` keyframe slots); the
+    provenance walk and this writer are entirely node-type-agnostic and the
+    ``ref_sources`` sidecar key is shared between them.
+
+    Runs right after _sync_verbose_metadata() and follows the same
+    discipline: the whole check-then-write happens under
     get_lock(fingerprint), the core ``<fingerprint>.json`` is re-checked
     under that lock so a concurrent Cache Manager Delete cannot be undone,
     and every failure is swallowed with a WARNING. Provenance is a
@@ -644,7 +655,8 @@ def _clip_name_input_spec(tooltip=None):
 
 
 def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
-                        first_frame, last_frame, cache_mode):
+                        first_frame, last_frame, cache_mode,
+                        prompt_graph=None, unique_id=None):
     """One full cached FL2VA encode at a single resolution.
 
     This is the entire body of MiniMaxH3CLIPCachedFL2VA.execute() from the
@@ -660,6 +672,14 @@ def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
     to be identical (no keyframes, or keyframes that resize the same) share
     one cache entry transparently, while two that differ each encode for
     real -- exactly as two separate nodes would.
+
+    ``prompt_graph`` (the API-format workflow dict from the "PROMPT" hidden
+    input) and ``unique_id`` are passed straight to _sync_ref_sources() so
+    the Cache Manager sidecar can record which on-disk file the ``first_frame``
+    / ``last_frame`` keyframes came from. Both default to None -- a caller
+    that has neither simply skips that provenance write. They are NOT the
+    text ``prompt`` argument above and never reach the stock node or the
+    fingerprint.
     """
     proxy, file_size, mtime_ns, ctime_ns = _build_cached_proxy(clip_name, cache_mode)
 
@@ -683,6 +703,7 @@ def _execute_fl2va_once(clip_name, vae, prompt, width, height, length,
             proxy, "fl2va", prompt, clip_name, file_size, mtime_ns, items,
             labels, clip_ctime_ns=ctime_ns, width=width, height=height,
         )
+        _sync_ref_sources(proxy, prompt_graph, unique_id)
         _record_last_used(proxy, "fl2va")
         # Read the fingerprint out while the proxy is still alive: the finally
         # below may `del proxy` as part of reclaiming the real encoder, and
@@ -726,6 +747,7 @@ class MiniMaxH3CLIPCachedFL2VA:
                                "encode, always re-encode and overwrite the cache.",
                 }),
             },
+            "hidden": _provenance_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
@@ -741,14 +763,19 @@ class MiniMaxH3CLIPCachedFL2VA:
         return _is_changed_common(clip_name, cache_mode, kwargs.get("prompt"))
 
     def execute(self, clip_name, vae, prompt, width, height, length,
-                first_frame=None, last_frame=None, cache_mode="auto"):
+                first_frame=None, last_frame=None, cache_mode="auto",
+                prompt_graph=None, unique_id=None):
         # Thin wrapper: the whole body now lives in _execute_fl2va_once() so
         # MiniMaxH3CLIPCachedFL2VADualRes can reuse it verbatim for a second
         # resolution. Single-resolution behaviour is unchanged -- the third
         # tuple element (the fingerprint) is only of use to the dual node.
+        # prompt_graph / unique_id arrive from the "PROMPT" / "UNIQUE_ID"
+        # hidden inputs (see _provenance_hidden_input_spec) and only feed
+        # keyframe-source provenance -- never the encode or the stock node.
         cond, latent, _fingerprint = _execute_fl2va_once(
             clip_name, vae, prompt, width, height, length,
             first_frame, last_frame, cache_mode,
+            prompt_graph=prompt_graph, unique_id=unique_id,
         )
         return (cond, latent)
 
@@ -837,6 +864,7 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
                                "resolutions.",
                 }),
             },
+            "hidden": _provenance_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")
@@ -854,10 +882,17 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
 
     def execute(self, clip_name, vae, prompt, width, height, width_upscale, height_upscale,
                 length, first_frame=None, last_frame=None, cache_mode="auto",
-                generate_upscale_cond=True):
+                generate_upscale_cond=True, prompt_graph=None, unique_id=None):
+        # prompt_graph / unique_id arrive from the "PROMPT" / "UNIQUE_ID"
+        # hidden inputs (see _provenance_hidden_input_spec) and feed only
+        # keyframe-source provenance. Both encode passes get them and each
+        # writes system.ref_sources into its own resolution's sidecar; when
+        # the two passes collapse onto one shared fingerprint the second
+        # write just matches and is a no-op.
         cond, latent, fp1 = _execute_fl2va_once(
             clip_name, vae, prompt, width, height, length,
             first_frame, last_frame, cache_mode,
+            prompt_graph=prompt_graph, unique_id=unique_id,
         )
         if not generate_upscale_cond:
             # Upscale pass switched off: the second _execute_fl2va_once() does
@@ -875,6 +910,7 @@ class MiniMaxH3CLIPCachedFL2VADualRes:
         cond_upscale, _, fp2 = _execute_fl2va_once(
             clip_name, vae, prompt, width_upscale, height_upscale, length,
             first_frame, last_frame, cache_mode,
+            prompt_graph=prompt_graph, unique_id=unique_id,
         )
         # Both encodes succeeded (either call raising propagates before here),
         # so it is safe to cross-link the two Cache Manager entries now.
@@ -933,26 +969,29 @@ def _ref_slots_input_spec():
     return optional
 
 
-def _ref2va_hidden_input_spec():
-    """The "hidden" INPUT_TYPES block shared by both cached Ref2VA nodes.
+def _provenance_hidden_input_spec():
+    """The "hidden" INPUT_TYPES block shared by all four cached video nodes
+    (Ref2VA, Ref2VA Dual Res, FL2VA, FL2VA Dual Res).
 
     ``prompt_graph`` receives ComfyUI's "PROMPT" (the whole API-format
     workflow dict) and ``unique_id`` receives "UNIQUE_ID" (this node's id).
-    _sync_ref_sources() walks that graph backward from each reference slot to
-    record, in the Cache Manager sidecar, which on-disk file the reference
-    came from. The key is deliberately ``prompt_graph``, not ``prompt``:
-    these nodes already have a required text input named ``prompt`` and
-    ComfyUI feeds hidden inputs by keyword, so reusing the name would
-    overwrite the text prompt with the graph dict.
+    _sync_ref_sources() walks that graph backward from each traced file slot
+    (the Ref2VA ``ref_*`` references, the FL2VA ``first_frame`` /
+    ``last_frame`` keyframes) to record, in the Cache Manager sidecar, which
+    on-disk file it came from. The key is deliberately ``prompt_graph``, not
+    ``prompt``: these nodes already have a required text input named
+    ``prompt`` and ComfyUI feeds hidden inputs by keyword, so reusing the
+    name would overwrite the text prompt with the graph dict.
 
     WHY this is acceptable on a V1 node: ComfyUI's
     include_unique_id_in_input() returns True for any class whose hidden
     block mentions "UNIQUE_ID", which folds this node's id into ComfyUI's
     in-memory execution-cache signature -- so a rebuilt/renumbered graph no
     longer reuses ComfyUI's RAM-cached output for this node. That cost is
-    intended and harmless here: our on-disk cache is keyed by the encode
-    fingerprint, not by node id, so the rebuilt graph still HITs the saved
-    encode and the ~27 GB encoder still stays unloaded.
+    intended and harmless here, and identically so for FL2VA: compute_fingerprint()
+    (minimaxh3_clipcache.fingerprint) takes no node id, so our on-disk cache
+    is keyed by the encode fingerprint alone -- the rebuilt graph still HITs
+    the saved encode and the ~27 GB encoder still stays unloaded.
     """
     return {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}
 
@@ -1118,7 +1157,7 @@ class MiniMaxH3CLIPCachedRef2VA:
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
             },
             "optional": optional,
-            "hidden": _ref2va_hidden_input_spec(),
+            "hidden": _provenance_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
@@ -1147,7 +1186,7 @@ class MiniMaxH3CLIPCachedRef2VA:
         # _execute_ref2va_once() -- shared verbatim with
         # MiniMaxH3CLIPCachedRef2VADualRes. Single-resolution behaviour is
         # unchanged. prompt_graph / unique_id arrive from the "PROMPT" /
-        # "UNIQUE_ID" hidden inputs (see _ref2va_hidden_input_spec) and only
+        # "UNIQUE_ID" hidden inputs (see _provenance_hidden_input_spec) and only
         # feed reference-source provenance -- never the encode or the stock node.
         ref_images, ref_videos, ref_video_audios, ref_audios = _build_ref_slot_dicts(
             [ref_image_0, ref_image_1, ref_image_2, ref_image_3, ref_image_4,
@@ -1252,7 +1291,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 "ref_image_size": (["match", "max"], {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP}),
             },
             "optional": optional,
-            "hidden": _ref2va_hidden_input_spec(),
+            "hidden": _provenance_hidden_input_spec(),
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "CONDITIONING")
@@ -1279,7 +1318,7 @@ class MiniMaxH3CLIPCachedRef2VADualRes:
                 cache_mode="auto", generate_upscale_cond=True,
                 prompt_graph=None, unique_id=None):
         # prompt_graph / unique_id arrive from the "PROMPT" / "UNIQUE_ID"
-        # hidden inputs (see _ref2va_hidden_input_spec) and feed only
+        # hidden inputs (see _provenance_hidden_input_spec) and feed only
         # reference-source provenance. Both encode passes get them and each
         # writes system.ref_sources into its own resolution's sidecar; when
         # the two passes collapse onto one shared fingerprint the second

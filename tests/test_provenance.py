@@ -287,3 +287,79 @@ def test_a_fileless_leaf_does_not_stop_a_deeper_leaf_on_another_branch():
     sources = collect_ref_sources(prompt, REF_NODE_ID)
 
     assert [e["annotated"] for e in sources["ref_image_0"]] == ["wanted.png"]
+
+
+# --- FL2VA keyframe slots (first_frame / last_frame) ------------------------
+#
+# The walker is entirely key-name-agnostic; only the traced-key predicate
+# knows about first_frame / last_frame. These tests pin that the two FL2VA
+# keyframe slots are traced with the same {annotated[, path]} shape as the
+# Ref2VA reference slots, keyed by their literal input name.
+
+FL2VA_NODE_ID = "20"
+
+
+def _fl2va_node(**frame_inputs):
+    """A cached-FL2VA node dict with the given first_frame / last_frame wired."""
+    inputs = {"prompt": "a cat", "width": 1344, "height": 768, "length": 124}
+    inputs.update(frame_inputs)
+    return {"class_type": "MiniMaxH3CLIPCachedFL2VA", "inputs": inputs}
+
+
+def test_fl2va_first_and_last_frame_are_traced_with_paths():
+    prompt = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "start.png", "upload": "image"}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": "end.png", "upload": "image"}},
+        FL2VA_NODE_ID: _fl2va_node(first_frame=["1", 0], last_frame=["2", 0]),
+    }
+
+    sources = collect_ref_sources(prompt, FL2VA_NODE_ID)
+
+    assert set(sources) == {"first_frame", "last_frame"}
+    assert sources["first_frame"][0]["annotated"] == "start.png"
+    assert sources["first_frame"][0]["path"].endswith("/input/start.png")
+    assert sources["last_frame"][0]["annotated"] == "end.png"
+
+
+def test_fl2va_only_one_keyframe_connected_yields_exactly_that_key():
+    prompt = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "start.png", "upload": "image"}},
+        FL2VA_NODE_ID: _fl2va_node(first_frame=["1", 0]),
+    }
+
+    assert set(collect_ref_sources(prompt, FL2VA_NODE_ID)) == {"first_frame"}
+
+
+def test_fl2va_keyframe_chain_through_intermediate_node_is_followed():
+    prompt = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "portrait.jpg", "upload": "image"}},
+        "2": {"class_type": "ImageResize", "inputs": {"image": ["1", 0], "width": 512, "height": 512}},
+        FL2VA_NODE_ID: _fl2va_node(first_frame=["2", 0]),
+    }
+
+    sources = collect_ref_sources(prompt, FL2VA_NODE_ID)
+
+    assert [e["annotated"] for e in sources["first_frame"]] == ["portrait.jpg"]
+
+
+def test_fl2va_keyframe_off_a_non_loader_branch_yields_no_entry():
+    prompt = {
+        "1": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512}},
+        "2": {"class_type": "VAEDecode", "inputs": {"samples": ["1", 0], "vae": ["9", 0]}},
+        FL2VA_NODE_ID: _fl2va_node(first_frame=["2", 0]),
+    }
+
+    assert collect_ref_sources(prompt, FL2VA_NODE_ID) == {}
+
+
+def test_non_keyframe_input_named_like_a_frame_is_not_traced():
+    # The predicate is an exact match on first_frame / last_frame, not a
+    # substring: a hypothetical "middle_frame" / "first_frames" input is not
+    # a traced slot.
+    prompt = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "x.png", "upload": "image"}},
+        FL2VA_NODE_ID: {"class_type": "SomeOtherNode",
+                        "inputs": {"middle_frame": ["1", 0], "first_frames": ["1", 0]}},
+    }
+
+    assert collect_ref_sources(prompt, FL2VA_NODE_ID) == {}

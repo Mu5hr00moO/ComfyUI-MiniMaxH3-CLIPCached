@@ -1,17 +1,27 @@
-"""Best-effort provenance for the cached Ref2VA nodes' reference inputs:
-the on-disk file each ``ref_*`` slot ultimately came from.
+"""Best-effort provenance for the cached video nodes' file inputs: the
+on-disk file each traced slot ultimately came from.
 
 Why this module exists
 ----------------------
-The Cache Manager shows a Ref2VA entry's reference thumbnails, but a
+The Cache Manager shows an entry's reference / keyframe thumbnails, but a
 thumbnail alone is not enough to find the original file again on disk. When
-a reference was produced by a ``LoadImage`` / ``LoadAudio`` / ``LoadVideo``
+an input was produced by a ``LoadImage`` / ``LoadAudio`` / ``LoadVideo``
 node -- directly, or through a chain of pass-through nodes -- the
 API-format prompt still records that loader's literal filename input.
-Walking the prompt graph backward from each ``ref_*`` slot recovers it as a
+Walking the prompt graph backward from each traced slot recovers it as a
 *trail* the user can follow. Nothing here feeds ``compute_fingerprint()``
 and a failure never disturbs the cached encode: this is a navigation aid
 for the Cache Manager UI, not part of the cache contract.
+
+Which slots are traced
+----------------------
+The Ref2VA nodes' flat reference slots (``ref_image_*``, ``ref_video_*``,
+``ref_video_audio_*``, ``ref_audio_*``) and the FL2VA nodes' ``first_frame``
+/ ``last_frame`` keyframe slots. The set is a small predicate
+(``_is_traced_input_key``) -- name-prefix for the Ref2VA family so a future
+slot-count bump keeps being traced, exact match for the two FL2VA keyframe
+keys -- not a per-node table; the walk itself is entirely node-type- and
+key-name-agnostic.
 
 The leaf rule: only a real loader's literal counts
 --------------------------------------------------
@@ -49,6 +59,9 @@ that appears on more than one leaf (one ``LoadImage`` wired into two
 places, or two loaders of the same file) is returned once, at its first
 occurrence.
 
+For the FL2VA keyframe slots the same holds: the join in the later UI
+phase is on the literal key ``first_frame`` / ``last_frame``.
+
 Why the result is keyed by SLOT NAME, not by position
 -----------------------------------------------------
 The verbose sidecar's ``system.references`` list is ordered by the stock
@@ -82,10 +95,11 @@ Return shape and the None / {} distinction
 
 Scope
 -----
-Only the fixed, flat reference slots of ``MiniMaxH3CLIPCachedRef2VA`` and
+The fixed, flat reference slots of ``MiniMaxH3CLIPCachedRef2VA`` and
 ``MiniMaxH3CLIPCachedRef2VADualRes`` (``ref_image_0..8``, ``ref_video_0..2``,
-``ref_video_audio_0..2``, ``ref_audio_0..2``). ``collect_ref_sources()``
-never raises.
+``ref_video_audio_0..2``, ``ref_audio_0..2``) and the ``first_frame`` /
+``last_frame`` keyframe slots of ``MiniMaxH3CLIPCachedFL2VA`` and
+``MiniMaxH3CLIPCachedFL2VADualRes``. ``collect_ref_sources()`` never raises.
 """
 
 import logging
@@ -98,6 +112,20 @@ logger = logging.getLogger(__name__)
 # a name-prefix check rather than an exact list so a future slot-count bump
 # in nodes._ref_slots_input_spec() does not silently stop being traced.
 _REF_INPUT_PREFIXES = ("ref_image_", "ref_video_", "ref_video_audio_", "ref_audio_")
+
+# The keyframe input keys on both cached FL2VA nodes. There are exactly two
+# and they are not numbered, so an exact match -- not a prefix -- is right.
+_FRAME_INPUT_KEYS = frozenset({"first_frame", "last_frame"})
+
+
+def _is_traced_input_key(key: str) -> bool:
+    """True for an input key whose backward trail is worth recording: a
+    Ref2VA reference slot (by name prefix) or an FL2VA keyframe slot (exact).
+
+    The walk downstream of this predicate is key-name-agnostic; this is the
+    only place the traced slot set is defined.
+    """
+    return key.startswith(_REF_INPUT_PREFIXES) or key in _FRAME_INPUT_KEYS
 
 # A leaf loader's literal input only counts as "the file a reference came
 # from" when its extension names an image / video / audio container. This is
@@ -244,8 +272,9 @@ def _entries_for(annotated_names):
 
 
 def collect_ref_sources(prompt, unique_id):
-    """Map each traceable ``ref_*`` slot of ``prompt[unique_id]`` to the
-    loader file(s) it came from.
+    """Map each traceable slot of ``prompt[unique_id]`` (a Ref2VA reference
+    slot or an FL2VA ``first_frame`` / ``last_frame``) to the loader file(s)
+    it came from.
 
     Returns (see the module docstring for the reasoning):
 
@@ -279,7 +308,7 @@ def collect_ref_sources(prompt, unique_id):
         # returns {} so the caller can drop stale provenance.
         sources = {}
         for key, value in inputs.items():
-            if not key.startswith(_REF_INPUT_PREFIXES):
+            if not _is_traced_input_key(key):
                 continue
             if not _is_link(value):
                 continue

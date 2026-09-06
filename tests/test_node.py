@@ -704,8 +704,9 @@ def test_l_sync_verbose_fresh_miss_writes_fl2va_variant(monkeypatch, tmp_path):
     assert [r["label"] for r in system["references"]] == ["first_frame", "last_frame"]
     assert [r["index"] for r in system["references"]] == [0, 1]
     # FL2VA has no Autogrow slots: first_frame / last_frame are fixed named
-    # inputs, already captured by "label", and its sidecars never carry
-    # system.ref_sources, so no "slot" key is written.
+    # inputs, already captured by "label", so no "slot" key is written on the
+    # reference records. (system.ref_sources, when present, is keyed by the
+    # same first_frame / last_frame names -- see the provenance tests below.)
     assert all("slot" not in r for r in system["references"])
 
 
@@ -1183,3 +1184,75 @@ def test_ae_normal_legacy_backfill_without_foreign_keys_is_unchanged(monkeypatch
         "cache_schema_version", "node_variant", "created_at", "references",
         "comfyui_version",
     }
+
+
+# --- keyframe-source provenance (nodes._sync_ref_sources on the FL2VA path) --
+
+# The FL2VA nodes reuse the same collector / walker / sidecar key as Ref2VA;
+# only the traced input keys differ (first_frame / last_frame instead of the
+# ref_* slots). These tests exercise the FL2VA end of that shared path.
+_GRAPH_WITH_KEYFRAMES = {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "start.png", "upload": "image"}},
+    "2": {"class_type": "LoadImage", "inputs": {"image": "end.png", "upload": "image"}},
+    "7": {"class_type": "MiniMaxH3CLIPCachedFL2VA",
+          "inputs": {"prompt": "a prompt", "first_frame": ["1", 0], "last_frame": ["2", 0]}},
+}
+
+
+def _fake_fl2va_execute(cls, clip, vae, prompt, width, height, length,
+                        first_frame=None, last_frame=None):
+    tokens = clip.tokenize(prompt, images=[])
+    cond = clip.encode_from_tokens_scheduled(tokens)
+    return (cond, "latent_fake")
+
+
+def test_af_execute_threads_keyframe_provenance_into_the_sidecar(monkeypatch, tmp_path):
+    """End to end: a real MISS with the PROMPT / UNIQUE_ID hidden inputs
+    wired records system.ref_sources keyed by first_frame / last_frame."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+    _patch_common(monkeypatch, node_module, tmp_path, _fake_fl2va_execute, real_clip)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3), last_frame=torch.ones(1, 8, 8, 3),
+        prompt_graph=_GRAPH_WITH_KEYFRAMES, unique_id="7",
+    )
+
+    fingerprint = last_used_module.get_last_used()["fl2va"]
+    system = load_verbose(fingerprint, tmp_path)["system"]
+    assert set(system["ref_sources"]) == {"first_frame", "last_frame"}
+    assert system["ref_sources"]["first_frame"][0]["annotated"] == "start.png"
+    assert system["ref_sources"]["last_frame"][0]["annotated"] == "end.png"
+    assert system["ref_sources"]["first_frame"][0]["path"].endswith("/input/start.png")
+
+
+def test_ag_execute_without_hidden_inputs_writes_no_ref_sources(monkeypatch, tmp_path):
+    """The hidden inputs default to None: the run still succeeds and simply
+    omits system.ref_sources (matches the Ref2VA contract)."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+    _patch_common(monkeypatch, node_module, tmp_path, _fake_fl2va_execute, real_clip)
+    from minimaxh3_clipcache.verbose_store import load_verbose
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VA()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3),
+    )
+
+    fingerprint = last_used_module.get_last_used()["fl2va"]
+    assert "ref_sources" not in load_verbose(fingerprint, tmp_path)["system"]
+
+
+def test_ah_fl2va_declares_the_provenance_hidden_inputs(monkeypatch, tmp_path):
+    """The class exposes the shared PROMPT / UNIQUE_ID hidden block so
+    ComfyUI actually feeds prompt_graph / unique_id at runtime."""
+    node_module = _load_node_module()
+    hidden = node_module.MiniMaxH3CLIPCachedFL2VA.INPUT_TYPES()["hidden"]
+    assert hidden == {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}
+    assert hidden == node_module._provenance_hidden_input_spec()
