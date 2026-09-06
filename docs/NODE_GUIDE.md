@@ -150,15 +150,17 @@ use **MiniMax H3 CLIP-Cached FL2VA** in place of the stock conditioning node,
 select the encoder with `clip_name`, and leave `cache_mode="auto"` for normal
 use.
 
-![MiniMax H3 CLIP-Cached FL2VA node in a workflow](../README_workflow_CLIPCached_node.png)
+![MiniMax H3 CLIP-Cached FL2VA node in a workflow](img/node_fl2va_cached.png)
 
 The cached node feeds the same downstream MiniMax H3 generation path as the
 stock conditioning node. Only the expensive text/vision conditioning stage is
 reused on a cache HIT.
 
-![CLIPCached conditioning connected to the main MiniMax H3 sampler path](../README_workflow_main_sampler.png)
+![CLIPCached conditioning connected to the main MiniMax H3 sampler path](img/workflow_main_sampler.png)
 
 ## MiniMax H3 CLIP-Cached Ref2VA
+
+![MiniMax H3 CLIP-Cached Ref2VA](img/node_ref2va_cached.png)
 
 > **Author's note:** Development and real-world testing of this project has
 > focused primarily on the FL2VA path. The Ref2VA node follows the same cache
@@ -456,11 +458,11 @@ second pass does not exist.
 
 ### Dual Resolution example
 
-![MiniMax H3 CLIP-Cached Dual Resolution node](../README_dual_resolution_node.png)
+![MiniMax H3 CLIP-Cached Dual Resolution node](img/node_dual_res_fl2va.png)
 
 The workflow above shows the intended separation of responsibilities: the Dual
 Resolution node prepares `positive`, `latent`, and `positive_upscale`; the base
 `latent` is resized by a separate latent-upscale node before the upscale branch
 uses `positive_upscale`.
 
-![Dual Resolution workflow showing base conditioning, latent upscale path, and upscale conditioning](../README_dual_resolution_workflow.png)
+![Dual Resolution workflow showing base conditioning, latent upscale path, and upscale conditioning](img/workflow_dual_resolution.png)
