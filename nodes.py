@@ -56,12 +56,17 @@ def _build_references(fingerprint, items, labels=None):
     "slot". They are NOT the same thing: "index" is the reference's position
     in the flat batch the encoder sees, AFTER empty slots have been
     compacted out; "slot" is the name of the node input it was wired into
-    (ref_image_0, ref_video_audio_1, ...). "slot" is the only key that also
-    appears in system.ref_sources, so the Cache Manager joins reference
-    provenance on it rather than reconstructing the compaction positionally.
-    FL2VA items carry no slot -- its inputs are the fixed first_frame /
-    last_frame, already recorded via "label", and its sidecars never hold
-    system.ref_sources -- so no "slot" key is written for them.
+    (ref_image_0, ref_video_audio_1, ...). On the Ref2VA path "slot" is the
+    key the Cache Manager joins reference provenance on -- it also keys that
+    node's system.ref_sources -- rather than reconstructing the compaction
+    positionally.
+
+    FL2VA reference records carry no "slot": its inputs are the fixed
+    first_frame / last_frame, already recorded via "label". FL2VA sidecars
+    DO hold system.ref_sources (persisted by _sync_ref_sources()), but it is
+    keyed by those same "first_frame" / "last_frame" label names, so the
+    Cache Manager joins FL2VA provenance on "label" and Ref2VA provenance on
+    "slot".
 
     The thumbnail write for one reference must not lose the others or abort
     the verbose write, so the try/except is inside the loop: on failure that
@@ -73,8 +78,9 @@ def _build_references(fingerprint, items, labels=None):
         item_type, tensor = item[0], item[1]
         entry = {"index": i, "type": item_type}
         # index = position after empty-slot compaction (what the encoder
-        # sees); slot = the node input name, the only key shared with
-        # system.ref_sources. Both are kept -- see the docstring.
+        # sees); slot = the node input name, the key Ref2VA's
+        # system.ref_sources is joined on (FL2VA joins on "label" instead).
+        # Both index and slot are kept -- see the docstring.
         slot = item[2] if len(item) > 2 else None
         if slot is not None:
             entry["slot"] = slot

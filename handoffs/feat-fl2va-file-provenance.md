@@ -25,6 +25,11 @@ node'ach FL2VA. Jeden collector, jeden walker, jeden hidden-input-spec helper.
   się 1:1 na FL2VA. Zweryfikowane w kodzie: `fingerprint.py:124` —
   brak parametru unique_id / node id.
 - `_sync_ref_sources` docstring: usunięte "on the Ref2VA path only".
+- `_build_references` docstring + komentarz (nodes.py:59-77): usunięte
+  kłamstwo "FL2VA sidecars never hold system.ref_sources". Teraz: rekordy
+  reference FL2VA nie mają `slot`, a `system.ref_sources` dla FL2VA jest
+  kluczowane nazwami label `first_frame`/`last_frame` — Cache Manager łączy
+  FL2VA po `label`, Ref2VA po `slot`.
 - `_execute_fl2va_once`: nowe opcjonalne kwargs `prompt_graph=None,
   unique_id=None`; wywołanie `_sync_ref_sources(proxy, prompt_graph,
   unique_id)` tuż po `_sync_verbose_metadata`, analogicznie do
