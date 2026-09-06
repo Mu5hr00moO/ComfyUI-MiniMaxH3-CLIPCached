@@ -11,6 +11,9 @@ pytest.ini
 cache/
 benchmark_results/
 
+# Dev / live-server / e2e — not needed in the Registry pack
+scripts/
+
 # Contributor / session notes, not user documentation
 CLAUDE.md
 HANDOFF.md
