@@ -395,9 +395,11 @@ export function resolvePairing(entry, entriesByFingerprint) {
 
 // --- reference provenance ---------------------------------------------------
 //
-// system.ref_sources (Ref2VA only, added in the graph-provenance phase) maps
-// a node INPUT SLOT NAME -- "ref_image_0", "ref_video_2", ... -- to the list
-// of files traced back through the graph for that slot:
+// system.ref_sources (added in the graph-provenance phase) maps a join key
+// to the list of files traced back through the graph for that reference. The
+// key differs per variant: Ref2VA keys it by node INPUT SLOT NAME
+// ("ref_image_0", "ref_video_2", ...), FL2VA by keyframe LABEL
+// ("first_frame" / "last_frame"). Example (Ref2VA):
 //
 //   { "ref_image_0": [ { annotated: "foto.png", path: "/abs/input/foto.png" } ],
 //     "ref_image_2": [ { annotated: "a.png", path: "..." },
@@ -408,14 +410,31 @@ export function resolvePairing(entry, entriesByFingerprint) {
 // a mask) legitimately traces one slot to several files. `path` is omitted
 // when folder_paths.get_annotated_filepath() rejected the value.
 //
-// The only key shared with system.references[i] is `slot`. The compacted
-// `index` must NOT be used to line the two up: a gap in the wired slots
-// (ref_image_0, ref_image_2, ref_image_5 -> indices 0, 1, 2) makes index and
-// slot number diverge.
+// The key shared with system.references[i] is `slot` (Ref2VA) or `label`
+// (FL2VA). The compacted `index` must NOT be used to line the two up: a gap
+// in the wired slots (ref_image_0, ref_image_2, ref_image_5 -> indices 0, 1,
+// 2) makes index and slot number diverge.
+//
+// The join key is chosen by which field the reference carries, with no
+// fallback: Ref2VA references have `slot` and never `label`, FL2VA
+// references have `label` and never `slot`, and the two fields are mutually
+// exclusive. A `label` outside the {first_frame, last_frame} allowlist is
+// treated as unknown and yields nothing rather than being looked up blindly.
+const FRAME_REF_LABELS = { first_frame: "First frame", last_frame: "Last frame" };
+
 export function refSourcesForReference(ref, refSources) {
-  const slot = ref && typeof ref.slot === "string" ? ref.slot : "";
-  if (!slot || !refSources || typeof refSources !== "object") return [];
-  const list = refSources[slot];
+  if (!ref || !refSources || typeof refSources !== "object") return [];
+  let key = "";
+  if (typeof ref.slot === "string" && ref.slot !== "") {
+    key = ref.slot;
+  } else if (
+    typeof ref.label === "string" &&
+    Object.prototype.hasOwnProperty.call(FRAME_REF_LABELS, ref.label)
+  ) {
+    key = ref.label;
+  }
+  if (!key) return [];
+  const list = refSources[key];
   if (!Array.isArray(list)) return [];
   return list.filter(
     (entry) => entry && typeof entry.annotated === "string" && entry.annotated !== "",
@@ -1413,25 +1432,34 @@ function renderDetailFingerprint(container, lines) {
   }
 }
 
-// Ref2VA only: the "<Picture N>" / "<Video N>" / "<Audio N>" tags in the
-// prompt are positional, counted per type over the reference list in order.
-// The count is always derived here in JS, never read from a stored field.
+// Ref2VA: the "<Picture N>" / "<Video N>" / "<Audio N>" tags in the prompt
+// are positional, counted per type over the reference list in order. The
+// count is always derived here in JS, never read from a stored field.
 const REF_TYPE_LABEL = { image: "Picture", video: "Video", audio: "Audio" };
 
-// The render model for the Ref2VA detail grid: one cell per reference, in
-// order, carrying the positional label ("Picture 2", counted per type here
-// and nowhere else) and the file-provenance entries joined from
-// system.ref_sources by slot name. Kept pure and separate from the DOM
-// painting in renderDetailRefs() so the join and the counting are testable.
+// The render model for the detail grid: one cell per reference, in order,
+// carrying a display label and the file-provenance entries joined from
+// system.ref_sources (by slot for Ref2VA, by label for FL2VA -- see
+// refSourcesForReference). The label branches by variant too: FL2VA cells
+// get the fixed "First frame" / "Last frame" from ref.label, Ref2VA cells
+// get the positional "Picture 2" counted per type here and nowhere else.
+// Kept pure and separate from the DOM painting in renderDetailRefs() so the
+// join and the counting are testable.
 export function detailRefCells(references, refSources) {
   const counters = { image: 0, video: 0, audio: 0 };
   return references.map((ref) => {
     const type = ref.type || "image";
-    counters[type] = (counters[type] || 0) + 1;
+    let posLabel;
+    if (typeof ref.label === "string" && FRAME_REF_LABELS[ref.label]) {
+      posLabel = FRAME_REF_LABELS[ref.label];
+    } else {
+      counters[type] = (counters[type] || 0) + 1;
+      posLabel = `${REF_TYPE_LABEL[type] || "Reference"} ${counters[type]}`;
+    }
     return {
       type,
       index: ref.index,
-      posLabel: `${REF_TYPE_LABEL[type] || "Reference"} ${counters[type]}`,
+      posLabel,
       sources: refSourcesForReference(ref, refSources),
     };
   });
@@ -1496,10 +1524,10 @@ function renderDetailRefs(container, fingerprint, variant, references, refSource
   // elements holding them have just been discarded, and nowhere else.
   for (const url of detailRefObjectUrls) URL.revokeObjectURL(url);
   detailRefObjectUrls = [];
-  // FL2VA is unchanged: its first_frame / last_frame already show in the list
-  // row and, on a Copy-prompt click, in the result box below -- no persistent
-  // breakdown here. Only Ref2VA gets one.
-  if (variant !== "ref2va" || references.length === 0) {
+  // Both Ref2VA and FL2VA get a persistent breakdown here: Ref2VA one cell
+  // per positional Picture/Video/Audio reference, FL2VA one cell each for the
+  // first_frame / last_frame keyframes. Other variants have no reference grid.
+  if ((variant !== "ref2va" && variant !== "fl2va") || references.length === 0) {
     container.hidden = true;
     return;
   }
