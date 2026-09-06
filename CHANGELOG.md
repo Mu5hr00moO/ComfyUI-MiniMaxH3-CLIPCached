@@ -8,22 +8,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- Cache Manager shows the on-disk size of every entry: normal entries get
-  it at the end of the meta line next to the date and resolution, legacy
-  and inconsistent entries next to their status hint. The figure covers
-  exactly the files that deleting that entry removes.
-- When a Dual Resolution pair is folded into one row, that row's size is
-  the pair total and is marked **(pair total)**. Delete still acts on the
-  single entry beside it; the paired entry has its own Delete button under
-  the `+ rescaled to` badge.
-- Ref2VA entries record where each reference came from: the source file
-  names traced back through the graph and the node input slot each
-  reference was wired to. The Cache Manager detail panel shows those file
-  names under each reference thumbnail, click-to-copy, alongside the
-  entry's short fingerprint.
-
 ### Planned
 
 - `cache_mode = "cache_only"`: serve conditioning from the cache or fail
@@ -34,6 +18,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MiniMaxH3ReferenceToVideo` autogrow inputs, so a workflow that needs
   more references than the fixed slot count does not have to fall back to
   the stock node.
+
+## [1.2.0] - 2026-09-06
+
+### Added
+
+- Cache Manager: on-disk size per entry; Dual Res row shows **(pair total)**.
+- Ref2VA provenance: source file names + input slots in the detail panel.
+- Cache size threshold: status colours, then Options drawer under Favorites
+  (`>>> options`). Limit in GB, stored as `limitBytes`; `0` = off.
+  Warning percent 1–100. Browser only, no Python.
 
 ## [1.1.0] - 2026-09-03
 
@@ -69,6 +63,7 @@ First public release.
   pre-release caches; unmatched entries are simply re-encoded on first
   use.
 
-[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.2.0
 [1.1.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Mu5hr00moO/ComfyUI-MiniMaxH3-CLIPCached/releases/tag/v1.0.0
