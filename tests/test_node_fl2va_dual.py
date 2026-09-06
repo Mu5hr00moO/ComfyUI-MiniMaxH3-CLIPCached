@@ -576,13 +576,15 @@ def test_dual_input_types_adds_second_resolution_only(node_module_with_real_comf
     assert "tooltip" in opt["generate_upscale_cond"][1]
 
 
-def test_fl2va_nodes_declare_no_hidden_inputs(node_module_with_real_comfy_nodes):
-    """Reference-source provenance is a Ref2VA-only feature: the FL2VA nodes
-    have no references to trace, so neither declares a "hidden" block."""
+def test_fl2va_nodes_declare_the_shared_provenance_hidden_block(node_module_with_real_comfy_nodes):
+    """Both FL2VA nodes trace their first_frame / last_frame keyframes to the
+    on-disk loader file, so both declare the same PROMPT / UNIQUE_ID hidden
+    block the Ref2VA nodes use -- via the one shared helper, not a copy."""
     m = node_module_with_real_comfy_nodes
 
     for cls in (m.MiniMaxH3CLIPCachedFL2VA, m.MiniMaxH3CLIPCachedFL2VADualRes):
-        assert "hidden" not in cls.INPUT_TYPES()
+        assert cls.INPUT_TYPES()["hidden"] == {"unique_id": "UNIQUE_ID", "prompt_graph": "PROMPT"}
+        assert cls.INPUT_TYPES()["hidden"] == m._provenance_hidden_input_spec()
 
 
 def test_dual_registered_in_node_mappings():
@@ -596,3 +598,70 @@ def test_dual_registered_in_node_mappings():
         "MiniMaxH3CLIPCachedFL2VADualRes"
     assert package.NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3CLIPCachedFL2VADualRes"] == \
         "MiniMax H3 CLIP-Cached FL2VA (Dual Resolution)"
+
+
+# --- keyframe-source provenance on the dual-resolution node ----------------
+
+_GRAPH_WITH_KEYFRAMES_DUAL = {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "start.png", "upload": "image"}},
+    "7": {"class_type": "MiniMaxH3CLIPCachedFL2VADualRes",
+          "inputs": {"prompt": "a prompt", "first_frame": ["1", 0]}},
+}
+
+
+def test_dual_threads_keyframe_provenance_into_every_sidecar(monkeypatch, tmp_path):
+    """Both encode passes get prompt_graph / unique_id; each writes
+    system.ref_sources into its own resolution's sidecar. A
+    resolution-dependent keyframe makes the two passes land on two
+    fingerprints, so both sidecars are checked."""
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        img = torch.zeros(1, height, width, 3)  # resolution-dependent input
+        tokens = clip.tokenize(prompt, images=[img])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3),
+        prompt_graph=_GRAPH_WITH_KEYFRAMES_DUAL, unique_id="7",
+    )
+
+    sidecars = list(tmp_path.glob("*.verbose.json"))
+    assert len(sidecars) == 2
+    for sidecar in sidecars:
+        system = json.loads(sidecar.read_bytes())["system"]
+        assert set(system["ref_sources"]) == {"first_frame"}
+        assert system["ref_sources"]["first_frame"][0]["annotated"] == "start.png"
+        assert system["ref_sources"]["first_frame"][0]["path"].endswith("/input/start.png")
+
+
+def test_dual_without_hidden_inputs_writes_no_ref_sources(monkeypatch, tmp_path):
+    node_module = _load_node_module()
+    real_clip = FakeRealClip()
+
+    def fake_execute(cls, clip, vae, prompt, width, height, length,
+                     first_frame=None, last_frame=None):
+        img = torch.zeros(1, height, width, 3)
+        tokens = clip.tokenize(prompt, images=[img])
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        return (cond, "latent_fake")
+
+    _patch_common(monkeypatch, node_module, tmp_path, fake_execute, real_clip)
+
+    node = node_module.MiniMaxH3CLIPCachedFL2VADualRes()
+    node.execute(
+        clip_name=CLIP_NAME, vae="fake_vae", prompt="a prompt",
+        width=1344, height=768, width_upscale=1920, height_upscale=1088, length=124,
+        first_frame=torch.zeros(1, 8, 8, 3),
+    )
+
+    for sidecar in tmp_path.glob("*.verbose.json"):
+        assert "ref_sources" not in json.loads(sidecar.read_bytes())["system"]
