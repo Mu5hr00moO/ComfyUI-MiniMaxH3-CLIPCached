@@ -492,7 +492,7 @@ function createPanel() {
           <button type="button" data-h3cm-variant="fl2va" class="h3cm-variant-btn is-active">FL2VA</button>
           <button type="button" data-h3cm-variant="ref2va" class="h3cm-variant-btn">Ref2VA</button>
         </div>
-        <input type="text" class="h3cm-search" data-h3cm-search placeholder="Search…">
+        <input type="text" class="h3cm-search" data-h3cm-search aria-label="Search" placeholder="Search…">
         <select class="h3cm-select" data-h3cm-sort aria-label="Sort by">
           <option value="date">Date</option>
           <option value="name">Name</option>
